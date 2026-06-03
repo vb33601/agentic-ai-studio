@@ -1,0 +1,119 @@
+import { WebContainer, type FileSystemTree } from "@webcontainer/api";
+import type { WorkspaceFile } from "@/store/workspace";
+
+/**
+ * WebContainers live-preview engine. Boots a single in-browser Node.js runtime,
+ * mounts the workspace files, installs dependencies, and starts the project's
+ * dev server. Only one WebContainer may exist per page, so boot is a singleton.
+ */
+
+let instance: WebContainer | null = null;
+let bootPromise: Promise<WebContainer> | null = null;
+
+export function webContainerSupported(): boolean {
+  return typeof window !== "undefined" && window.crossOriginIsolated === true;
+}
+
+export async function getWebContainer(): Promise<WebContainer> {
+  if (instance) return instance;
+  if (!bootPromise) {
+    bootPromise = WebContainer.boot().then((wc) => {
+      instance = wc;
+      return wc;
+    });
+  }
+  return bootPromise;
+}
+
+/** Convert the flat workspace file list into a nested WebContainer tree. */
+export function toFileSystemTree(files: WorkspaceFile[]): FileSystemTree {
+  const root: FileSystemTree = {};
+  for (const file of files) {
+    const segments = file.path.split("/").filter(Boolean);
+    let node = root;
+    segments.forEach((segment, i) => {
+      const isLeaf = i === segments.length - 1;
+      if (isLeaf) {
+        node[segment] = { file: { contents: file.content } };
+      } else {
+        const existing = node[segment];
+        if (!existing || !("directory" in existing)) {
+          node[segment] = { directory: {} };
+        }
+        node = (node[segment] as { directory: FileSystemTree }).directory;
+      }
+    });
+  }
+  return root;
+}
+
+/** Pick the npm script that starts a dev server, preferring live-reload ones. */
+export function pickStartScript(pkg: { scripts?: Record<string, string> }): string | null {
+  const scripts = pkg.scripts ?? {};
+  for (const candidate of ["dev", "start", "serve", "preview"]) {
+    if (scripts[candidate]) return candidate;
+  }
+  return null;
+}
+
+export interface RunHandlers {
+  onLog: (chunk: string) => void;
+  onServerReady: (url: string) => void;
+  onStatus: (status: string) => void;
+}
+
+export interface RunResult {
+  teardown: () => void;
+}
+
+/**
+ * Mount files, install deps, and run the dev server. Returns a teardown that
+ * kills the running process. Throws with a helpful message on failure.
+ */
+export async function runProject(files: WorkspaceFile[], handlers: RunHandlers): Promise<RunResult> {
+  const pkgFile = files.find((f) => f.path === "package.json" || f.name === "package.json");
+  if (!pkgFile) throw new Error("No package.json found — this isn't a Node project.");
+
+  let pkg: { scripts?: Record<string, string> };
+  try {
+    pkg = JSON.parse(pkgFile.content);
+  } catch {
+    throw new Error("package.json is not valid JSON.");
+  }
+
+  const startScript = pickStartScript(pkg);
+  if (!startScript) throw new Error('No runnable script found (need "dev", "start", "serve", or "preview").');
+
+  const wc = await getWebContainer();
+
+  handlers.onStatus("Mounting files…");
+  await wc.mount(toFileSystemTree(files));
+
+  handlers.onStatus("Installing dependencies…");
+  const install = await wc.spawn("npm", ["install"]);
+  install.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
+  const installCode = await install.exit;
+  if (installCode !== 0) throw new Error(`npm install failed (exit ${installCode}).`);
+
+  handlers.onStatus(`Starting: npm run ${startScript}…`);
+  let serverUrl: string | null = null;
+  wc.on("server-ready", (_port, url) => {
+    serverUrl = url;
+    handlers.onServerReady(url);
+    handlers.onStatus("Running");
+  });
+
+  const proc = await wc.spawn("npm", ["run", startScript]);
+  proc.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
+
+  // Surface a hint if no server appears in a reasonable window.
+  setTimeout(() => {
+    if (!serverUrl) handlers.onStatus("Waiting for dev server to bind a port…");
+  }, 20000);
+
+  return {
+    teardown: () => {
+      proc.kill();
+    },
+  };
+}
