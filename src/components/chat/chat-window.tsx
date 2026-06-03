@@ -14,6 +14,7 @@ import { useChatStore } from "@/store/chat";
 import { useWorkspaceStore } from "@/store/workspace";
 import { getLanguageFromPath } from "@/lib/utils";
 import { getToolParts } from "@/lib/ai/tool-parts";
+import { extractFilesFromMarkdown } from "@/lib/ai/extract-files";
 import { apiCreateChat, apiGetChatMessages, apiSaveMessages } from "@/lib/api/chats";
 import { isImage, imageToFilePart, parseDocument, buildDocContext } from "@/lib/attachments";
 
@@ -34,16 +35,15 @@ export function ChatWindow() {
   // --- file extraction helpers ---
 
   const extractFilesFromText = useCallback((content: string) => {
-    const filePattern = /```(\w+)\s*\/\/\s*([^\n]+)\n([\s\S]*?)```/g;
-    let match;
-    while ((match = filePattern.exec(content)) !== null) {
-      const [, lang, path, code] = match;
+    // Pull fenced code blocks out of assistant prose (handles the common case
+    // where a model writes code in markdown instead of calling createFile).
+    for (const f of extractFilesFromMarkdown(content)) {
       addFile({
         id: nanoid(),
-        name: path.split("/").pop() || path,
-        path,
-        content: code.trim(),
-        language: getLanguageFromPath(path) || lang,
+        name: f.path.split("/").pop() || f.path,
+        path: f.path,
+        content: f.content,
+        language: f.language,
         isDirty: false,
       });
     }
@@ -53,11 +53,12 @@ export function ChatWindow() {
   // code blocks. addFile deduplicates by path so calling this multiple times
   // on the same message is safe.
   const extractFilesFromMessage = useCallback((message: UIMessage) => {
-    // Markdown code blocks in text parts
-    const textPart = message.parts?.find((p) => p.type === "text");
-    if (textPart && "text" in textPart) {
-      extractFilesFromText((textPart as { type: "text"; text: string }).text);
-    }
+    // Markdown code blocks across all text parts of the message.
+    const fullText = (message.parts ?? [])
+      .filter((p) => p.type === "text")
+      .map((p) => ("text" in p ? (p as { text: string }).text : ""))
+      .join("\n");
+    if (fullText) extractFilesFromText(fullText);
 
     // createFile tool outputs (parts are `tool-createFile` or `dynamic-tool`).
     const toolParts = getToolParts(message);

@@ -49,7 +49,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setIsBuilding: (building) => set({ isBuilding: building }),
   addBuildLog: (line) => set((s) => ({ buildLog: [...s.buildLog, line] })),
   clearBuildLog: () => set({ buildLog: [] }),
-  addFile: (file) => set((s) => ({ files: [...s.files.filter((f) => f.path !== file.path), file] })),
+  addFile: (file) =>
+    set((s) => {
+      const idx = s.files.findIndex((f) => f.path === file.path);
+      if (idx === -1) return { files: [...s.files, file] };
+      // Don't clobber a file the user is actively editing.
+      if (s.files[idx].isDirty) return { files: s.files };
+      // Replace in place, keeping the existing id so editor tabs/selection hold.
+      const next = s.files.slice();
+      next[idx] = { ...file, id: s.files[idx].id };
+      return { files: next };
+    }),
   updateFile: (id, updates) =>
     set((s) => ({ files: s.files.map((f) => (f.id === id ? { ...f, ...updates } : f)) })),
   removeFile: (id) => set((s) => ({ files: s.files.filter((f) => f.id !== id) })),

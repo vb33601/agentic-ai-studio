@@ -49,6 +49,25 @@ export async function POST(req: NextRequest) {
           Object.entries(ALL_TOOLS).filter(([key]) => allowedTools.includes(key))
         )
       : undefined;
+    const hasTools = !!activeTools && Object.keys(activeTools).length > 0;
+
+    // When no tools are available (tools toggled off, or a model that doesn't
+    // support them), the agent prompts that say "never output markdown, use
+    // createFile" would otherwise leave the model unable to produce any code.
+    // Override that: have it emit complete, filename-labeled code blocks, which
+    // the client extracts into the workspace.
+    const NO_TOOLS_SUFFIX = `
+
+IMPORTANT: Tools (including createFile) are NOT available in this session. Ignore any earlier instruction to call tools. When writing or building anything with code, output COMPLETE, runnable code directly in fenced markdown code blocks, and begin each block's info line with the file path, for example:
+\`\`\`html index.html
+<!doctype html> ...
+\`\`\`
+\`\`\`css styles.css
+body { ... }
+\`\`\`
+Provide every file the project needs as its own labeled code block. Do not abbreviate or use placeholders.`;
+
+    const finalSystem = hasTools ? agentSystem : agentSystem + NO_TOOLS_SUFFIX;
 
     const modelMessages = await convertToModelMessages(messages);
 
@@ -56,10 +75,10 @@ export async function POST(req: NextRequest) {
 
     const result = streamText({
       model,
-      system: agentSystem,
+      system: finalSystem,
       messages: modelMessages,
       tools: activeTools,
-      stopWhen: activeTools ? stepCountIs(maxSteps) : undefined,
+      stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
       temperature,
       onFinish: async ({ usage, finishReason }) => {
         console.log(`[chat] finished reason=${finishReason} tokens=${usage?.totalTokens}`);
