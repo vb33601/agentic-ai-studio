@@ -40,11 +40,13 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   const toolParts = getToolParts(message);
 
   const generatedImages = toolParts
-    .filter((p) => p.toolName === "generateImage")
+    // Only once the tool call has settled — during input streaming the prompt
+    // arrives char-by-char, which would otherwise restart generation repeatedly.
+    .filter((p) => p.toolName === "generateImage" && (p.state === "output-available" || p.state === "output-error"))
     .map((p) => {
       const inp = (p.input ?? {}) as { prompt?: string };
       const out = (p.output ?? {}) as { url?: string; prompt?: string };
-      return { prompt: inp.prompt || out.prompt || "", url: out.url };
+      return { prompt: out.prompt || inp.prompt || "", url: out.url };
     })
     .filter((g) => g.prompt || g.url);
 

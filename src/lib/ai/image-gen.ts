@@ -43,11 +43,13 @@ interface Provider {
   run: (prompt: string, width: number, height: number, seed: number) => Promise<ImageBytes | null>;
 }
 
-/** Hugging Face Inference for an open image model (FLUX/SDXL). */
+/** Hugging Face Inference Providers (router) for an open image model. */
 async function huggingFace(model: string, prompt: string): Promise<ImageBytes | null> {
   const key = process.env.HUGGINGFACE_API_KEY;
   if (!key) return null;
-  return fetchBytes(`https://api-inference.huggingface.co/models/${model}`, GEN_TIMEOUT, {
+  // The legacy api-inference.huggingface.co host is deprecated; the router is
+  // the current endpoint and returns raw image bytes.
+  return fetchBytes(`https://router.huggingface.co/hf-inference/models/${model}`, GEN_TIMEOUT, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ inputs: prompt }),
@@ -72,7 +74,9 @@ const PROVIDERS: Provider[] = [
       return r && { ...r, provider: "huggingface:sdxl" };
     },
   },
-  // 3. Cloudflare Workers AI (open FLUX schnell). Free tier. Needs account id + token.
+  // 3. Cloudflare Workers AI (open FLUX schnell). Free tier (100k req/day).
+  //    Needs CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN. FLUX returns JSON
+  //    with a base64 image (not raw bytes), so parse that.
   {
     name: "cloudflare",
     run: async (prompt) => {
@@ -80,12 +84,21 @@ const PROVIDERS: Provider[] = [
       const key = process.env.CLOUDFLARE_API_TOKEN;
       if (!acct || !key) return null;
       const model = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
-      const r = await fetchBytes(`https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`, GEN_TIMEOUT, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      });
-      return r && { ...r, provider: "cloudflare" };
+      try {
+        const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+          signal: AbortSignal.timeout(GEN_TIMEOUT),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const b64 = data?.result?.image;
+        if (!b64) return null;
+        return { buffer: Buffer.from(b64, "base64"), contentType: "image/jpeg", provider: "cloudflare" };
+      } catch {
+        return null;
+      }
     },
   },
   // 4. Together AI (real AI; has a free FLUX schnell model). Needs a key.
@@ -98,7 +111,7 @@ const PROVIDERS: Provider[] = [
         const res = await fetch("https://api.together.xyz/v1/images/generations", {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: process.env.TOGETHER_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell-Free", prompt, width: 1024, height: 1024, n: 1 }),
+          body: JSON.stringify({ model: process.env.TOGETHER_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell", prompt, width: 1024, height: 1024, steps: 4, n: 1 }),
           signal: AbortSignal.timeout(GEN_TIMEOUT),
         });
         if (!res.ok) return null;
