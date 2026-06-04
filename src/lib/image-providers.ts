@@ -116,39 +116,45 @@ export interface ImageProvider {
   run: (prompt: string, seed: number) => Promise<string>;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export const IMAGE_PROVIDERS: ImageProvider[] = [
   {
+    // Pollinations is real AI but rate-limited to ~1 concurrent request per IP.
+    // Retry a few times (varying the seed) to catch an available window; this
+    // runs in the browser, so it uses the user's IP, not the server's.
     name: "pollinations",
     label: "AI generated",
     real: true,
-    run: (prompt, seed) =>
-      urlToDataUrl(`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${seed}`),
-  },
-  {
-    name: "lexica",
-    label: "AI generated",
-    real: true,
-    run: async (prompt) => {
-      const res = await fetch(`https://lexica.art/api/v1/search?q=${encodeURIComponent(prompt)}`, {
-        signal: AbortSignal.timeout(15000),
-      });
-      const data = await res.json();
-      const src = data?.images?.[0]?.src ?? data?.images?.[0]?.srcSmall;
-      if (!src) throw new Error("No Lexica result");
-      return urlToDataUrl(src);
+    run: async (prompt, seed) => {
+      for (let i = 0; i < 4; i++) {
+        try {
+          return await urlToDataUrl(
+            `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${seed + i}`,
+            20000
+          );
+        } catch {
+          await sleep(3500);
+        }
+      }
+      throw new Error("Pollinations rate-limited");
     },
   },
   {
+    // Keyword-relevant photo. Returned as a direct URL (the browser loads it
+    // no-cors) because fetch→dataURL is CORS-blocked on its redirect.
     name: "loremflickr",
-    label: "Approximate photo",
+    label: "Related photo",
     real: false,
-    run: (prompt, seed) => urlToDataUrl(`https://loremflickr.com/1024/1024/${encodeURIComponent(keywords(prompt))}?lock=${seed}`),
+    run: async (prompt, seed) =>
+      `https://loremflickr.com/1024/1024/${encodeURIComponent(keywords(prompt))}?lock=${seed}`,
   },
   {
+    // Last-resort placeholder (always works).
     name: "picsum",
     label: "Placeholder",
     real: false,
-    run: (_prompt, seed) => urlToDataUrl(`https://picsum.photos/seed/${seed}/1024/1024`),
+    run: async (_prompt, seed) => `https://picsum.photos/seed/${seed}/1024/1024`,
   },
 ];
 
