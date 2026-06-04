@@ -51,14 +51,21 @@ export async function POST(req: NextRequest) {
       : undefined;
     const hasTools = !!activeTools && Object.keys(activeTools).length > 0;
 
-    // When no tools are available (tools toggled off, or a model that doesn't
-    // support them), the agent prompts that say "never output markdown, use
-    // createFile" would otherwise leave the model unable to produce any code.
-    // Override that: have it emit complete, filename-labeled code blocks, which
-    // the client extracts into the workspace.
-    const NO_TOOLS_SUFFIX = `
+    // Code must reach the workspace whether or not the model can call tools.
+    // Some models (reasoning models like o1 / DeepSeek-R1) ignore tools, and
+    // tools can be toggled off entirely. So we always allow a markdown fallback:
+    // emit each file as a fenced code block whose info line starts with the path.
+    const FILE_OUTPUT_SUFFIX = hasTools
+      ? `
 
-IMPORTANT: Tools (including createFile) are NOT available in this session. Ignore any earlier instruction to call tools. When writing or building anything with code, output COMPLETE, runnable code directly in fenced markdown code blocks, and begin each block's info line with the file path, for example:
+If for any reason you do not or cannot call the createFile tool for a file, output that file as a fenced markdown code block whose info line begins with the file path, e.g.:
+\`\`\`html index.html
+<!doctype html> ...
+\`\`\`
+Always provide complete, runnable code — never placeholders.`
+      : `
+
+IMPORTANT: Tools (including createFile) are NOT available in this session. Ignore any earlier instruction to call tools. Output COMPLETE, runnable code directly in fenced markdown code blocks, beginning each block's info line with the file path, e.g.:
 \`\`\`html index.html
 <!doctype html> ...
 \`\`\`
@@ -67,7 +74,7 @@ body { ... }
 \`\`\`
 Provide every file the project needs as its own labeled code block. Do not abbreviate or use placeholders.`;
 
-    const finalSystem = hasTools ? agentSystem : agentSystem + NO_TOOLS_SUFFIX;
+    const finalSystem = agentSystem + FILE_OUTPUT_SUFFIX;
 
     const modelMessages = await convertToModelMessages(messages);
 

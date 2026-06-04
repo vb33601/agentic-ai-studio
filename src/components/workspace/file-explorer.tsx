@@ -3,7 +3,23 @@
 import { File, Folder, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useWorkspaceStore } from "@/store/workspace";
+import { useWorkspaceStore, WorkspaceFile } from "@/store/workspace";
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke later so the download isn't cancelled mid-flight.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function downloadOne(file: WorkspaceFile) {
+  triggerDownload(new Blob([file.content], { type: "text/plain;charset=utf-8" }), file.name);
+}
 
 const LANG_COLORS: Record<string, string> = {
   typescript: "text-blue-400",
@@ -16,8 +32,8 @@ const LANG_COLORS: Record<string, string> = {
   sql: "text-cyan-400",
 };
 
-function groupFilesByDirectory(files: { id: string; name: string; path: string; language: string; isDirty: boolean }[]) {
-  const groups: Record<string, typeof files> = {};
+function groupFilesByDirectory(files: WorkspaceFile[]) {
+  const groups: Record<string, WorkspaceFile[]> = {};
   files.forEach((f) => {
     const parts = f.path.split("/");
     const dir = parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
@@ -30,16 +46,16 @@ function groupFilesByDirectory(files: { id: string; name: string; path: string; 
 export function FileExplorer() {
   const { files, activeFileId, setActiveFileId, removeFile } = useWorkspaceStore();
 
-  const downloadAll = () => {
-    files.forEach((file) => {
-      const blob = new Blob([file.content], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = file.name;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+  // Bundle every file into one .zip (looping individual downloads triggers
+  // browser pop-up blocking and only the first/last file actually downloads).
+  const downloadAll = async () => {
+    if (files.length === 0) return;
+    if (files.length === 1) return downloadOne(files[0]);
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    files.forEach((f) => zip.file(f.path, f.content));
+    const blob = await zip.generateAsync({ type: "blob" });
+    triggerDownload(blob, "project.zip");
   };
 
   if (files.length === 0) {
@@ -87,14 +103,26 @@ export function FileExplorer() {
                     <span className="text-xs font-mono truncate">{file.name}</span>
                     {file.isDirty && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 opacity-0 group-hover:opacity-100 shrink-0"
-                    onClick={(e) => { e.stopPropagation(); removeFile(file.id); }}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                      title="Download file"
+                      onClick={(e) => { e.stopPropagation(); downloadOne(file); }}
+                    >
+                      <Download className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                      title="Delete file"
+                      onClick={(e) => { e.stopPropagation(); removeFile(file.id); }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>

@@ -7,14 +7,24 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useChatStore } from "@/store/chat";
+import { useWorkspaceStore } from "@/store/workspace";
 import { cn } from "@/lib/utils";
 import { apiListChats, apiCreateChat, apiDeleteChat } from "@/lib/api/chats";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 
 export function Sidebar() {
   const { sessions, activeChatId, setActiveChatId, setSessions, addSession, removeSession, selectedModel } =
     useChatStore();
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
+
+  // Selecting a chat should also bring the chat view forward.
+  const openChat = (id: string) => {
+    setActiveChatId(id);
+    setActiveTab("chat");
+  };
   const [search, setSearch] = useState("");
   const [activeSection, setActiveSection] = useState<"chats" | "projects">("chats");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Hydrate the session list from the database on mount.
   useEffect(() => {
@@ -45,7 +55,7 @@ export function Sidebar() {
         createdAt: chat.createdAt,
         messages: 0,
       });
-      setActiveChatId(chat.id);
+      openChat(chat.id);
     } catch {
       // ignore — DB unreachable; a chat will be created on first send instead
     }
@@ -61,6 +71,8 @@ export function Sidebar() {
   );
 
   return (
+    <>
+    <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     <div className="w-64 flex flex-col h-full border-r bg-muted/20 shrink-0">
       <div className="flex items-center gap-2 px-4 py-3 border-b">
         <div className="flex items-center gap-2 flex-1">
@@ -111,7 +123,7 @@ export function Sidebar() {
             filtered.map((session) => (
               <div
                 key={session.id}
-                onClick={() => setActiveChatId(session.id)}
+                onClick={() => openChat(session.id)}
                 className={cn(
                   "group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors",
                   session.id === activeChatId
@@ -143,10 +155,11 @@ export function Sidebar() {
         <QuickAccessButton icon={Cpu} label="Code Runner" badge="Node.js" />
         <QuickAccessButton icon={Zap} label="Image Gen" badge="Pollinations" />
         <div className="pt-1 border-t mt-2">
-          <QuickAccessButton icon={Settings} label="Settings" />
+          <QuickAccessButton icon={Settings} label="Settings" onClick={() => setSettingsOpen(true)} />
         </div>
       </div>
     </div>
+    </>
   );
 }
 
@@ -154,13 +167,18 @@ function QuickAccessButton({
   icon: Icon,
   label,
   badge,
+  onClick,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   badge?: string;
+  onClick?: () => void;
 }) {
   return (
-    <button className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+    >
       <Icon className="h-3.5 w-3.5" />
       <span>{label}</span>
       {badge && (

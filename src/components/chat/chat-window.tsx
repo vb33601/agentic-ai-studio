@@ -32,6 +32,8 @@ export function ChatWindow() {
   // load effect doesn't clobber an in-progress conversation. Starts null so a
   // persisted activeChatId is actually loaded on first mount (after reload).
   const loadedIdRef = useRef<string | null>(null);
+  // Mirror of the live messages so onFinish can build the full conversation.
+  const messagesRef = useRef<UIMessage[]>([]);
 
   // --- file extraction helpers ---
 
@@ -66,6 +68,17 @@ export function ChatWindow() {
 
     let filesAdded = false;
     for (const part of toolParts) {
+      // Generated images: save the URL into the workspace as an image file.
+      if (part.toolName === "generateImage") {
+        const img = (part.output ?? part.input) as { url?: string; prompt?: string } | undefined;
+        if (img?.url) {
+          const slug = (img.prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
+          const path = `images/${slug}.png`;
+          addFile({ id: nanoid(), name: `${slug}.png`, path, content: img.url, language: "image", isDirty: false });
+          filesAdded = true;
+        }
+        continue;
+      }
       if (part.toolName !== "createFile") continue;
       // Prefer the tool output, but fall back to the input: persisted messages
       // can carry the file data on `input` with a non-final state, and the
@@ -107,6 +120,14 @@ export function ChatWindow() {
     }),
     onFinish: ({ message }: { message: UIMessage }) => {
       extractFilesFromMessage(message);
+      // Save the FINALIZED message (tool parts are output-available with their
+      // outputs here, unlike the streaming snapshot the render loop sees).
+      const id = sessionIdRef.current;
+      if (id) {
+        const all = [...messagesRef.current.filter((m) => m.id !== message.id), message];
+        apiSaveMessages(id, all).catch(() => {});
+        updateSession(id, { messages: all.length });
+      }
     },
   });
 
@@ -133,14 +154,10 @@ export function ChatWindow() {
       .catch(() => {});
   }, [activeChatId, setMessages]);
 
-  // Persist conversation history to the DB once streaming settles.
+  // Keep a live mirror of messages for onFinish to persist the full thread.
   useEffect(() => {
-    if (isLoading) return;
-    const id = sessionIdRef.current;
-    if (!id || messages.length === 0) return;
-    apiSaveMessages(id, messages).catch(() => {});
-    updateSession(id, { messages: messages.length });
-  }, [isLoading, messages, updateSession]);
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
