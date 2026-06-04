@@ -64,13 +64,15 @@ export const useChatStore = create<ChatStore>()(
     }),
     {
       name: "chat-store",
-      // Persist only UI preferences; chats/messages live in the database.
+      // Persist UI preferences + the open chat id (chats/messages live in the
+      // database and are re-fetched on load).
       partialize: (s) => ({
         selectedModel: s.selectedModel,
         agentType: s.agentType,
         enableTools: s.enableTools,
         temperature: s.temperature,
         sidebarOpen: s.sidebarOpen,
+        activeChatId: s.activeChatId,
       }),
     }
   )

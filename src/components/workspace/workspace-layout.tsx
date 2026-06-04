@@ -51,7 +51,12 @@ export function WorkspaceLayout() {
         </div>
 
         <div className="flex-1 overflow-hidden">
-          {activeTab === "chat" && <ChatWindow />}
+          {/* ChatWindow stays mounted (just hidden) so streaming and autosave
+              are never interrupted by switching tabs — e.g. the auto-jump to
+              the Files tab after a generation must not unmount the chat. */}
+          <div className={cn("h-full", activeTab !== "chat" && "hidden")}>
+            <ChatWindow />
+          </div>
           {activeTab === "code" && <CodeEditor />}
           {activeTab === "files" && <FileExplorer />}
           {activeTab === "preview" && <PreviewPanel />}

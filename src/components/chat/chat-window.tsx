@@ -29,8 +29,9 @@ export function ChatWindow() {
   const [attachments, setAttachments] = useState<File[]>([]);
   const sessionIdRef = useRef<string | null>(activeChatId);
   // Tracks which session's messages are currently loaded into useChat so the
-  // load effect doesn't clobber an in-progress conversation.
-  const loadedIdRef = useRef<string | null>(activeChatId);
+  // load effect doesn't clobber an in-progress conversation. Starts null so a
+  // persisted activeChatId is actually loaded on first mount (after reload).
+  const loadedIdRef = useRef<string | null>(null);
 
   // --- file extraction helpers ---
 
@@ -65,19 +66,23 @@ export function ChatWindow() {
 
     let filesAdded = false;
     for (const part of toolParts) {
-      if (part.toolName === "createFile" && part.state === "output-available" && part.output) {
-        const out = part.output as { path?: string; content?: string; language?: string };
-        if (out.path && out.content !== undefined) {
-          addFile({
-            id: nanoid(),
-            name: out.path.split("/").pop() || out.path,
-            path: out.path,
-            content: out.content,
-            language: out.language || getLanguageFromPath(out.path) || "text",
-            isDirty: false,
-          });
-          filesAdded = true;
-        }
+      if (part.toolName !== "createFile") continue;
+      // Prefer the tool output, but fall back to the input: persisted messages
+      // can carry the file data on `input` with a non-final state, and the
+      // input already holds the full {path, content}.
+      const data = (part.output ?? part.input) as
+        | { path?: string; content?: string; language?: string }
+        | undefined;
+      if (data?.path && data.content !== undefined && data.content !== "") {
+        addFile({
+          id: nanoid(),
+          name: data.path.split("/").pop() || data.path,
+          path: data.path,
+          content: data.content,
+          language: data.language || getLanguageFromPath(data.path) || "text",
+          isDirty: false,
+        });
+        filesAdded = true;
       }
     }
     if (filesAdded) setActiveTab("files");
@@ -114,6 +119,9 @@ export function ChatWindow() {
     if (activeChatId === loadedIdRef.current) return;
     loadedIdRef.current = activeChatId;
     sessionIdRef.current = activeChatId;
+    // Reset the workspace; files repopulate from the loaded chat's messages
+    // via the re-scan effect below.
+    useWorkspaceStore.getState().setFiles([]);
     if (!activeChatId) {
       setMessages([]);
       return;
@@ -180,6 +188,8 @@ export function ChatWindow() {
       sessionIdRef.current = id;
       // Mark as loaded so the activeChatId effect doesn't reset the new chat.
       loadedIdRef.current = id;
+      // Fresh chat starts with a clean workspace.
+      useWorkspaceStore.getState().setFiles([]);
     }
 
     // Split attachments: images go as multimodal parts, documents get parsed
