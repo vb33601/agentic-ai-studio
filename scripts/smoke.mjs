@@ -23,4 +23,6 @@ const real = errors.filter((e) => !/Manifest|favicon|analytics/i.test(e));
 console.log("console errors:", real.length, real.slice(0, 5));
 
 await browser.close();
-process.exit(isolated && real.length === 0 ? 0 : 1);
+// Cross-origin isolation is intentionally OFF (so Puter login popups work);
+// only require the app to mount cleanly with no console errors.
+process.exit(real.length === 0 && /AI Platform/.test(bodyText) ? 0 : 1);

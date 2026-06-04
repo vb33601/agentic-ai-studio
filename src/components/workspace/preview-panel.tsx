@@ -84,7 +84,7 @@ export function PreviewPanel() {
 
   const run = useCallback(async () => {
     if (!webContainerSupported()) {
-      setError("Live run needs a cross-origin-isolated context. Reload the page and try again (Chrome/Edge recommended).");
+      setError("Live Node/dev-server preview is disabled in this build (to keep AI image login working). Static HTML/CSS/JS sites still preview here automatically.");
       setRunStatus("error");
       return;
     }

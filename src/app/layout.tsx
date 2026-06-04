@@ -19,7 +19,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="h-full overflow-hidden bg-zinc-950 text-zinc-50 antialiased">
-        {/* Puter.js — free, keyless AI image generation (puter.ai.txt2img). */}
+        {/* Puter.js — free AI image generation provider (one of several). */}
         <Script src="https://js.puter.com/v2/" strategy="afterInteractive" />
         {children}
       </body>
