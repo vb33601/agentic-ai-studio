@@ -1,189 +1,180 @@
 /**
- * Multi-provider image generation with graceful fallback.
+ * Server-side image generation with a multi-provider fallback chain.
  *
- * Tries each provider in order and returns the first that yields a usable
- * image. Real text-to-image providers (some gated behind optional API keys)
- * come first; keyless photo sources act as always-available fallbacks so the
- * user never ends up with a broken image.
+ * This runs ON THE SERVER (called from /api/image), which means:
+ *   - No CORS: the browser only talks to our same-origin /api/image.
+ *   - API keys stay on the server, never exposed to the client.
+ *   - Provider IP limits hit the server, not the user — so key-based providers
+ *     (which aren't IP-limited) are preferred for reliability.
+ *
+ * Order: real-AI providers that use a key (reliable) first, then keyless real
+ * AI (Pollinations, best-effort), then keyword-photo fallbacks so the user
+ * always gets an image. Results are returned as raw bytes.
  */
 
-export interface ImageResult {
-  url: string;
+export interface ImageBytes {
+  buffer: Buffer;
+  contentType: string;
   provider: string;
 }
 
-const URL_TIMEOUT = 12000;
-const GEN_TIMEOUT = 60000;
+const GEN_TIMEOUT = 120_000;
+const URL_TIMEOUT = 25_000;
 
-/** Confirm a URL actually returns an image; return the (post-redirect) URL. */
-async function verifyImageUrl(url: string): Promise<string | null> {
+async function fetchBytes(url: string, timeout = URL_TIMEOUT, init?: RequestInit): Promise<ImageBytes | null> {
   try {
-    const res = await fetch(url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(URL_TIMEOUT),
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
+    const res = await fetch(url, { ...init, redirect: "follow", signal: AbortSignal.timeout(timeout), headers: { "User-Agent": "Mozilla/5.0", ...(init?.headers || {}) } });
     const ct = res.headers.get("content-type") || "";
-    const good = res.ok && ct.startsWith("image/");
-    try {
-      await res.body?.cancel();
-    } catch {
-      /* ignore */
-    }
-    return good ? res.url || url : null;
+    if (!res.ok || !ct.startsWith("image/")) return null;
+    return { buffer: Buffer.from(await res.arrayBuffer()), contentType: ct, provider: "" };
   } catch {
     return null;
   }
 }
 
-async function responseToDataUrl(res: Response): Promise<string> {
-  const buf = Buffer.from(await res.arrayBuffer());
-  const ct = res.headers.get("content-type") || "image/png";
-  return `data:${ct};base64,${buf.toString("base64")}`;
-}
-
-/** Reduce a prompt to a few keywords for keyword-based photo sources. */
 function keywords(prompt: string): string {
-  const kw = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2)
-    .slice(0, 5)
-    .join(",");
-  return kw || "abstract";
+  return (
+    prompt.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2).slice(0, 5).join(",") || "abstract"
+  );
 }
 
 interface Provider {
   name: string;
-  run: (prompt: string, width: number, height: number) => Promise<string | null>;
+  run: (prompt: string, width: number, height: number, seed: number) => Promise<ImageBytes | null>;
+}
+
+/** Hugging Face Inference for an open image model (FLUX/SDXL). */
+async function huggingFace(model: string, prompt: string): Promise<ImageBytes | null> {
+  const key = process.env.HUGGINGFACE_API_KEY;
+  if (!key) return null;
+  return fetchBytes(`https://api-inference.huggingface.co/models/${model}`, GEN_TIMEOUT, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ inputs: prompt }),
+  });
 }
 
 const PROVIDERS: Provider[] = [
-  // 1. Pollinations FLUX (keyless AI) — best when not rate-limited.
-  {
-    name: "pollinations-flux",
-    run: (p, w, h) =>
-      verifyImageUrl(`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?width=${w}&height=${h}&nologo=true&model=flux`),
-  },
-  // 2. OpenAI DALL·E 3 (needs OPENAI_API_KEY).
-  {
-    name: "openai-dalle3",
-    run: async (p) => {
-      const key = process.env.OPENAI_API_KEY;
-      if (!key) return null;
-      try {
-        const r = await fetch("https://api.openai.com/v1/images/generations", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "dall-e-3", prompt: p, n: 1, size: "1024x1024" }),
-          signal: AbortSignal.timeout(GEN_TIMEOUT),
-        });
-        if (!r.ok) return null;
-        const d = await r.json();
-        return d?.data?.[0]?.url ?? null;
-      } catch {
-        return null;
-      }
-    },
-  },
-  // 3. Hugging Face FLUX.1-schnell (needs HUGGINGFACE_API_KEY).
+  // 1-2. Hugging Face — open models (FLUX.1-schnell, SDXL). Free token, no IP
+  //      limit; the most reliable real-AI path. Get a token (no card) at
+  //      https://huggingface.co/settings/tokens and set HUGGINGFACE_API_KEY.
   {
     name: "huggingface-flux",
-    run: async (p) => {
-      const key = process.env.HUGGINGFACE_API_KEY;
+    run: async (prompt) => {
+      const r = await huggingFace(process.env.HUGGINGFACE_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell", prompt);
+      return r && { ...r, provider: "huggingface:flux" };
+    },
+  },
+  {
+    name: "huggingface-sdxl",
+    run: async (prompt) => {
+      const r = await huggingFace("stabilityai/stable-diffusion-xl-base-1.0", prompt);
+      return r && { ...r, provider: "huggingface:sdxl" };
+    },
+  },
+  // 3. Cloudflare Workers AI (open FLUX schnell). Free tier. Needs account id + token.
+  {
+    name: "cloudflare",
+    run: async (prompt) => {
+      const acct = process.env.CLOUDFLARE_ACCOUNT_ID;
+      const key = process.env.CLOUDFLARE_API_TOKEN;
+      if (!acct || !key) return null;
+      const model = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
+      const r = await fetchBytes(`https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`, GEN_TIMEOUT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      return r && { ...r, provider: "cloudflare" };
+    },
+  },
+  // 4. Together AI (real AI; has a free FLUX schnell model). Needs a key.
+  {
+    name: "together",
+    run: async (prompt) => {
+      const key = process.env.TOGETHER_API_KEY;
       if (!key) return null;
       try {
-        const r = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
+        const res = await fetch("https://api.together.xyz/v1/images/generations", {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ inputs: p }),
+          body: JSON.stringify({ model: process.env.TOGETHER_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell-Free", prompt, width: 1024, height: 1024, n: 1 }),
           signal: AbortSignal.timeout(GEN_TIMEOUT),
         });
-        if (!r.ok || !(r.headers.get("content-type") || "").startsWith("image/")) return null;
-        return await responseToDataUrl(r);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const item = data?.data?.[0];
+        if (item?.b64_json) return { buffer: Buffer.from(item.b64_json, "base64"), contentType: "image/png", provider: "together" };
+        if (item?.url) {
+          const r = await fetchBytes(item.url, GEN_TIMEOUT);
+          return r && { ...r, provider: "together" };
+        }
+        return null;
       } catch {
         return null;
       }
     },
   },
-  // 4. Stability AI SD3/Core (needs STABILITY_API_KEY).
+  // 5-6. Pollinations — the only keyless open-source AI (Flux/Turbo). Best
+  //      effort: rate-limited per IP, so it may 402 and fall through.
   {
-    name: "stability-core",
-    run: async (p) => {
-      const key = process.env.STABILITY_API_KEY;
-      if (!key) return null;
-      try {
-        const form = new FormData();
-        form.append("prompt", p);
-        form.append("output_format", "png");
-        const r = await fetch("https://api.stability.ai/v2beta/stable-image/generate/core", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${key}`, Accept: "image/*" },
-          body: form,
-          signal: AbortSignal.timeout(GEN_TIMEOUT),
-        });
-        if (!r.ok || !(r.headers.get("content-type") || "").startsWith("image/")) return null;
-        return await responseToDataUrl(r);
-      } catch {
-        return null;
-      }
+    name: "pollinations-flux",
+    run: async (prompt, w, h, seed) => {
+      const r = await fetchBytes(
+        `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&nologo=true&seed=${seed}&model=flux&referrer=ai-platform`,
+        45_000
+      );
+      return r && { ...r, provider: "pollinations:flux" };
     },
   },
-  // 5. Pollinations default model (keyless AI).
   {
-    name: "pollinations",
-    run: (p, w, h) =>
-      verifyImageUrl(`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?width=${w}&height=${h}&nologo=true`),
-  },
-  // 6. Lexica (keyless) — Stable Diffusion gallery search.
-  {
-    name: "lexica",
-    run: async (p) => {
-      try {
-        const r = await fetch(`https://lexica.art/api/v1/search?q=${encodeURIComponent(p)}`, {
-          signal: AbortSignal.timeout(URL_TIMEOUT),
-          headers: { "User-Agent": "Mozilla/5.0" },
-        });
-        if (!r.ok) return null;
-        const d = await r.json();
-        const src = d?.images?.[0]?.src ?? d?.images?.[0]?.srcSmall;
-        return src ? verifyImageUrl(src) : null;
-      } catch {
-        return null;
-      }
+    name: "pollinations-turbo",
+    run: async (prompt, w, h, seed) => {
+      const r = await fetchBytes(
+        `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&nologo=true&seed=${seed}&model=turbo&referrer=ai-platform`,
+        45_000
+      );
+      return r && { ...r, provider: "pollinations:turbo" };
     },
   },
-  // 7. LoremFlickr (keyless) — real photos matching the keywords.
+  // 7. LoremFlickr (keyless; keyword-relevant photo — reliable server-side).
   {
     name: "loremflickr",
-    run: (p, w, h) => verifyImageUrl(`https://loremflickr.com/${w}/${h}/${encodeURIComponent(keywords(p))}`),
+    run: async (prompt, w, h, seed) => {
+      const r = await fetchBytes(`https://loremflickr.com/${w}/${h}/${encodeURIComponent(keywords(prompt))}?lock=${seed}`);
+      return r && { ...r, provider: "loremflickr" };
+    },
   },
-  // 8. Unsplash source (keyless) — curated photos.
-  {
-    name: "unsplash",
-    run: (p, w, h) => verifyImageUrl(`https://source.unsplash.com/${w}x${h}/?${encodeURIComponent(keywords(p))}`),
-  },
-  // 9. Picsum (keyless) — deterministic placeholder; final guarantee.
+  // 8. Picsum (keyless; deterministic placeholder — final guarantee).
   {
     name: "picsum",
-    run: (p, w, h) =>
-      verifyImageUrl(`https://picsum.photos/seed/${encodeURIComponent(p).slice(0, 24) || "seed"}/${w}/${h}`),
+    run: async (_prompt, w, h, seed) => {
+      const r = await fetchBytes(`https://picsum.photos/seed/${seed}/${w}/${h}`);
+      return r && { ...r, provider: "picsum" };
+    },
   },
 ];
 
-export async function generateImageWithFallback(
-  prompt: string,
-  width = 1024,
-  height = 1024
-): Promise<ImageResult> {
+// Small in-memory cache so reloads/identical prompts don't re-bill providers.
+const cache = new Map<string, ImageBytes>();
+const CACHE_MAX = 40;
+
+export async function generateImage(prompt: string, width = 1024, height = 1024, seed = 0): Promise<ImageBytes | null> {
+  const key = `${seed}:${width}x${height}:${prompt}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
   for (const provider of PROVIDERS) {
     try {
-      const url = await provider.run(prompt, width, height);
-      if (url) return { url, provider: provider.name };
+      const result = await provider.run(prompt, width, height, seed);
+      if (result) {
+        if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
+        cache.set(key, result);
+        return result;
+      }
     } catch {
-      /* try the next provider */
+      /* next provider */
     }
   }
-  throw new Error("All image providers failed");
+  return null;
 }

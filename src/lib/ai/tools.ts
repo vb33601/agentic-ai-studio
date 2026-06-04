@@ -1,6 +1,5 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { generateImageWithFallback } from "./image-gen";
 
 async function searchWithTavily(query: string, maxResults: number) {
   const res = await fetch("https://api.tavily.com/search", {
@@ -124,13 +123,10 @@ export const generateImageTool = tool({
     width: z.number().optional().default(1024).describe("Image width in pixels"),
     height: z.number().optional().default(1024).describe("Image height in pixels"),
   }),
+  // The actual image is produced by the client via the same-origin /api/image
+  // proxy (using `prompt`), so the tool just acknowledges the request quickly.
   execute: async ({ prompt, width = 1024, height = 1024 }) => {
-    try {
-      const { url, provider } = await generateImageWithFallback(prompt, width, height);
-      return { url, prompt, width, height, provider };
-    } catch (e) {
-      return { error: String(e), prompt };
-    }
+    return { prompt, width, height };
   },
 });
 

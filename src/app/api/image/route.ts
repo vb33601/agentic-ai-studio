@@ -1,52 +1,40 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { generateImage } from "@/lib/ai/image-gen";
 
-// Map DALL-E size strings to width/height for the Pollinations fallback.
-function parseSize(size: string): { width: number; height: number } {
-  const [w, h] = size.split("x").map((n) => parseInt(n, 10));
-  return {
-    width: Number.isFinite(w) ? w : 1024,
-    height: Number.isFinite(h) ? h : 1024,
-  };
-}
+export const maxDuration = 120;
 
-export async function POST(req: NextRequest) {
+// Same-origin image proxy: the browser loads /api/image?prompt=... so there is
+// never any CORS, and provider API keys stay server-side. Returns image bytes.
+export async function GET(req: NextRequest) {
+  const sp = req.nextUrl.searchParams;
+  const prompt = sp.get("prompt")?.trim();
+  if (!prompt) return new Response("prompt required", { status: 400 });
+
+  const seed = parseInt(sp.get("seed") || "0", 10) || 0;
+  const width = Math.min(parseInt(sp.get("w") || "1024", 10) || 1024, 1024);
+  const height = Math.min(parseInt(sp.get("h") || "1024", 10) || 1024, 1024);
+
   try {
-    const { prompt, size = "1024x1024", quality = "standard" } = await req.json();
-
-    if (!prompt || typeof prompt !== "string") {
-      return NextResponse.json({ error: "A text prompt is required" }, { status: 400 });
-    }
-
-    const apiKey = process.env.OPENAI_API_KEY;
-
-    // Use DALL-E 3 when an OpenAI key is configured...
-    if (apiKey) {
-      const res = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ model: "dall-e-3", prompt, size, quality, n: 1 }),
+    const result = await generateImage(prompt, width, height, seed);
+    if (!result) {
+      return new Response(JSON.stringify({ error: "All image providers failed" }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        return NextResponse.json(
-          { error: data.error?.message || "Image generation failed" },
-          { status: res.status }
-        );
-      }
-      return NextResponse.json({ url: data.data?.[0]?.url, prompt, provider: "dall-e-3" });
     }
-
-    // ...otherwise fall back to the keyless Pollinations service.
-    const { width, height } = parseSize(size);
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-      prompt
-    )}?width=${width}&height=${height}&nologo=true&enhance=true`;
-    return NextResponse.json({ url, prompt, provider: "pollinations" });
+    return new Response(new Uint8Array(result.buffer), {
+      status: 200,
+      headers: {
+        "Content-Type": result.contentType,
+        "Cache-Control": "public, max-age=86400, immutable",
+        "X-Image-Provider": result.provider,
+      },
+    });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("[api/image]", error);
+    return new Response(JSON.stringify({ error: String(error) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }

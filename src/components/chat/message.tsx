@@ -111,7 +111,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
           <div className="flex flex-col gap-2">
             {generatedImages.map((img, i) =>
               img.prompt ? (
-                <GeneratedImage key={i} prompt={img.prompt} fallbackUrl={img.url} />
+                <GeneratedImage key={i} prompt={img.prompt} />
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img key={i} src={img.url} alt="generated image" className="rounded-2xl max-w-sm object-contain border bg-muted" />
