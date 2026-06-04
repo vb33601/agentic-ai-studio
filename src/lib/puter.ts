@@ -49,26 +49,29 @@ async function toDataUrl(src: string): Promise<string> {
  * Generate an image with Puter. Returns a stable data/URL string, or throws if
  * Puter is unavailable or generation fails (caller can then use a fallback).
  */
-export async function puterGenerateImage(prompt: string, model?: string): Promise<string> {
+export async function puterGenerateImage(prompt: string, model?: string, force = false): Promise<string> {
   const key = cacheKey(prompt, model);
-  if (memCache.has(key)) return memCache.get(key)!;
-  try {
-    const ls = localStorage.getItem(key);
-    if (ls) {
-      memCache.set(key, ls);
-      return ls;
+  if (!force) {
+    if (memCache.has(key)) return memCache.get(key)!;
+    try {
+      const ls = localStorage.getItem(key);
+      if (ls) {
+        memCache.set(key, ls);
+        return ls;
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
 
   const ai = await waitForPuter();
   if (!ai) throw new Error("Puter.js not available");
 
-  // Race the generation against a timeout so a stalled call falls back.
+  // Race against a generous timeout — real AI image generation can take 30-60s,
+  // so don't give up early (that caused fallback to an irrelevant stock photo).
   const result = await Promise.race([
     ai.txt2img(prompt, model ? { model } : undefined),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Puter timed out")), 22000)),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Puter timed out")), 90000)),
   ]);
   const rawSrc = typeof result === "string" ? result : result?.src || "";
   if (!rawSrc) throw new Error("Puter returned no image");

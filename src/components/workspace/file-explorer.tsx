@@ -17,7 +17,33 @@ function triggerDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-function downloadOne(file: WorkspaceFile) {
+function isImageFile(file: WorkspaceFile): boolean {
+  return file.language === "image" || /^(https?:|data:image)/.test(file.content);
+}
+
+// Image files store a URL/data-URL as content — fetch the real bytes so the
+// downloaded file is an actual viewable image, not a text file of the URL.
+async function imageBlob(file: WorkspaceFile): Promise<Blob> {
+  const res = await fetch(file.content);
+  return res.blob();
+}
+
+function withImageExt(name: string, mime: string): string {
+  if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name)) return name;
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  return `${name.replace(/\.[^.]*$/, "")}.${ext}`;
+}
+
+async function downloadOne(file: WorkspaceFile) {
+  if (isImageFile(file)) {
+    try {
+      const blob = await imageBlob(file);
+      triggerDownload(blob, withImageExt(file.name, blob.type));
+      return;
+    } catch {
+      /* fall back to text download */
+    }
+  }
   triggerDownload(new Blob([file.content], { type: "text/plain;charset=utf-8" }), file.name);
 }
 
@@ -53,7 +79,19 @@ export function FileExplorer() {
     if (files.length === 1) return downloadOne(files[0]);
     const JSZip = (await import("jszip")).default;
     const zip = new JSZip();
-    files.forEach((f) => zip.file(f.path, f.content));
+    await Promise.all(
+      files.map(async (f) => {
+        if (isImageFile(f)) {
+          try {
+            zip.file(f.path, await imageBlob(f)); // real image bytes
+            return;
+          } catch {
+            /* fall back to storing the reference */
+          }
+        }
+        zip.file(f.path, f.content);
+      })
+    );
     const blob = await zip.generateAsync({ type: "blob" });
     triggerDownload(blob, "project.zip");
   };
