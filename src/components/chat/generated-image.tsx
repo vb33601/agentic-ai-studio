@@ -30,6 +30,18 @@ function readCache(prompt: string): string | null {
   }
 }
 
+// Once the user clicks "Puter AI", remember it and use Puter automatically for
+// subsequent images (they're logged in, so no modal reappears).
+const PUTER_PREF = "aip-use-puter";
+function prefersPuter(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(PUTER_PREF) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallbackUrl?: string }) {
   // Initialize from cache so a previously generated image shows instantly with
   // no effect setState (and no regeneration / repeated logins on reload).
@@ -43,14 +55,39 @@ export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallba
     setAttempt((a) => a + 1);
   };
 
+  const saveImage = (url: string) => {
+    const slug = (prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
+    addFile({ id: nanoid(), name: `${slug}.png`, path: `images/${slug}.png`, content: url, language: "image", isDirty: false });
+    try {
+      localStorage.setItem(`aip-img:${prompt}`, url);
+    } catch {
+      /* quota */
+    }
+  };
+
   // Opt-in: generate via Puter (may show its login/consent modal). Only runs on
-  // an explicit click so it never blocks the app automatically.
+  // an explicit click. Remembers the choice so future images use Puter too.
   const tryPuter = async () => {
+    try {
+      localStorage.setItem(PUTER_PREF, "1");
+    } catch {
+      /* ignore */
+    }
     setStatus("loading");
     try {
       const url = await generateWithPuter(prompt);
       setSrc(url);
       setStatus("ready");
+      saveImage(url);
+    } catch {
+      setStatus(src ? "fallback" : "error");
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const save = (url: string) => {
       const slug = (prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
       addFile({ id: nanoid(), name: `${slug}.png`, path: `images/${slug}.png`, content: url, language: "image", isDirty: false });
       try {
@@ -58,19 +95,6 @@ export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallba
       } catch {
         /* quota */
       }
-    } catch {
-      // Restore the previous image / fallback state.
-      setStatus(src ? "fallback" : "error");
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const cacheKey = `aip-img:${prompt}`;
-
-    const save = (url: string) => {
-      const slug = (prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
-      addFile({ id: nanoid(), name: `${slug}.png`, path: `images/${slug}.png`, content: url, language: "image", isDirty: false });
     };
 
     // Cache hit (not regenerating): src is already set via the initializer.
@@ -81,17 +105,27 @@ export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallba
     }
 
     (async () => {
+      // If the user opted into Puter, use it first (real AI, no modal once
+      // logged in). Falls through to the keyless chain if it fails.
+      if (prefersPuter()) {
+        try {
+          const url = await generateWithPuter(prompt);
+          if (cancelled) return;
+          setSrc(url);
+          setStatus("ready");
+          save(url);
+          return;
+        } catch {
+          /* fall through */
+        }
+      }
+
       try {
         const { url, real } = await generateImageClient(prompt, hashSeed(prompt) + attempt);
         if (cancelled) return;
         setSrc(url);
         setStatus(real ? "ready" : "fallback");
         save(url);
-        try {
-          localStorage.setItem(cacheKey, url);
-        } catch {
-          /* quota — keep in memory only */
-        }
       } catch {
         if (cancelled) return;
         if (fallbackUrl) {

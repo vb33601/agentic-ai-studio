@@ -89,19 +89,23 @@ export async function generateWithPuter(prompt: string): Promise<string> {
   await loadPuterScript();
   const puter = await waitForPuter();
   if (!puter) throw new Error("Puter unavailable");
-  if (puter.auth?.isSignedIn && !(await Promise.resolve(puter.auth.isSignedIn()))) {
-    await Promise.race([
-      puter.auth.signIn?.() ?? Promise.resolve(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("login timed out")), 60000)),
-    ]);
-  }
+  // Do NOT call signIn() ourselves — txt2img handles auth, and an explicit
+  // signIn while already authenticated triggers an "already logged in" prompt
+  // that blocks generation. Just generate.
   const result = await Promise.race([
     puter.ai.txt2img(prompt),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Puter timed out")), 90000)),
   ]);
   const src = typeof result === "string" ? result : result?.src;
   if (!src) throw new Error("Puter returned no image");
-  return src.startsWith("blob:") ? urlToDataUrl(src) : src;
+  if (src.startsWith("data:")) return src;
+  // Convert remote/blob URLs to a data URL so it persists; if that's blocked,
+  // fall back to using the URL directly.
+  try {
+    return await urlToDataUrl(src);
+  } catch {
+    return src;
+  }
 }
 
 export interface ImageProvider {
