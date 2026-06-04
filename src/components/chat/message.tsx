@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getToolParts, NormalizedToolPart } from "@/lib/ai/tool-parts";
+import { GeneratedImage } from "./generated-image";
 
 interface MessageProps {
   message: UIMessage;
@@ -39,8 +40,13 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   const toolParts = getToolParts(message);
 
   const generatedImages = toolParts
-    .filter((p) => p.toolName === "generateImage" && p.state === "output-available" && isImageOutput(p.output))
-    .map((p) => p.output as { url: string; prompt?: string });
+    .filter((p) => p.toolName === "generateImage")
+    .map((p) => {
+      const inp = (p.input ?? {}) as { prompt?: string };
+      const out = (p.output ?? {}) as { url?: string; prompt?: string };
+      return { prompt: inp.prompt || out.prompt || "", url: out.url };
+    })
+    .filter((g) => g.prompt || g.url);
 
   // User-attached images arrive as file parts (multimodal input).
   const attachedImages = (message.parts ?? [])
@@ -103,14 +109,14 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
 
         {generatedImages.length > 0 && (
           <div className="flex flex-col gap-2">
-            {generatedImages.map((img, i) => (
-              <img
-                key={i}
-                src={img.url}
-                alt={img.prompt ?? "generated image"}
-                className="rounded-2xl max-w-sm object-contain border bg-muted"
-              />
-            ))}
+            {generatedImages.map((img, i) =>
+              img.prompt ? (
+                <GeneratedImage key={i} prompt={img.prompt} fallbackUrl={img.url} />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={i} src={img.url} alt="generated image" className="rounded-2xl max-w-sm object-contain border bg-muted" />
+              )
+            )}
           </div>
         )}
 
@@ -210,7 +216,31 @@ function MessageContent({ content }: { content: string }) {
           const code = lines.slice(1, -1).join("\n");
           return <CodeBlock key={i} code={code} language={lang} />;
         }
-        return <span key={i} className="whitespace-pre-wrap">{part}</span>;
+        return <TextWithImages key={i} text={part} />;
+      })}
+    </>
+  );
+}
+
+// Render plain text, turning markdown image links ![alt](url) into images.
+function TextWithImages({ text }: { text: string }) {
+  const segments = text.split(/(!\[[^\]]*\]\([^)]+\))/g);
+  return (
+    <>
+      {segments.map((seg, j) => {
+        const m = seg.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+        if (m) {
+          return (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={j}
+              src={m[2]}
+              alt={m[1] || "image"}
+              className="rounded-xl max-w-sm object-contain border bg-muted my-2 block"
+            />
+          );
+        }
+        return <span key={j} className="whitespace-pre-wrap">{seg}</span>;
       })}
     </>
   );

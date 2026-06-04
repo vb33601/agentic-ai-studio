@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { generateImageWithFallback } from "./image-gen";
 
 async function searchWithTavily(query: string, maxResults: number) {
   const res = await fetch("https://api.tavily.com/search", {
@@ -124,9 +125,12 @@ export const generateImageTool = tool({
     height: z.number().optional().default(1024).describe("Image height in pixels"),
   }),
   execute: async ({ prompt, width = 1024, height = 1024 }) => {
-    const encoded = encodeURIComponent(prompt);
-    const url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&nologo=true&enhance=true`;
-    return { url, prompt, width, height };
+    try {
+      const { url, provider } = await generateImageWithFallback(prompt, width, height);
+      return { url, prompt, width, height, provider };
+    } catch (e) {
+      return { error: String(e), prompt };
+    }
   },
 });
 

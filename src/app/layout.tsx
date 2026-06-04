@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,6 +19,8 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="h-full overflow-hidden bg-zinc-950 text-zinc-50 antialiased">
+        {/* Puter.js — free, keyless AI image generation (puter.ai.txt2img). */}
+        <Script src="https://js.puter.com/v2/" strategy="afterInteractive" />
         {children}
       </body>
     </html>

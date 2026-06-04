@@ -55,7 +55,7 @@ export function ChatWindow() {
   // Scan a finished assistant message for createFile tool outputs and markdown
   // code blocks. addFile deduplicates by path so calling this multiple times
   // on the same message is safe.
-  const extractFilesFromMessage = useCallback((message: UIMessage) => {
+  const extractFilesFromMessage = useCallback((message: UIMessage, switchToFiles = false) => {
     // Markdown code blocks across all text parts of the message.
     const fullText = (message.parts ?? [])
       .filter((p) => p.type === "text")
@@ -68,17 +68,8 @@ export function ChatWindow() {
 
     let filesAdded = false;
     for (const part of toolParts) {
-      // Generated images: save the URL into the workspace as an image file.
-      if (part.toolName === "generateImage") {
-        const img = (part.output ?? part.input) as { url?: string; prompt?: string } | undefined;
-        if (img?.url) {
-          const slug = (img.prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
-          const path = `images/${slug}.png`;
-          addFile({ id: nanoid(), name: `${slug}.png`, path, content: img.url, language: "image", isDirty: false });
-          filesAdded = true;
-        }
-        continue;
-      }
+      // Generated images are handled by the <GeneratedImage> component, which
+      // resolves them via Puter and saves the final image to the workspace.
       if (part.toolName !== "createFile") continue;
       // Prefer the tool output, but fall back to the input: persisted messages
       // can carry the file data on `input` with a non-final state, and the
@@ -98,7 +89,9 @@ export function ChatWindow() {
         filesAdded = true;
       }
     }
-    if (filesAdded) setActiveTab("files");
+    // Only jump to the Files tab for a fresh generation — never when
+    // re-scanning history on load (that would yank the user off the chat).
+    if (filesAdded && switchToFiles) setActiveTab("files");
   }, [addFile, setActiveTab, extractFilesFromText]);
 
   // --- chat ---
@@ -119,7 +112,7 @@ export function ChatWindow() {
       },
     }),
     onFinish: ({ message }: { message: UIMessage }) => {
-      extractFilesFromMessage(message);
+      extractFilesFromMessage(message, true);
       // Save the FINALIZED message (tool parts are output-available with their
       // outputs here, unlike the streaming snapshot the render loop sees).
       const id = sessionIdRef.current;

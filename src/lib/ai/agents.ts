@@ -18,6 +18,7 @@ Rules:
 - If the task needs reasoning: call think before responding.
 - If the task needs code execution: call codeExecution with the actual code.
 - If the task needs file creation: call createFile with the actual content.
+- To show or create an image: ALWAYS call the generateImage tool. NEVER write an image URL or a markdown image link (![...](...)) yourself — the tool returns a working image. Just call generateImage and then briefly describe it.
 - After tool results come back, synthesize them into a clear final answer.
 - Never narrate or plan tool usage in text — act first, explain after.`,
     tools: ["think", "webSearch", "codeExecution", "createFile", "generateImage"],
