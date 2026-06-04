@@ -51,7 +51,7 @@ function keywords(prompt: string): string {
   );
 }
 
-async function waitForPuter(timeoutMs = 8000): Promise<{ ai: PuterAI; auth?: PuterAuth } | null> {
+async function waitForPuter(timeoutMs = 10000): Promise<{ ai: PuterAI; auth?: PuterAuth } | null> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (typeof window !== "undefined" && window.puter?.ai?.txt2img) {
@@ -60,6 +60,48 @@ async function waitForPuter(timeoutMs = 8000): Promise<{ ai: PuterAI; auth?: Put
     await new Promise((r) => setTimeout(r, 200));
   }
   return null;
+}
+
+// Puter.js is loaded ONLY on demand (when the user explicitly opts in) so its
+// consent/login modal never blocks the app on load or during normal use.
+let puterScriptPromise: Promise<void> | null = null;
+function loadPuterScript(): Promise<void> {
+  if (typeof window === "undefined") return Promise.reject(new Error("no window"));
+  if (window.puter?.ai?.txt2img) return Promise.resolve();
+  if (!puterScriptPromise) {
+    puterScriptPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://js.puter.com/v2/";
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("Failed to load Puter.js"));
+      document.head.appendChild(s);
+    });
+  }
+  return puterScriptPromise;
+}
+
+/**
+ * Generate via Puter — invoked ONLY from an explicit user action (a button),
+ * because it may show Puter's consent/login modal. Returns a data/image URL.
+ */
+export async function generateWithPuter(prompt: string): Promise<string> {
+  await loadPuterScript();
+  const puter = await waitForPuter();
+  if (!puter) throw new Error("Puter unavailable");
+  if (puter.auth?.isSignedIn && !(await Promise.resolve(puter.auth.isSignedIn()))) {
+    await Promise.race([
+      puter.auth.signIn?.() ?? Promise.resolve(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("login timed out")), 60000)),
+    ]);
+  }
+  const result = await Promise.race([
+    puter.ai.txt2img(prompt),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Puter timed out")), 90000)),
+  ]);
+  const src = typeof result === "string" ? result : result?.src;
+  if (!src) throw new Error("Puter returned no image");
+  return src.startsWith("blob:") ? urlToDataUrl(src) : src;
 }
 
 export interface ImageProvider {
@@ -77,30 +119,6 @@ export const IMAGE_PROVIDERS: ImageProvider[] = [
     real: true,
     run: (prompt, seed) =>
       urlToDataUrl(`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${seed}`),
-  },
-  {
-    name: "puter",
-    label: "AI generated",
-    real: true,
-    run: async (prompt) => {
-      const puter = await waitForPuter();
-      if (!puter) throw new Error("Puter unavailable");
-      // Ensure auth first so the txt2img call itself doesn't race the popup.
-      // Bound the login so a dismissed/ignored popup can't hang the chain.
-      if (puter.auth?.isSignedIn && !(await Promise.resolve(puter.auth.isSignedIn()))) {
-        await Promise.race([
-          puter.auth.signIn?.() ?? Promise.resolve(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("login timed out")), 30000)),
-        ]);
-      }
-      const result = await Promise.race([
-        puter.ai.txt2img(prompt),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Puter timed out")), 90000)),
-      ]);
-      const src = typeof result === "string" ? result : result?.src;
-      if (!src) throw new Error("Puter returned no image");
-      return src.startsWith("blob:") ? urlToDataUrl(src) : src;
-    },
   },
   {
     name: "lexica",
@@ -136,15 +154,30 @@ export interface GeneratedImageResult {
   real: boolean;
 }
 
+// De-duplicate concurrent calls for the same prompt/seed (the component can
+// re-render several times during streaming) so providers aren't hammered.
+const inFlight = new Map<string, Promise<GeneratedImageResult>>();
+
 /** Try each provider in order; return the first image produced. */
-export async function generateImageClient(prompt: string, seed: number): Promise<GeneratedImageResult> {
-  for (const provider of IMAGE_PROVIDERS) {
-    try {
-      const url = await provider.run(prompt, seed);
-      if (url) return { url, provider: provider.name, real: provider.real };
-    } catch {
-      /* try the next provider */
+export function generateImageClient(prompt: string, seed: number): Promise<GeneratedImageResult> {
+  const key = `${prompt}::${seed}`;
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const job = (async (): Promise<GeneratedImageResult> => {
+    for (const provider of IMAGE_PROVIDERS) {
+      try {
+        const url = await provider.run(prompt, seed);
+        if (url) return { url, provider: provider.name, real: provider.real };
+      } catch {
+        /* try the next provider */
+      }
     }
-  }
-  throw new Error("All image providers failed");
+    throw new Error("All image providers failed");
+  })();
+
+  inFlight.set(key, job);
+  // Keep the result briefly so near-simultaneous renders share it, then clear.
+  job.finally(() => setTimeout(() => inFlight.delete(key), 3000));
+  return job;
 }

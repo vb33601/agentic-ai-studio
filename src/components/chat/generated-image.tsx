@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, ImageOff, RefreshCw } from "lucide-react";
+import { Loader2, ImageOff, RefreshCw, Sparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useWorkspaceStore } from "@/store/workspace";
-import { generateImageClient } from "@/lib/image-providers";
+import { generateImageClient, generateWithPuter } from "@/lib/image-providers";
 
 // Stable seed per prompt so reloads reuse the same image; bumps on regenerate.
 function hashSeed(s: string): number {
@@ -41,6 +41,27 @@ export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallba
   const regenerate = () => {
     setStatus("loading");
     setAttempt((a) => a + 1);
+  };
+
+  // Opt-in: generate via Puter (may show its login/consent modal). Only runs on
+  // an explicit click so it never blocks the app automatically.
+  const tryPuter = async () => {
+    setStatus("loading");
+    try {
+      const url = await generateWithPuter(prompt);
+      setSrc(url);
+      setStatus("ready");
+      const slug = (prompt || "image").replace(/[^a-z0-9]+/gi, "-").slice(0, 32).replace(/^-|-$/g, "") || "image";
+      addFile({ id: nanoid(), name: `${slug}.png`, path: `images/${slug}.png`, content: url, language: "image", isDirty: false });
+      try {
+        localStorage.setItem(`aip-img:${prompt}`, url);
+      } catch {
+        /* quota */
+      }
+    } catch {
+      // Restore the previous image / fallback state.
+      setStatus(src ? "fallback" : "error");
+    }
   };
 
   useEffect(() => {
@@ -116,9 +137,14 @@ export function GeneratedImage({ prompt, fallbackUrl }: { prompt: string; fallba
       <img src={src} alt={prompt} className="rounded-2xl w-full object-contain border bg-muted" />
       <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
         <span>{status === "fallback" ? "Approximate (AI generators busy)" : "AI generated"}</span>
-        <button onClick={regenerate} className="flex items-center gap-1 hover:text-foreground">
-          <RefreshCw className="h-2.5 w-2.5" /> Regenerate
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={tryPuter} className="flex items-center gap-1 hover:text-foreground" title="Generate with Puter AI (may ask you to sign in)">
+            <Sparkles className="h-2.5 w-2.5" /> Puter AI
+          </button>
+          <button onClick={regenerate} className="flex items-center gap-1 hover:text-foreground">
+            <RefreshCw className="h-2.5 w-2.5" /> Regenerate
+          </button>
+        </div>
       </div>
     </div>
   );
