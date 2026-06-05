@@ -80,15 +80,23 @@ export function ModelSelector() {
               <Command.Input
                 value={query}
                 onValueChange={setQuery}
-                placeholder="Search models (type 3+ chars for HuggingFace)…"
+                placeholder="Search any model…"
                 className="h-9 w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
               />
             </div>
+            {/* Explain what's possible */}
+            <div className="px-3 py-2 border-b bg-muted/30 text-[10px] leading-relaxed text-muted-foreground">
+              Pick <span className="font-medium text-foreground">any model</span> to switch — all support tools.
+              Type <span className="font-medium text-foreground">3+ characters</span> to also search
+              Hugging Face&apos;s <span className="font-medium text-foreground">100,000+</span> models live.
+            </div>
             <Command.List className="overflow-y-auto p-1">
               <Command.Empty className="py-6 text-center text-xs text-muted-foreground">
-                {searching ? "Searching…" : "No models found"}
+                {searching ? "Searching Hugging Face…" : "No models found — type 3+ chars to search Hugging Face"}
               </Command.Empty>
-              <div className="px-2 py-1 text-[10px] text-muted-foreground">{all.length} models</div>
+              <div className="px-2 py-1 text-[10px] text-muted-foreground">
+                {searching ? "Searching Hugging Face…" : `${all.length} models · OpenRouter · AIML · Hugging Face`}
+              </div>
               {all.map((m) => (
                 <Command.Item
                   key={`${m.provider}:${m.id}`}
