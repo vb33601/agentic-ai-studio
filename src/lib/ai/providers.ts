@@ -27,21 +27,21 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { id: "openai/gpt-4o", name: "GPT-4o", provider: "openrouter", contextWindow: 128000, supportsVision: true, supportsTools: true, description: "Most capable OpenAI model" },
   { id: "openai/gpt-4o-mini", name: "GPT-4o Mini", provider: "openrouter", contextWindow: 128000, supportsVision: true, supportsTools: true, description: "Fast, affordable OpenAI model" },
   { id: "openai/gpt-4-turbo", name: "GPT-4 Turbo", provider: "openrouter", contextWindow: 128000, supportsVision: true, supportsTools: true, description: "GPT-4 Turbo with vision" },
-  { id: "openai/o1-preview", name: "o1 Preview", provider: "openrouter", contextWindow: 128000, supportsVision: false, supportsTools: true, description: "Advanced reasoning model" },
-  { id: "openai/o1-mini", name: "o1 Mini", provider: "openrouter", contextWindow: 128000, supportsVision: false, supportsTools: true, description: "Fast reasoning model" },
+  { id: "openai/o4-mini", name: "o4 Mini", provider: "openrouter", contextWindow: 200000, supportsVision: false, supportsTools: true, description: "Fast reasoning model" },
   // Anthropic via OpenRouter
   { id: "anthropic/claude-opus-4", name: "Claude Opus 4", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Most capable Claude model" },
-  { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Balanced Claude model" },
-  { id: "anthropic/claude-haiku-3-5", name: "Claude Haiku 3.5", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Fast Claude model" },
+  { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Balanced Claude model" },
+  { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Fast Claude model" },
+  { id: "anthropic/claude-3.5-haiku", name: "Claude 3.5 Haiku", provider: "openrouter", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Fast, economical Claude model" },
   // Google via OpenRouter
   { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "openrouter", contextWindow: 1000000, supportsVision: true, supportsTools: true, description: "Google's most capable model" },
   { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "openrouter", contextWindow: 1000000, supportsVision: true, supportsTools: true, description: "Fast Gemini model" },
   // Meta via OpenRouter
   { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B", provider: "openrouter", contextWindow: 128000, supportsVision: false, supportsTools: true, description: "Fast Llama model" },
-  { id: "meta-llama/llama-3.1-405b-instruct", name: "Llama 3.1 405B", provider: "openrouter", contextWindow: 131072, supportsVision: false, supportsTools: true, description: "Largest Llama model" },
+  { id: "meta-llama/llama-3.1-70b-instruct", name: "Llama 3.1 70B", provider: "openrouter", contextWindow: 131072, supportsVision: false, supportsTools: true, description: "Capable Llama model" },
   // Mistral via OpenRouter
   { id: "mistralai/mistral-large", name: "Mistral Large", provider: "openrouter", contextWindow: 128000, supportsVision: false, supportsTools: true, description: "Mistral's flagship model" },
-  { id: "mistralai/mixtral-8x7b-instruct", name: "Mixtral 8x7B", provider: "openrouter", contextWindow: 32768, supportsVision: false, supportsTools: true, description: "Efficient Mistral model" },
+  { id: "mistralai/mixtral-8x22b-instruct", name: "Mixtral 8x22B", provider: "openrouter", contextWindow: 65536, supportsVision: false, supportsTools: true, description: "Efficient Mistral MoE model" },
   // DeepSeek via OpenRouter
   { id: "deepseek/deepseek-r1", name: "DeepSeek R1", provider: "openrouter", contextWindow: 65536, supportsVision: false, supportsTools: true, description: "DeepSeek reasoning model" },
 ];

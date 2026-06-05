@@ -92,7 +92,11 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       },
     });
 
-    return result.toUIMessageStreamResponse();
+    // Surface the real error text to the client (the SDK masks it by default),
+    // so a bad model id / provider error shows a message instead of hanging.
+    return result.toUIMessageStreamResponse({
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
+    });
   } catch (error) {
     console.error("Chat API error:", error);
     return new Response(JSON.stringify({ error: "Internal server error" }), {

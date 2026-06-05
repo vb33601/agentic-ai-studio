@@ -96,7 +96,7 @@ export function ChatWindow() {
 
   // --- chat ---
 
-  const { messages, sendMessage, stop, status, setMessages } = useChat({
+  const { messages, sendMessage, stop, status, setMessages, error } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       // Read request params lazily from the store so model/agent/tool changes
@@ -249,6 +249,12 @@ export function ChatWindow() {
                 isStreaming={isLoading && i === messages.length - 1 && msg.role === "assistant"}
               />
             ))
+          )}
+          {error && (
+            <div className="mx-4 my-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <span className="font-medium">Generation failed:</span>{" "}
+              {error.message || "The model returned an error. Try another model."}
+            </div>
           )}
           <div ref={bottomRef} />
         </div>
