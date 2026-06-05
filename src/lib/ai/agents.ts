@@ -19,10 +19,10 @@ Rules:
 - If the task needs code execution: call codeExecution with the actual code.
 - If the task needs file creation: call createFile with the actual content.
 - To show or create an image: ALWAYS call the generateImage tool. NEVER write an image URL or a markdown image link (![...](...)) yourself — the tool returns a working image. Just call generateImage and then briefly describe it.
-- After tool results come back, synthesize them into a clear final answer.
-- Never narrate or plan tool usage in text — act first, explain after.`,
+- After tool results come back, synthesize them into a clear final answer formatted in clean markdown (short paragraphs, headings, and bullet lists where helpful).
+- Act first, explain after. Never repeat yourself, re-run the same tool with the same input, or loop — once you have what you need, give the final answer and stop.`,
     tools: ["think", "webSearch", "codeExecution", "createFile", "generateImage"],
-    maxSteps: 20,
+    maxSteps: 12,
     temperature: 0.7,
   },
 
@@ -46,33 +46,30 @@ Never output "I will search for..." or "Let me look up..." — just call the too
   coding: {
     name: "Coding Agent",
     type: "CODING",
-    systemPrompt: `You are an expert software engineer. When asked to write code or build something, immediately call createFile for each file — do not output code in markdown, use the tool.
+    systemPrompt: `You are an expert software engineer. Build exactly what the user asked for, then stop.
 
-Rules:
-- Call createFile immediately for every file needed (HTML, CSS, JS, TS, etc.)
-- Use complete, production-quality, runnable code in each file
-- After creating files, give a brief summary of what was built and how to use it
-- Never output code in markdown blocks — always use the createFile tool instead
-- For websites/apps, always create at least: index.html (or main entry), CSS file, and JS file if needed`,
+How to work:
+- Call createFile once per file with complete, production-quality, runnable code (plain UTF-8 — never claim "encoding issues" or recreate a file you already wrote).
+- Create each file EXACTLY ONCE. Never write "let me create clean versions" or regenerate the same files — if a file is wrong, you would only re-create it once with the fix.
+- Prefer the createFile tool over pasting code in chat.
+- When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
-    maxSteps: 30,
-    temperature: 0.2,
+    maxSteps: 16,
+    temperature: 0.3,
   },
 
   appBuilder: {
     name: "App Builder Agent",
     type: "APP_BUILDER",
-    systemPrompt: `You are an expert full-stack application architect and builder. When asked to build an app or website, immediately call createFile for every file — do not output code in markdown blocks, use the tool.
+    systemPrompt: `You are an expert full-stack application architect. Plan the file list first, build each file once, then stop.
 
-Rules:
-- Call createFile immediately for each file (one tool call per file)
-- Generate complete, production-ready code in each file — no placeholders
-- Default tech stack: HTML5 + CSS3 + vanilla JS (or React/Next.js for complex apps)
-- For e-commerce/websites: create index.html, styles.css, script.js, and any other needed files
-- After all files are created, give a short summary of the structure and how to run it
-- Never output code in markdown — always use createFile`,
+How to work:
+- Briefly decide the full set of files needed (e.g. for a multi-page site: index.html, products.html, about.html, contact.html, styles.css, script.js — with working links between pages).
+- Call createFile ONCE per file with complete, production-ready code (clean UTF-8, no placeholders). Never recreate a file, never write "let me create clean versions" or claim "encoding issues" — write it correctly the first time.
+- Default stack: semantic HTML5 + modern responsive CSS + vanilla JS, unless the user asks otherwise. Make links between pages work.
+- When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
-    maxSteps: 50,
+    maxSteps: 18,
     temperature: 0.3,
   },
 
@@ -106,7 +103,7 @@ Game types you excel at:
 
 Always create playable, complete games with clear instructions.`,
     tools: ["think", "codeExecution", "createFile", "generateImage"],
-    maxSteps: 40,
+    maxSteps: 18,
     temperature: 0.5,
   },
 
@@ -137,7 +134,7 @@ Design principles:
 
 Always provide complete, styled, accessible components.`,
     tools: ["think", "createFile", "generateImage"],
-    maxSteps: 20,
+    maxSteps: 12,
     temperature: 0.4,
   },
 
@@ -165,7 +162,7 @@ Always provide:
 - Recommendations
 - Next steps`,
     tools: ["think", "codeExecution", "webSearch"],
-    maxSteps: 15,
+    maxSteps: 10,
     temperature: 0.2,
   },
 };

@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getToolParts, NormalizedToolPart } from "@/lib/ai/tool-parts";
 import { GeneratedImage } from "./generated-image";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface MessageProps {
   message: UIMessage;
@@ -206,45 +208,58 @@ function ToolCall({ part }: { part: NormalizedToolPart }) {
   );
 }
 
+// Full markdown rendering (headings, paragraphs, lists, tables, links, code) —
+// the same kind of formatting ChatGPT/Claude show.
 function MessageContent({ content }: { content: string }) {
-  const parts = content.split(/(```[\s\S]*?```)/g);
-
   return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith("```")) {
-          const lines = part.split("\n");
-          const lang = lines[0].replace("```", "").trim();
-          const code = lines.slice(1, -1).join("\n");
-          return <CodeBlock key={i} code={code} language={lang} />;
-        }
-        return <TextWithImages key={i} text={part} />;
-      })}
-    </>
-  );
-}
-
-// Render plain text, turning markdown image links ![alt](url) into images.
-function TextWithImages({ text }: { text: string }) {
-  const segments = text.split(/(!\[[^\]]*\]\([^)]+\))/g);
-  return (
-    <>
-      {segments.map((seg, j) => {
-        const m = seg.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-        if (m) {
-          return (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              key={j}
-              src={m[2]}
-              alt={m[1] || "image"}
-              className="rounded-xl max-w-sm object-contain border bg-muted my-2 block"
-            />
-          );
-        }
-        return <span key={j} className="whitespace-pre-wrap">{seg}</span>;
-      })}
-    </>
+    <div className="space-y-2 text-sm leading-relaxed break-words">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => <p className="leading-relaxed">{children}</p>,
+          h1: ({ children }) => <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-base font-bold mt-3 mb-1">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-1">{children}</h3>,
+          ul: ({ children }) => <ul className="list-disc pl-5 space-y-1">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1">{children}</ol>,
+          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 hover:opacity-80">
+              {children}
+            </a>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground">{children}</blockquote>
+          ),
+          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+          hr: () => <hr className="my-3 border-border" />,
+          table: ({ children }) => (
+            <div className="overflow-x-auto my-2">
+              <table className="w-full text-xs border-collapse">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold bg-muted/50">{children}</th>,
+          td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
+          img: ({ src, alt }) =>
+            typeof src === "string" ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={src} alt={alt || "image"} className="rounded-xl max-w-sm object-contain border bg-muted my-2" />
+            ) : null,
+          code: ({ className, children }) => {
+            const match = /language-(\w+)/.exec(className || "");
+            const text = String(children).replace(/\n$/, "");
+            // Fenced block (has a language) or multiline → styled code block.
+            if (match || text.includes("\n")) {
+              return <CodeBlock code={text} language={match?.[1] || ""} />;
+            }
+            return <code className="px-1 py-0.5 rounded bg-black/20 dark:bg-white/10 text-[0.85em] font-mono">{children}</code>;
+          },
+          pre: ({ children }) => <>{children}</>,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 }
 
