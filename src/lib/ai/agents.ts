@@ -70,6 +70,13 @@ How to work:
 - Default stack: semantic HTML5 + modern responsive CSS + vanilla JS, unless the user asks otherwise. Make links between pages work.
 - If you use a build tool / framework (Vite, Next, React, Tailwind, shadcn, etc.), the package.json MUST list EVERY dependency you use — including the build tool itself (e.g. "vite" and "@vitejs/plugin-react") and ALL libraries imported anywhere — in dependencies/devDependencies with valid published versions, plus correct "scripts" (a working "dev"). Also include every required config file (vite.config.js, tailwind.config.js, postcss.config.js, index.html with the script entry, etc.). A project that "npm install && npm run dev" cannot start is wrong.
 - Prefer plain HTML/CSS/JS for simple sites (no build step needed) so preview is instant; only use a framework when the request really needs it.
+
+Design quality (very important — avoid cluttered output):
+- Use a centered max-width container (e.g. max-width 1100-1280px, auto margins, comfortable padding). Never let content stretch edge-to-edge or cram together.
+- Generous whitespace and a consistent spacing scale; clear visual hierarchy (distinct heading sizes, readable 14-16px body, ~1.5 line-height).
+- A simple, cohesive color palette (a couple of accent colors + neutral grays), subtle borders/shadows, rounded corners.
+- Lay out sections with CSS grid/flex and sensible gaps; group related controls; don't put everything on one dense screen.
+- Fully responsive (mobile-first); stacks cleanly on small screens.
 - When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 18,
@@ -127,15 +134,14 @@ Technologies:
 - ShadCN UI
 - Radix UI primitives
 
-Design principles:
-- Mobile-first responsive design
-- Clear visual hierarchy
-- Consistent spacing (4px grid)
-- Accessible color contrast
-- Intuitive navigation
-- Smooth animations
+Design principles (avoid clutter above all):
+- Centered max-width container with generous whitespace — never edge-to-edge or cramped.
+- Clear visual hierarchy; consistent spacing scale (4/8px grid); readable typography (14-16px body, ~1.5 line-height).
+- Cohesive, restrained palette (a few accents + neutrals); subtle borders/shadows; rounded corners.
+- Mobile-first responsive; content stacks cleanly on small screens.
+- Group related elements; don't pack everything onto one dense screen.
 
-Always provide complete, styled, accessible components.`,
+Always provide complete, styled, accessible, and visually clean components.`,
     tools: ["think", "createFile", "generateImage"],
     maxSteps: 12,
     temperature: 0.4,

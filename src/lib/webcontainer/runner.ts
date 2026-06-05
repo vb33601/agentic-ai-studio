@@ -1,5 +1,6 @@
 import { WebContainer, type FileSystemTree } from "@webcontainer/api";
 import type { WorkspaceFile } from "@/store/workspace";
+import { detectImportedPackages } from "@/lib/ai/deps";
 
 /**
  * WebContainers live-preview engine. Boots a single in-browser Node.js runtime,
@@ -54,42 +55,6 @@ export function pickStartScript(pkg: { scripts?: Record<string, string> }): stri
     if (scripts[candidate]) return candidate;
   }
   return null;
-}
-
-const NODE_BUILTINS = new Set([
-  "fs", "path", "os", "http", "https", "crypto", "stream", "util", "events", "url",
-  "child_process", "buffer", "process", "assert", "zlib", "net", "tls", "dns", "querystring",
-]);
-
-/** Map an import specifier to its installable npm package name (or null). */
-function packageName(spec: string): string | null {
-  if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("@/")) return null;
-  if (spec.startsWith("node:")) return null;
-  if (spec.startsWith("@")) {
-    const parts = spec.split("/");
-    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
-  }
-  const name = spec.split("/")[0];
-  if (!name || NODE_BUILTINS.has(name)) return null;
-  return name;
-}
-
-/**
- * Scan source files for imported packages so we can install any the generated
- * package.json forgot to declare (the cause of "Failed to resolve import X").
- */
-function detectImportedPackages(files: WorkspaceFile[]): string[] {
-  const re = /(?:import[^'"]*?from\s*|import\s*|require\(\s*|import\(\s*)['"]([^'"]+)['"]/g;
-  const found = new Set<string>();
-  for (const f of files) {
-    if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(f.path)) continue;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(f.content)) !== null) {
-      const name = packageName(m[1]);
-      if (name) found.add(name);
-    }
-  }
-  return [...found];
 }
 
 export interface RunHandlers {
