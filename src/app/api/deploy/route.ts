@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deployToVercel, getDeploymentStatus } from "@/lib/deploy/vercel";
-import { augmentPackageJson } from "@/lib/ai/deps";
+import { prepareForDeploy } from "@/lib/deploy/prepare";
 import type { WorkspaceFile } from "@/store/workspace";
 
 export const maxDuration = 120;
@@ -23,8 +23,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No files to deploy." }, { status: 400 });
     }
 
-    // Complete the manifest so Vercel's build doesn't fail on undeclared imports.
-    const result = await deployToVercel(augmentPackageJson(files) as WorkspaceFile[], { name });
+    // Normalize the project (complete manifest, forgiving build, inject config)
+    // so Vercel's build is robust across stacks.
+    const prep = prepareForDeploy(files);
+    const result = await deployToVercel(prep.files as WorkspaceFile[], {
+      name,
+      framework: prep.framework,
+      buildCommand: prep.buildCommand,
+      outputDirectory: prep.outputDirectory,
+    });
     return NextResponse.json(result);
   } catch (error) {
     console.error("[deploy]", error);

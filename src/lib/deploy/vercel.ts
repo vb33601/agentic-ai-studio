@@ -40,17 +40,22 @@ function projectName(name?: string): string {
 /** Create a production deployment from inline workspace files. */
 export async function deployToVercel(
   files: WorkspaceFile[],
-  opts: { name?: string } = {}
+  opts: { name?: string; framework?: string | null; buildCommand?: string; outputDirectory?: string } = {}
 ): Promise<DeployResult> {
   const token = process.env.VERCEL_TOKEN;
   if (!token) throw new Error("VERCEL_TOKEN is not configured on the server.");
   if (files.length === 0) throw new Error("No files to deploy.");
 
   const name = projectName(opts.name);
+  const projectSettings: Record<string, unknown> = {
+    framework: opts.framework !== undefined ? opts.framework : detectFramework(files),
+  };
+  if (opts.buildCommand) projectSettings.buildCommand = opts.buildCommand;
+  if (opts.outputDirectory) projectSettings.outputDirectory = opts.outputDirectory;
   const body = {
     name,
     files: files.map((f) => ({ file: f.path, data: f.content })),
-    projectSettings: { framework: detectFramework(files) },
+    projectSettings,
     target: "production",
   };
 
