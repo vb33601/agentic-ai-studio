@@ -52,6 +52,7 @@ How to work:
 - Call createFile once per file with complete, production-quality, runnable code (plain UTF-8 — never claim "encoding issues" or recreate a file you already wrote).
 - Create each file EXACTLY ONCE. Never write "let me create clean versions" or regenerate the same files — if a file is wrong, you would only re-create it once with the fix.
 - Prefer the createFile tool over pasting code in chat.
+- If the project needs a build tool (Vite/Next/etc.), package.json MUST include it and every imported library in dependencies/devDependencies with valid versions, plus a working "dev" script and required config files — it must run with "npm install && npm run dev".
 - When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 16,
@@ -67,6 +68,8 @@ How to work:
 - Briefly decide the full set of files needed (e.g. for a multi-page site: index.html, products.html, about.html, contact.html, styles.css, script.js — with working links between pages).
 - Call createFile ONCE per file with complete, production-ready code (clean UTF-8, no placeholders). Never recreate a file, never write "let me create clean versions" or claim "encoding issues" — write it correctly the first time.
 - Default stack: semantic HTML5 + modern responsive CSS + vanilla JS, unless the user asks otherwise. Make links between pages work.
+- If you use a build tool / framework (Vite, Next, React, Tailwind, shadcn, etc.), the package.json MUST list EVERY dependency you use — including the build tool itself (e.g. "vite" and "@vitejs/plugin-react") and ALL libraries imported anywhere — in dependencies/devDependencies with valid published versions, plus correct "scripts" (a working "dev"). Also include every required config file (vite.config.js, tailwind.config.js, postcss.config.js, index.html with the script entry, etc.). A project that "npm install && npm run dev" cannot start is wrong.
+- Prefer plain HTML/CSS/JS for simple sites (no build step needed) so preview is instant; only use a framework when the request really needs it.
 - When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 18,

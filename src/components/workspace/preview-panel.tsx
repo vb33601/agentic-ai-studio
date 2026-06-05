@@ -169,6 +169,7 @@ export function PreviewPanel() {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
+          title={wcUrl ? "Open in a new tab (same browser only — the dev server runs in-browser)" : "Open in a new tab"}
           onClick={() => activeUrl && window.open(activeUrl, "_blank")}
         >
           <ExternalLink className="h-3.5 w-3.5" />

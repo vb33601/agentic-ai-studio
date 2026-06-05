@@ -95,7 +95,6 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
   const installCode = await install.exit;
   if (installCode !== 0) throw new Error(`npm install failed (exit ${installCode}).`);
 
-  handlers.onStatus(`Starting: npm run ${startScript}…`);
   let serverUrl: string | null = null;
   wc.on("server-ready", (_port, url) => {
     serverUrl = url;
@@ -103,13 +102,33 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
     handlers.onStatus("Running");
   });
 
-  const proc = await wc.spawn("npm", ["run", startScript]);
+  // Known frontend dev tools: run the command via `npx -y` so a binary that the
+  // generated package.json forgot to declare is fetched automatically (this is
+  // why "vite: command not found" happened). Bind to 0.0.0.0 so WebContainers
+  // can detect the port.
+  const NPX_TOOLS = new Set([
+    "vite", "next", "react-scripts", "parcel", "webpack", "webpack-dev-server",
+    "astro", "vue-cli-service", "ng", "nuxt", "remix", "serve", "http-server", "live-server",
+  ]);
+  const startCommand = (pkg.scripts?.[startScript] || "").trim();
+  const tokens = startCommand.split(/\s+/).filter(Boolean);
+  const tool = tokens[0];
+
+  let proc: Awaited<ReturnType<typeof wc.spawn>>;
+  if (tool && NPX_TOOLS.has(tool)) {
+    handlers.onStatus(`Starting dev server (${tool})…`);
+    const extra = tool === "vite" || tool === "astro" ? ["--host"] : [];
+    proc = await wc.spawn("npx", ["-y", ...tokens, ...extra]);
+  } else {
+    handlers.onStatus(`Starting: npm run ${startScript}…`);
+    proc = await wc.spawn("npm", ["run", startScript]);
+  }
   proc.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
 
   // Surface a hint if no server appears in a reasonable window.
   setTimeout(() => {
-    if (!serverUrl) handlers.onStatus("Waiting for dev server to bind a port…");
-  }, 20000);
+    if (!serverUrl) handlers.onStatus("Still starting — installing/binding the dev server…");
+  }, 25000);
 
   return {
     teardown: () => {
