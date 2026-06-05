@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useWorkspaceStore } from "@/store/workspace";
+import { downloadProjectZip } from "@/lib/deploy/download";
 
 const PROVIDERS = [
   { id: "vercel", name: "Vercel", description: "Live deploy · configured", logo: "▲", configured: true },
@@ -100,12 +101,24 @@ export function DeployPanel() {
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 py-4 border-b">
-        <h2 className="text-sm font-semibold flex items-center gap-2">
-          <Rocket className="h-4 w-4" />
-          Deploy Project
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Rocket className="h-4 w-4" />
+            Deploy Project
+          </h2>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            disabled={files.length === 0}
+            onClick={() => downloadProjectZip(files, projectName || "project")}
+            title="Download the whole app as a .zip (includes a Dockerfile + deploy guide for any platform/language)"
+          >
+            <Download className="h-3.5 w-3.5" /> Download .zip
+          </Button>
+        </div>
         <p className="text-xs text-muted-foreground mt-1">
-          {files.length} files ready · Choose a hosting provider
+          {files.length} files ready · Deploy to Vercel, or download the .zip (with Dockerfile) to run any stack anywhere
         </p>
         <div className="flex items-center gap-2 mt-3">
           <label className="text-xs text-muted-foreground shrink-0">Project name</label>

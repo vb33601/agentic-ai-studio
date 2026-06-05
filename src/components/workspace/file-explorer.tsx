@@ -4,48 +4,7 @@ import { File, Folder, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useWorkspaceStore, WorkspaceFile } from "@/store/workspace";
-
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revoke later so the download isn't cancelled mid-flight.
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-function isImageFile(file: WorkspaceFile): boolean {
-  return file.language === "image" || /^(https?:|data:image)/.test(file.content);
-}
-
-// Image files store a URL/data-URL as content — fetch the real bytes so the
-// downloaded file is an actual viewable image, not a text file of the URL.
-async function imageBlob(file: WorkspaceFile): Promise<Blob> {
-  const res = await fetch(file.content);
-  return res.blob();
-}
-
-function withImageExt(name: string, mime: string): string {
-  if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name)) return name;
-  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
-  return `${name.replace(/\.[^.]*$/, "")}.${ext}`;
-}
-
-async function downloadOne(file: WorkspaceFile) {
-  if (isImageFile(file)) {
-    try {
-      const blob = await imageBlob(file);
-      triggerDownload(blob, withImageExt(file.name, blob.type));
-      return;
-    } catch {
-      /* fall back to text download */
-    }
-  }
-  triggerDownload(new Blob([file.content], { type: "text/plain;charset=utf-8" }), file.name);
-}
+import { downloadFile, downloadProjectZip } from "@/lib/deploy/download";
 
 const LANG_COLORS: Record<string, string> = {
   typescript: "text-blue-400",
@@ -72,29 +31,8 @@ function groupFilesByDirectory(files: WorkspaceFile[]) {
 export function FileExplorer() {
   const { files, activeFileId, setActiveFileId, removeFile } = useWorkspaceStore();
 
-  // Bundle every file into one .zip (looping individual downloads triggers
-  // browser pop-up blocking and only the first/last file actually downloads).
-  const downloadAll = async () => {
-    if (files.length === 0) return;
-    if (files.length === 1) return downloadOne(files[0]);
-    const JSZip = (await import("jszip")).default;
-    const zip = new JSZip();
-    await Promise.all(
-      files.map(async (f) => {
-        if (isImageFile(f)) {
-          try {
-            zip.file(f.path, await imageBlob(f)); // real image bytes
-            return;
-          } catch {
-            /* fall back to storing the reference */
-          }
-        }
-        zip.file(f.path, f.content);
-      })
-    );
-    const blob = await zip.generateAsync({ type: "blob" });
-    triggerDownload(blob, "project.zip");
-  };
+  const downloadAll = () => downloadProjectZip(files);
+  const downloadOne = (file: WorkspaceFile) => downloadFile(file);
 
   if (files.length === 0) {
     return (
@@ -113,8 +51,8 @@ export function FileExplorer() {
       <div className="flex items-center justify-between px-4 py-2 border-b">
         <span className="text-sm font-medium">Files ({files.length})</span>
         <div className="flex gap-1">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={downloadAll} title="Download all">
-            <Download className="h-3.5 w-3.5" />
+          <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={downloadAll} title="Download the whole project as a .zip (with a Dockerfile + deploy guide)">
+            <Download className="h-3.5 w-3.5" /> Download .zip
           </Button>
         </div>
       </div>

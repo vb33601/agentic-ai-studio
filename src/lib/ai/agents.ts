@@ -70,6 +70,7 @@ How to work:
 - Default stack: semantic HTML5 + modern responsive CSS + vanilla JS, unless the user asks otherwise. Make links between pages work.
 - If you use a build tool / framework (Vite, Next, React, Tailwind, shadcn, etc.), the package.json MUST list EVERY dependency you use — including the build tool itself (e.g. "vite" and "@vitejs/plugin-react") and ALL libraries imported anywhere — in dependencies/devDependencies with valid published versions, plus correct "scripts" (a working "dev"). Also include every required config file (vite.config.js, tailwind.config.js, postcss.config.js, index.html with the script entry, etc.). A project that "npm install && npm run dev" cannot start is wrong.
 - Prefer plain HTML/CSS/JS for simple sites (no build step needed) so preview is instant; only use a framework when the request really needs it.
+- For a backend/server app in ANY language (Python, Go, Java, PHP, .NET, Rust, Ruby, C/C++, Node server), also create a Dockerfile and a short README with run instructions, so it can be deployed on any container platform.
 
 Design quality (very important — avoid cluttered output):
 - Use a centered max-width container (e.g. max-width 1100-1280px, auto margins, comfortable padding). Never let content stretch edge-to-edge or cram together.
