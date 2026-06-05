@@ -56,6 +56,42 @@ export function pickStartScript(pkg: { scripts?: Record<string, string> }): stri
   return null;
 }
 
+const NODE_BUILTINS = new Set([
+  "fs", "path", "os", "http", "https", "crypto", "stream", "util", "events", "url",
+  "child_process", "buffer", "process", "assert", "zlib", "net", "tls", "dns", "querystring",
+]);
+
+/** Map an import specifier to its installable npm package name (or null). */
+function packageName(spec: string): string | null {
+  if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("@/")) return null;
+  if (spec.startsWith("node:")) return null;
+  if (spec.startsWith("@")) {
+    const parts = spec.split("/");
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  }
+  const name = spec.split("/")[0];
+  if (!name || NODE_BUILTINS.has(name)) return null;
+  return name;
+}
+
+/**
+ * Scan source files for imported packages so we can install any the generated
+ * package.json forgot to declare (the cause of "Failed to resolve import X").
+ */
+function detectImportedPackages(files: WorkspaceFile[]): string[] {
+  const re = /(?:import[^'"]*?from\s*|import\s*|require\(\s*|import\(\s*)['"]([^'"]+)['"]/g;
+  const found = new Set<string>();
+  for (const f of files) {
+    if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(f.path)) continue;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(f.content)) !== null) {
+      const name = packageName(m[1]);
+      if (name) found.add(name);
+    }
+  }
+  return [...found];
+}
+
 export interface RunHandlers {
   onLog: (chunk: string) => void;
   onServerReady: (url: string) => void;
@@ -94,6 +130,20 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
   install.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
   const installCode = await install.exit;
   if (installCode !== 0) throw new Error(`npm install failed (exit ${installCode}).`);
+
+  // Safety net: install any imported packages the package.json forgot to
+  // declare (e.g. zustand, framer-motion) so Vite/bundler imports resolve.
+  const declared = new Set([
+    ...Object.keys((pkg as { dependencies?: Record<string, string> }).dependencies || {}),
+    ...Object.keys((pkg as { devDependencies?: Record<string, string> }).devDependencies || {}),
+  ]);
+  const missing = detectImportedPackages(files).filter((p) => !declared.has(p));
+  if (missing.length > 0) {
+    handlers.onStatus(`Adding missing packages: ${missing.slice(0, 8).join(", ")}…`);
+    const add = await wc.spawn("npm", ["install", ...missing]);
+    add.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
+    await add.exit;
+  }
 
   let serverUrl: string | null = null;
   wc.on("server-ready", (_port, url) => {
