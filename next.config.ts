@@ -18,16 +18,18 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
-  // NOTE: We use "same-origin-allow-popups" (not "same-origin") so Puter.js's
-  // OAuth login popup can post its result back to the app. This means the page
-  // is NOT cross-origin isolated, so WebContainers' Node live-preview is
-  // disabled (static HTML preview still works) — a deliberate trade-off to keep
-  // free AI image generation (Puter + Pollinations) working without friction.
+  // Cross-origin isolation enables WebContainers' in-browser Node/dev-server
+  // preview (Run app). COEP "credentialless" still lets cross-origin assets
+  // (Monaco CDN, etc.) load. Image generation is a same-origin /api/image proxy
+  // so it's unaffected. (Puter was removed, so no popup constraint remains.)
   async headers() {
     return [
       {
         source: "/:path*",
-        headers: [{ key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" }],
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+        ],
       },
     ];
   },
