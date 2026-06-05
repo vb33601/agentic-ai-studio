@@ -3,15 +3,18 @@
 # Produces a small runtime image that runs `node server.js`.
 
 # ---- deps: install full dependencies (incl. dev) for the build ----
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 # libc6-compat: glibc shim some native deps expect; openssl for Prisma.
 RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json ./
-RUN npm ci
+# `npm install` (not `npm ci`): the lockfile drifted (optional native deps like
+# @emnapi/* present in node_modules but missing from the lock), which `npm ci`
+# rejects. install tolerates it and resolves a consistent tree.
+RUN npm install --no-audit --no-fund
 
 # ---- builder: generate Prisma client + build Next standalone output ----
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY --from=deps /app/node_modules ./node_modules
@@ -29,7 +32,7 @@ RUN npx prisma generate
 RUN npm run build
 
 # ---- runner: minimal image that serves the standalone build ----
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
