@@ -12,12 +12,14 @@ export async function POST(req: NextRequest) {
     const {
       messages,
       modelId = "openai/gpt-4o",
+      provider = "openrouter",
       agentType,
       enableTools = true,
       systemPrompt,
     } = body as {
       messages: UIMessage[];
       modelId?: string;
+      provider?: string;
       agentType?: string;
       enableTools?: boolean;
       systemPrompt?: string;
@@ -42,7 +44,7 @@ export async function POST(req: NextRequest) {
     const temperature = agentConfig.temperature;
     const maxSteps = agentConfig.maxSteps;
 
-    const model = resolveModel(modelId);
+    const model = resolveModel(modelId, provider);
 
     const activeTools = enableTools
       ? Object.fromEntries(

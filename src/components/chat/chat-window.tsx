@@ -105,6 +105,7 @@ export function ChatWindow() {
         const s = useChatStore.getState();
         return {
           modelId: s.selectedModel.id,
+          provider: s.selectedModel.provider,
           agentType: s.agentType,
           enableTools: s.enableTools && s.selectedModel.supportsTools,
           temperature: s.temperature,

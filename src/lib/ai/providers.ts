@@ -1,4 +1,5 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 
 export type ProviderKey =
   | "openai"
@@ -8,6 +9,8 @@ export type ProviderKey =
   | "cohere"
   | "groq"
   | "openrouter"
+  | "aimlapi"
+  | "huggingface"
   | "together"
   | "fireworks"
   | "ollama";
@@ -56,7 +59,19 @@ export function getModel(modelId: string, _providerKey?: ProviderKey, apiKey?: s
   return getOpenRouter(apiKey)(modelId);
 }
 
-export function resolveModel(modelId: string, apiKey?: string) {
-  const option = MODEL_OPTIONS.find((m) => m.id === modelId);
-  return getModel(option?.id ?? modelId, "openrouter", apiKey);
+/**
+ * Resolve a model to an AI SDK LanguageModel, routing to the right gateway by
+ * provider. OpenRouter, AIML API, and the Hugging Face router are all
+ * OpenAI-compatible, so one key per gateway unlocks its whole catalogue.
+ */
+export function resolveModel(modelId: string, providerSource?: string) {
+  switch (providerSource) {
+    case "aimlapi":
+      return createOpenAI({ baseURL: "https://api.aimlapi.com/v1", apiKey: process.env.AIMLAPI_API_KEY, name: "aimlapi" }).chat(modelId);
+    case "huggingface":
+      return createOpenAI({ baseURL: "https://router.huggingface.co/v1", apiKey: process.env.HUGGINGFACE_API_KEY, name: "huggingface" }).chat(modelId);
+    case "openrouter":
+    default:
+      return getOpenRouter()(modelId);
+  }
 }
