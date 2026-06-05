@@ -1,0 +1,26 @@
+# Render Blueprint for the agentic-ai-studio platform.
+# Deploy: Render Dashboard > New > Blueprint > connect this repo.
+# Secrets (DATABASE_URL, NEXTAUTH_SECRET, LLM keys) are set in the dashboard,
+# not committed here. The service is also created/updated via the Render API.
+services:
+  - type: web
+    name: agentic-ai-studio
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      # Set in the dashboard / via API (sync:false keeps them out of git):
+      - key: DATABASE_URL
+        sync: false
+      - key: NEXTAUTH_SECRET
+        sync: false
+      - key: NEXTAUTH_URL
+        sync: false

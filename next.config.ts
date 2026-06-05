@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Emit a self-contained .next/standalone server (server.js + traced
+  // node_modules) so the Docker image stays small and runs without a full
+  // `npm install` at runtime. Required for the Render/Docker deploy.
+  output: "standalone",
   serverExternalPackages: [
     "@prisma/client",
     "prisma",
