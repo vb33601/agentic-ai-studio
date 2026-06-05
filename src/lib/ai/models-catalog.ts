@@ -30,14 +30,16 @@ async function fetchOpenRouter(): Promise<ModelOption[]> {
       })
       .map((m) => {
         const arch = (m.architecture as { input_modalities?: string[] }) || {};
-        const params = (m.supported_parameters as string[]) || [];
         return {
           id: m.id as string,
           name: (m.name as string) || (m.id as string),
           provider: "openrouter" as const,
           contextWindow: (m.context_length as number) || 8192,
           supportsVision: (arch.input_modalities || []).includes("image"),
-          supportsTools: params.includes("tools"),
+          // Tools enabled for every model so users can toggle tools on any of
+          // them; models that don't support tool-calling fall back to the
+          // markdown-code path in the chat route.
+          supportsTools: true,
           description: ((m.description as string) || "").slice(0, 100),
         };
       });
@@ -80,11 +82,34 @@ async function fetchAIML(): Promise<ModelOption[]> {
   }
 }
 
-/** Full catalogue (OpenRouter + AIML), cached. */
+/** Top trending Hugging Face text-generation models (the long tail is searched). */
+async function fetchHuggingFaceTop(): Promise<ModelOption[]> {
+  try {
+    const res = await fetch(
+      "https://huggingface.co/api/models?filter=text-generation&sort=trendingScore&limit=600",
+      { signal: timeout(15000) }
+    );
+    if (!res.ok) return [];
+    const list = (await res.json()) as Array<{ id: string }>;
+    return list.map((m) => ({
+      id: m.id,
+      name: m.id,
+      provider: "huggingface" as const,
+      contextWindow: 8192,
+      supportsVision: false,
+      supportsTools: true,
+      description: "via Hugging Face router",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Full catalogue (OpenRouter + AIML + Hugging Face top), cached. */
 export async function getModelCatalog(): Promise<ModelOption[]> {
   if (cache && Date.now() - cache.at < TTL) return cache.models;
-  const [or, aiml] = await Promise.all([fetchOpenRouter(), fetchAIML()]);
-  const models = [...or, ...aiml];
+  const [or, aiml, hf] = await Promise.all([fetchOpenRouter(), fetchAIML(), fetchHuggingFaceTop()]);
+  const models = [...or, ...aiml, ...hf];
   if (models.length > 0) cache = { at: Date.now(), models };
   return models;
 }
@@ -104,7 +129,7 @@ export async function searchHuggingFace(query: string): Promise<ModelOption[]> {
       provider: "huggingface" as const,
       contextWindow: 8192,
       supportsVision: false,
-      supportsTools: false,
+      supportsTools: true,
       description: "via Hugging Face router",
     }));
   } catch {
