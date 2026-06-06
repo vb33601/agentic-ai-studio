@@ -61,6 +61,7 @@ export function DeployPanel() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Render deploy failed");
+      if (data.backendDir) addBuildLog(`Detected backend folder: ${data.backendDir}/`);
       addBuildLog(`Repo created → ${data.repoUrl}`);
       if (data.dbWired) addBuildLog("DATABASE_URL wired to managed Postgres (Aiven).");
       else if (data.usesPrisma) addBuildLog("⚠ DB app, but DEFAULT_DATABASE_URL isn't set — add it in Render env.");
