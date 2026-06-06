@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
+import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +40,39 @@ export function DeployPanel() {
 
   const update = (id: string, patch: Partial<Deployment>) =>
     setDeployments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+
+  // Push the selected backend folder to GitHub and deploy it on Render, wired to
+  // the platform's managed Postgres (Aiven) via DATABASE_URL.
+  const deployBackendToRender = async () => {
+    if (appFiles.length === 0) {
+      alert("No files to deploy. Generate a backend first.");
+      return;
+    }
+    const deployId = crypto.randomUUID().replace(/-/g, "");
+    setDeploying("render");
+    clearBuildLog();
+    setDeployments((prev) => [{ id: deployId, provider: "render", status: "building", timestamp: new Date() }, ...prev]);
+    try {
+      addBuildLog(`Pushing ${appFiles.length} files to GitHub and creating a Render service…`);
+      const res = await fetch("/api/deploy/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: appFiles, name: projectName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Render deploy failed");
+      addBuildLog(`Repo created → ${data.repoUrl}`);
+      if (data.dbWired) addBuildLog("DATABASE_URL wired to managed Postgres (Aiven).");
+      else if (data.usesPrisma) addBuildLog("⚠ DB app, but DEFAULT_DATABASE_URL isn't set — add it in Render env.");
+      addBuildLog(`Render service → ${data.url} (building, ~few min)`);
+      update(deployId, { status: "deployed", url: data.url, inspectorUrl: data.dashboardUrl });
+    } catch (e) {
+      addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      update(deployId, { status: "failed" });
+    } finally {
+      setDeploying(null);
+    }
+  };
 
   const deploy = async (provider: string) => {
     if (appFiles.length === 0) {
@@ -115,6 +148,17 @@ export function DeployPanel() {
           </h2>
           <div className="flex items-center gap-2">
             <AppSelector />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              disabled={!!deploying || appFiles.length === 0}
+              onClick={deployBackendToRender}
+              title="Push the selected backend to GitHub and deploy it on Render, wired to your managed Postgres (Aiven)"
+            >
+              {deploying === "render" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
+              Deploy backend → Render
+            </Button>
             <Button
               variant="outline"
               size="sm"
