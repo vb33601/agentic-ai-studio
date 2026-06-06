@@ -74,6 +74,15 @@ body {
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
+/* Radix ScrollArea wraps content in a `display: table` div that GROWS to fit
+   content width — which pushes wide chat messages/code past the viewport on
+   mobile. Force it to block so content respects the width and wraps/scrolls
+   within (combined with min-w-0 on the message bubbles). */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
+}
+
 /* Respect device safe-areas (notches / kiosk bezels) */
 @supports (padding: env(safe-area-inset-left)) {
   body {

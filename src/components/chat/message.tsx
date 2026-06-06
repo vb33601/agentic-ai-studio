@@ -252,7 +252,7 @@ function MessageContent({ content }: { content: string }) {
             if (match || text.includes("\n")) {
               return <CodeBlock code={text} language={match?.[1] || ""} />;
             }
-            return <code className="px-1 py-0.5 rounded bg-black/20 dark:bg-white/10 text-[0.85em] font-mono">{children}</code>;
+            return <code className="px-1 py-0.5 rounded bg-black/20 dark:bg-white/10 text-[0.85em] font-mono break-all">{children}</code>;
           },
           pre: ({ children }) => <>{children}</>,
         }}
