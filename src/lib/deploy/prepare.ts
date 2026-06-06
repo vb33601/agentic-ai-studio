@@ -87,7 +87,7 @@ function stubMissingImports(files: SourceFile[]): SourceFile[] {
       out.push({
         path: stubPath,
         content: /\.(jsx|tsx)$/.test(stubPath)
-          ? `export default function MissingModule() { return null; }\n`
+          ? `// Auto-stub: "${m[2]}" was imported but never generated.\nexport default function MissingModule() {\n  return (\n    <div style={{ padding: 24, fontFamily: "system-ui", color: "#b91c1c" }}>\n      ⚠ This component (<code>${m[2]}</code>) was referenced but never generated. Ask the builder to create it, then redeploy.\n    </div>\n  );\n}\n`
           : `export default {};\n`,
       });
       existing.add(stubPath);
