@@ -41,6 +41,42 @@ export function DeployPanel() {
   const update = (id: string, patch: Partial<Deployment>) =>
     setDeployments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
+  // Full-stack: backend → Render (Aiven), frontend → Vercel (wired to the
+  // backend URL). Returns the frontend link as the primary URL.
+  const deployFullStack = async () => {
+    if (appFiles.length === 0) {
+      alert("No files to deploy. Generate an app first.");
+      return;
+    }
+    const deployId = crypto.randomUUID().replace(/-/g, "");
+    setDeploying("fullstack");
+    clearBuildLog();
+    setDeployments((prev) => [{ id: deployId, provider: "fullstack", status: "building", timestamp: new Date() }, ...prev]);
+    try {
+      addBuildLog("Deploying full app — backend → Render, frontend → Vercel…");
+      const res = await fetch("/api/deploy/fullstack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: appFiles, name: projectName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Full-stack deploy failed");
+      if (data.backendDir) addBuildLog(`Backend folder: ${data.backendDir}/`);
+      if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
+      if (data.backendUrl) addBuildLog(`Backend (Render) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
+      if (data.backendError) addBuildLog(`⚠ Backend: ${data.backendError}`);
+      if (data.frontendUrl) addBuildLog(`✓ FRONTEND LIVE → ${data.frontendUrl}`);
+      if (data.frontendError) addBuildLog(`⚠ Frontend: ${data.frontendError}`);
+      const primary = data.frontendUrl || data.backendUrl;
+      update(deployId, { status: primary ? "deployed" : "failed", url: primary, inspectorUrl: data.backendDashboard });
+    } catch (e) {
+      addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      update(deployId, { status: "failed" });
+    } finally {
+      setDeploying(null);
+    }
+  };
+
   // Push the selected backend folder to GitHub and deploy it on Render, wired to
   // the platform's managed Postgres (Aiven) via DATABASE_URL.
   const deployBackendToRender = async () => {
@@ -147,8 +183,18 @@ export function DeployPanel() {
             <Rocket className="h-4 w-4" />
             Deploy Project
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <AppSelector />
+            <Button
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              disabled={!!deploying || appFiles.length === 0}
+              onClick={deployFullStack}
+              title="Deploy frontend (Vercel) + backend (Render with Aiven DB), wired together — returns the frontend link"
+            >
+              {deploying === "fullstack" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+              Deploy full app
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -158,7 +204,7 @@ export function DeployPanel() {
               title="Push the selected backend to GitHub and deploy it on Render, wired to your managed Postgres (Aiven)"
             >
               {deploying === "render" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
-              Deploy backend → Render
+              Backend only → Render
             </Button>
             <Button
               variant="outline"
