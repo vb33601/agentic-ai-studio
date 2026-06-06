@@ -317,13 +317,8 @@ async function installAndStart(
   if (usesPrisma) {
     handlers.onStatus(`Generating Prisma client (${where || "root"})…`);
     handlers.onLog(`\n[auto-fix] running 'prisma generate' so @prisma/client resolves.\n`);
-    const gen = await wc.spawn("npx", ["-y", "prisma", "generate"], spawnOpts);
-    gen.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
-    await gen.exit; // best-effort — don't block the run if generate hiccups
-
-    // External Postgres can't be reached from the in-browser sandbox (no raw
-    // TCP), so for a SQLite schema we provision a working local DB: ensure a
-    // DATABASE_URL pointing at a file, then `db push` to create the tables.
+    // Ensure a SQLite DATABASE_URL exists for the preview (external Postgres
+    // can't be reached from the sandbox anyway).
     const schemaFile = appFiles.find((f) => /(^|\/)schema\.prisma$/.test(f.path));
     const isSqlite = !!schemaFile && /provider\s*=\s*["']sqlite["']/.test(schemaFile.content);
     if (isSqlite) {
@@ -332,6 +327,27 @@ async function installAndStart(
       if (!hasEnv) {
         try { await wc.fs.writeFile(envPath, 'DATABASE_URL="file:./dev.db"\n'); } catch { /* ignore */ }
       }
+    }
+
+    let genOut = "";
+    const gen = await wc.spawn("npx", ["-y", "prisma", "generate"], spawnOpts);
+    gen.output.pipeTo(new WritableStream({ write: (d) => { genOut += d; handlers.onLog(d); } }));
+    const genCode = await gen.exit;
+
+    // Prisma's native engine can't be downloaded/run inside WebContainer, so
+    // generate fails (socket hang up fetching binaries.prisma.sh). Surface a
+    // clear, actionable note instead of a cryptic "Cannot find module" crash,
+    // and skip the futile db push.
+    const engineBlocked =
+      genCode !== 0 || /socket hang up|binaries\.prisma\.sh|failed to detect the libssl/i.test(genOut);
+    if (engineBlocked) {
+      handlers.onLog(
+        `\n[note] Prisma's database engine can't run in the in-browser preview ` +
+        `(WebContainer can't download/run the native engine). The FRONTEND previews ` +
+        `fine — to run this backend for real, use the Deploy tab → "Deploy backend → ` +
+        `Render", which runs Prisma on a real host wired to your managed Postgres.\n`,
+      );
+    } else if (isSqlite) {
       handlers.onStatus(`Setting up local SQLite database (${where || "root"})…`);
       handlers.onLog(`\n[auto-fix] creating local SQLite database (prisma db push).\n`);
       const push = await wc.spawn("npx", ["-y", "prisma", "db", "push", "--accept-data-loss"], spawnOpts);
