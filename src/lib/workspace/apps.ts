@@ -26,30 +26,48 @@ function dirOf(path: string): string {
   return i === -1 ? "" : path.slice(0, i);
 }
 
+/** Depth used for ordering ("" = root = 0, "a" = 1, "a/b" = 2). */
+function depth(dir: string): number {
+  return dir === "" ? 0 : dir.split("/").length;
+}
+
+/** A dir plus all of its ancestor dirs, excluding root ("a/b" -> ["a","a/b"]). */
+function ancestorsOf(dir: string): string[] {
+  if (!dir) return [];
+  const segs = dir.split("/");
+  return segs.map((_, i) => segs.slice(0, i + 1).join("/"));
+}
+
 /**
- * List the selectable folders for preview/deploy. Returns an EMPTY array when
- * the workspace has a single obvious target (no dropdown needed); otherwise a
- * "Whole project" option followed by one entry per package.json folder.
+ * List the selectable folders for preview/deploy: every package.json folder AND
+ * its parent app folders (so a `flickr-clone/` with `frontend`+`backend`
+ * subfolders offers flickr-clone, flickr-clone/frontend, flickr-clone/backend),
+ * plus a "Whole project" root option when the workspace holds several apps.
+ * Returns [] when there's a single obvious target (no dropdown needed).
  */
 export function detectAppGroups(files: WorkspaceFile[]): AppGroup[] {
   const pkgDirs = new Set<string>();
   for (const f of files) {
     if (f.path === "package.json" || f.path.endsWith("/package.json")) pkgDirs.add(dirOf(f.path));
   }
+  if (pkgDirs.size === 0) return [];
 
-  const dirs = [...pkgDirs];
-  // 0 or 1 package.json folder => a single obvious target, so no dropdown.
-  if (dirs.length < 2) return [];
-
-  const sorted = dirs.sort(
-    (a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b),
-  );
-  const groups: AppGroup[] = sorted.map((d) => ({ root: d, name: d || "Whole project" }));
-  // Ensure a "Whole project" (root) option exists for full-stack runs.
-  if (!groups.some((g) => g.root === "")) {
-    groups.unshift({ root: "", name: "Whole project" });
+  const dirs = new Set<string>();
+  const topSegments = new Set<string>();
+  let hasRootPkg = false;
+  for (const d of pkgDirs) {
+    if (d === "") { hasRootPkg = true; continue; }
+    for (const a of ancestorsOf(d)) dirs.add(a);
+    topSegments.add(d.split("/")[0]);
   }
-  return groups;
+  // Offer the project root when apps span multiple top-level folders (or there's
+  // a root package.json) — otherwise the single top folder IS the whole project.
+  if (hasRootPkg || topSegments.size >= 2) dirs.add("");
+
+  if (dirs.size < 2) return [];
+  return [...dirs]
+    .sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))
+    .map((d) => ({ root: d, name: d || "Whole project" }));
 }
 
 /**
