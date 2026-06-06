@@ -35,7 +35,8 @@ async function gh<T>(token: string, path: string, init?: RequestInit): Promise<T
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
   if (!res.ok) {
-    throw new Error(`GitHub ${path} → ${res.status}: ${data.message || text}`.slice(0, 300));
+    const detail = data.errors ? ` (${data.errors.map((e: { message?: string; code?: string }) => e.message || e.code).join("; ")})` : "";
+    throw new Error(`GitHub ${path} → ${res.status}: ${data.message || text}${detail}`.slice(0, 400));
   }
   return data as T;
 }

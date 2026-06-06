@@ -23,7 +23,9 @@ export async function POST(req: NextRequest) {
     if (!process.env.RENDER_API_KEY) return NextResponse.json({ error: "RENDER_API_KEY is not configured." }, { status: 400 });
     if (!Array.isArray(files) || files.length === 0) return NextResponse.json({ error: "No files to deploy." }, { status: 400 });
 
-    const projectName = (slugify(name || "ai-backend") || "ai-backend").slice(0, 90);
+    // Unique name so repeated deploys never collide with an existing repo/service.
+    const base = (slugify(name || "ai-backend") || "ai-backend").slice(0, 70);
+    const projectName = `${base}-${Math.random().toString(36).slice(2, 7)}`;
 
     // Prepare: auto-detect the backend folder (even inside a parent/monorepo
     // selection), re-root, swap Prisma sqlite→postgres, bind $PORT, derive cmds.

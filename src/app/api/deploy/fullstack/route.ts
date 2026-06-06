@@ -22,7 +22,9 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(files) || files.length === 0) {
       return NextResponse.json({ error: "No files to deploy." }, { status: 400 });
     }
-    const slug = (slugify(name || "ai-app") || "ai-app").slice(0, 80);
+    const slug = (slugify(name || "ai-app") || "ai-app").slice(0, 70);
+    // Unique backend name so repeated deploys never collide with an existing repo/service.
+    const backendName = `${slug}-api-${Math.random().toString(36).slice(2, 7)}`;
     const repoFiles = files.map((f) => ({ path: f.path, content: f.content }));
 
     let backendUrl: string | null = null;
@@ -39,7 +41,7 @@ export async function POST(req: NextRequest) {
         const token = process.env.GITHUB_TOKEN;
         if (!token) throw new Error("GITHUB_TOKEN is not configured.");
         if (!process.env.RENDER_API_KEY) throw new Error("RENDER_API_KEY is not configured.");
-        const repo = await createRepoAndPush(token, `${slug}-api`, backendPrep.files, {
+        const repo = await createRepoAndPush(token, backendName, backendPrep.files, {
           private: true,
           description: "Backend deployed from agentic-ai-studio",
         });
@@ -48,7 +50,7 @@ export async function POST(req: NextRequest) {
         const dbUrl = process.env.DEFAULT_DATABASE_URL;
         if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: dbUrl }); dbWired = true; }
         const svc = await createRenderService({
-          name: `${slug}-api`,
+          name: backendName,
           repo: repo.htmlUrl,
           branch: repo.branch,
           buildCommand: backendPrep.buildCommand,
