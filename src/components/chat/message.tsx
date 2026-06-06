@@ -67,7 +67,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   };
 
   return (
-    <div className={cn("group flex gap-3 py-4 px-4", isUser && "flex-row-reverse")}>
+    <div className={cn("group flex gap-2 sm:gap-3 py-4 px-3 sm:px-4", isUser && "flex-row-reverse")}>
       <div
         className={cn(
           "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium",
@@ -77,7 +77,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
 
-      <div className={cn("flex flex-col gap-2 max-w-[85%]", isUser && "items-end")}>
+      <div className={cn("flex min-w-0 flex-col gap-2 max-w-[85%]", isUser && "items-end")}>
         {toolParts.length > 0 && (
           <div className="w-full">
             <button
@@ -127,7 +127,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
         {textContent && (
           <div
             className={cn(
-              "rounded-2xl px-4 py-3 text-sm leading-relaxed",
+              "min-w-0 max-w-full rounded-2xl px-4 py-3 text-sm leading-relaxed",
               isUser
                 ? "bg-primary text-primary-foreground rounded-tr-sm"
                 : "bg-muted rounded-tl-sm"
@@ -212,7 +212,7 @@ function ToolCall({ part }: { part: NormalizedToolPart }) {
 // the same kind of formatting ChatGPT/Claude show.
 function MessageContent({ content }: { content: string }) {
   return (
-    <div className="space-y-2 text-sm leading-relaxed break-words">
+    <div className="min-w-0 space-y-2 text-sm leading-relaxed break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

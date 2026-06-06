@@ -241,7 +241,7 @@ export function ChatWindow() {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="pb-4">
+        <div className="pb-4 mx-auto w-full max-w-3xl">
           {messages.length === 0 ? (
             <EmptyState />
           ) : (
@@ -263,16 +263,18 @@ export function ChatWindow() {
         </div>
       </ScrollArea>
 
-      <div className="p-4 border-t bg-background/80 backdrop-blur-sm">
-        <ChatInput
-          input={inputText}
-          setInput={setInputText}
-          handleSubmit={handleSubmit}
-          isLoading={isLoading}
-          stop={stop}
-          attachments={attachments}
-          setAttachments={setAttachments}
-        />
+      <div className="p-3 sm:p-4 border-t bg-background/80 backdrop-blur-sm">
+        <div className="mx-auto w-full max-w-3xl">
+          <ChatInput
+            input={inputText}
+            setInput={setInputText}
+            handleSubmit={handleSubmit}
+            isLoading={isLoading}
+            stop={stop}
+            attachments={attachments}
+            setAttachments={setAttachments}
+          />
+        </div>
       </div>
     </div>
   );
