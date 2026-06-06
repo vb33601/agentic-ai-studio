@@ -62,7 +62,7 @@ export function ModelSelector() {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <button className="flex items-center gap-2 w-52 h-8 px-2 rounded-md text-xs bg-muted/50 hover:bg-muted transition-colors">
+        <button className="flex items-center gap-2 w-36 sm:w-52 h-8 px-2 rounded-md text-xs bg-muted/50 hover:bg-muted transition-colors">
           <span className={cn("w-2 h-2 rounded-full shrink-0", PROVIDER_COLORS[selectedModel.provider] || "bg-gray-500")} />
           <span className="truncate flex-1 text-left">{selectedModel.name}</span>
           <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
@@ -72,7 +72,7 @@ export function ModelSelector() {
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="z-50 w-80 rounded-lg border bg-popover shadow-xl overflow-hidden"
+          className="z-50 w-80 max-w-[calc(100vw-1rem)] rounded-lg border bg-popover shadow-xl overflow-hidden"
         >
           <Command shouldFilter className="flex flex-col max-h-96">
             <div className="flex items-center gap-2 border-b px-3">

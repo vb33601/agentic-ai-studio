@@ -18,7 +18,7 @@ export function AgentSelector() {
 
   return (
     <Select value={agentType} onValueChange={setAgentType}>
-      <SelectTrigger className="w-40 h-8 text-xs border-none bg-muted/50">
+      <SelectTrigger className="w-28 sm:w-40 h-8 text-xs border-none bg-muted/50">
         <SelectValue>
           {AGENTS.find((a) => a.id === agentType)?.emoji}{" "}
           {AGENTS.find((a) => a.id === agentType)?.label}

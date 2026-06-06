@@ -30,7 +30,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md rounded-2xl border bg-background p-6 shadow-2xl">
+      <div className="relative z-10 w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border bg-background p-6 shadow-2xl">
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold">Settings</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground rounded-md p-1">
