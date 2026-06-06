@@ -320,6 +320,24 @@ async function installAndStart(
     const gen = await wc.spawn("npx", ["-y", "prisma", "generate"], spawnOpts);
     gen.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
     await gen.exit; // best-effort — don't block the run if generate hiccups
+
+    // External Postgres can't be reached from the in-browser sandbox (no raw
+    // TCP), so for a SQLite schema we provision a working local DB: ensure a
+    // DATABASE_URL pointing at a file, then `db push` to create the tables.
+    const schemaFile = appFiles.find((f) => /(^|\/)schema\.prisma$/.test(f.path));
+    const isSqlite = !!schemaFile && /provider\s*=\s*["']sqlite["']/.test(schemaFile.content);
+    if (isSqlite) {
+      const envPath = app.dir ? `${app.dir}/.env` : ".env";
+      const hasEnv = appFiles.some((f) => f.path === envPath && /DATABASE_URL/.test(f.content));
+      if (!hasEnv) {
+        try { await wc.fs.writeFile(envPath, 'DATABASE_URL="file:./dev.db"\n'); } catch { /* ignore */ }
+      }
+      handlers.onStatus(`Setting up local SQLite database (${where || "root"})…`);
+      handlers.onLog(`\n[auto-fix] creating local SQLite database (prisma db push).\n`);
+      const push = await wc.spawn("npx", ["-y", "prisma", "db", "push", "--accept-data-loss"], spawnOpts);
+      push.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
+      await push.exit; // best-effort
+    }
   }
 
   const script = app.startScript!;
