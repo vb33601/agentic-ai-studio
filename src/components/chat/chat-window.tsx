@@ -109,6 +109,8 @@ export function ChatWindow() {
           agentType: s.agentType,
           enableTools: s.enableTools && s.selectedModel.supportsTools,
           temperature: s.temperature,
+          enhancePrompt: s.enhancePrompt,
+          refineOutput: s.refineOutput,
         };
       },
     }),

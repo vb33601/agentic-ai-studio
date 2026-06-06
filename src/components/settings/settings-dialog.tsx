@@ -20,6 +20,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const {
     selectedModel, setSelectedModel, agentType, setAgentType,
     enableTools, setEnableTools, temperature, setTemperature,
+    enhancePrompt, setEnhancePrompt, refineOutput, setRefineOutput,
     sessions, setSessions, setActiveChatId,
   } = useChatStore();
   const setFiles = useWorkspaceStore((s) => s.setFiles);
@@ -82,6 +83,22 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           <label className="flex items-center justify-between cursor-pointer">
             <span className="font-medium">Enable tools</span>
             <input type="checkbox" checked={enableTools} onChange={(e) => setEnableTools(e.target.checked)} className="h-4 w-4" />
+          </label>
+
+          <label className="flex items-center justify-between cursor-pointer">
+            <span>
+              <span className="font-medium">Enhance prompts</span>
+              <span className="block text-xs text-muted-foreground">Rewrite vague/short prompts before sending</span>
+            </span>
+            <input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} className="h-4 w-4" />
+          </label>
+
+          <label className="flex items-center justify-between cursor-pointer">
+            <span>
+              <span className="font-medium">Refine answers</span>
+              <span className="block text-xs text-muted-foreground">Verify &amp; polish low-quality output</span>
+            </span>
+            <input type="checkbox" checked={refineOutput} onChange={(e) => setRefineOutput(e.target.checked)} className="h-4 w-4" />
           </label>
 
           <div className="pt-4 border-t space-y-2">

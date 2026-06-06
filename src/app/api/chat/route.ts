@@ -1,8 +1,22 @@
-import { streamText, convertToModelMessages, UIMessage, stepCountIs } from "ai";
+import {
+  streamText,
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  UIMessage,
+  stepCountIs,
+} from "ai";
 import { NextRequest } from "next/server";
 import { resolveModel } from "@/lib/ai/providers";
 import { ALL_TOOLS } from "@/lib/ai/tools";
 import { getAgentConfig, detectAgentType } from "@/lib/ai/agents";
+import {
+  preprocessPrompt,
+  applyOutputPipeline,
+  extractArtifacts,
+  buildRepairPrompt,
+  REPAIR_SYSTEM,
+} from "@/lib/ai/prompt-pipeline";
 
 export const maxDuration = 120;
 
@@ -16,6 +30,8 @@ export async function POST(req: NextRequest) {
       agentType,
       enableTools = true,
       systemPrompt,
+      enhancePrompt = true,
+      refineOutput = true,
     } = body as {
       messages: UIMessage[];
       modelId?: string;
@@ -23,6 +39,8 @@ export async function POST(req: NextRequest) {
       agentType?: string;
       enableTools?: boolean;
       systemPrompt?: string;
+      enhancePrompt?: boolean;
+      refineOutput?: boolean;
     };
 
     const lastMessage = messages[messages.length - 1];
@@ -76,29 +94,76 @@ body { ... }
 \`\`\`
 Provide every file the project needs as its own labeled code block. Do not abbreviate or use placeholders.`;
 
-    const finalSystem = agentSystem + FILE_OUTPUT_SUFFIX;
+    const rawModelMessages = await convertToModelMessages(messages);
 
-    const modelMessages = await convertToModelMessages(messages);
+    // Preprocess: shape the prompt into an LLM-friendly form (deterministic
+    // augmentation always; cheap-model rewrite only for hard prompts) so small
+    // models perform closer to large ones. Fails open to the raw prompt.
+    const pre = await preprocessPrompt({
+      lastUserText: lastText,
+      agentType: resolvedAgentType,
+      enhance: enhancePrompt,
+      modelMessages: rawModelMessages,
+    });
 
-    console.log(`[chat] agent=${resolvedAgentType} model=${modelId} tools=${Object.keys(activeTools ?? {}).join(",")} temp=${temperature}`);
+    const finalSystem = agentSystem + pre.systemAugmentation + FILE_OUTPUT_SUFFIX;
 
-    const result = streamText({
-      model,
-      system: finalSystem,
-      messages: modelMessages,
-      tools: activeTools,
-      stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
-      temperature,
-      onFinish: async ({ usage, finishReason }) => {
-        console.log(`[chat] finished reason=${finishReason} tokens=${usage?.totalTokens}`);
+    console.log(`[chat] agent=${resolvedAgentType} model=${modelId} tools=${Object.keys(activeTools ?? {}).join(",")} temp=${temperature} enhance=${enhancePrompt} didRewrite=${pre.didRewrite}`);
+
+    // Buffered (replace) output is only safe when no file/image tool parts must
+    // reach the client — otherwise we must stream live so the workspace and
+    // image renderer get the tool parts.
+    const producesArtifacts = hasTools && (allowedTools.includes("createFile") || allowedTools.includes("generateImage"));
+    const canRepair = hasTools && allowedTools.includes("createFile");
+
+    const stream = createUIMessageStream({
+      // Surface the real error text to the client (the SDK masks it by default).
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
+      execute: async ({ writer }) => {
+        const result = streamText({
+          model,
+          system: finalSystem,
+          messages: pre.modelMessages,
+          tools: activeTools,
+          stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
+          temperature,
+          onFinish: async ({ usage, finishReason }) => {
+            console.log(`[chat] finished reason=${finishReason} tokens=${usage?.totalTokens}`);
+          },
+        });
+
+        await applyOutputPipeline({
+          writer,
+          result,
+          agentType: resolvedAgentType,
+          refineOutput,
+          canBuffer: !producesArtifacts,
+          // QA the generated files (only meaningful when createFile is allowed).
+          getArtifacts: producesArtifacts
+            ? async () => extractArtifacts(await result.steps)
+            : undefined,
+          // One bounded pass to auto-fix flagged files in place.
+          repairArtifacts: canRepair
+            ? async ({ writer, artifacts, flags }) => {
+                const repair = streamText({
+                  model,
+                  system: REPAIR_SYSTEM,
+                  prompt: buildRepairPrompt(artifacts, flags),
+                  tools: activeTools,
+                  stopWhen: stepCountIs(4),
+                  temperature,
+                });
+                // Same message: don't re-send start, keep it open for the footer.
+                writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
+                await repair.text;
+                return extractArtifacts(await repair.steps);
+              }
+            : undefined,
+        });
       },
     });
 
-    // Surface the real error text to the client (the SDK masks it by default),
-    // so a bad model id / provider error shows a message instead of hanging.
-    return result.toUIMessageStreamResponse({
-      onError: (error) => (error instanceof Error ? error.message : String(error)),
-    });
+    return createUIMessageStreamResponse({ stream });
   } catch (error) {
     console.error("Chat API error:", error);
     return new Response(JSON.stringify({ error: "Internal server error" }), {

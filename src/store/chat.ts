@@ -19,6 +19,8 @@ interface ChatStore {
   agentType: string;
   enableTools: boolean;
   temperature: number;
+  enhancePrompt: boolean;
+  refineOutput: boolean;
   sidebarOpen: boolean;
 
   setActiveChatId: (id: string | null) => void;
@@ -26,6 +28,8 @@ interface ChatStore {
   setAgentType: (type: string) => void;
   setEnableTools: (enabled: boolean) => void;
   setTemperature: (temp: number) => void;
+  setEnhancePrompt: (enabled: boolean) => void;
+  setRefineOutput: (enabled: boolean) => void;
   toggleSidebar: () => void;
   setSessions: (sessions: ChatSession[]) => void;
   addSession: (session: ChatSession) => void;
@@ -42,6 +46,8 @@ export const useChatStore = create<ChatStore>()(
       agentType: "orchestrator",
       enableTools: true,
       temperature: 0.7,
+      enhancePrompt: true,
+      refineOutput: true,
       sidebarOpen: true,
 
       setActiveChatId: (id) => set({ activeChatId: id }),
@@ -49,6 +55,8 @@ export const useChatStore = create<ChatStore>()(
       setAgentType: (type) => set({ agentType: type }),
       setEnableTools: (enabled) => set({ enableTools: enabled }),
       setTemperature: (temp) => set({ temperature: temp }),
+      setEnhancePrompt: (enabled) => set({ enhancePrompt: enabled }),
+      setRefineOutput: (enabled) => set({ refineOutput: enabled }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       setSessions: (sessions) => set({ sessions }),
       addSession: (session) => set((s) => ({ sessions: [session, ...s.sessions] })),
@@ -71,6 +79,8 @@ export const useChatStore = create<ChatStore>()(
         agentType: s.agentType,
         enableTools: s.enableTools,
         temperature: s.temperature,
+        enhancePrompt: s.enhancePrompt,
+        refineOutput: s.refineOutput,
         sidebarOpen: s.sidebarOpen,
         activeChatId: s.activeChatId,
       }),
