@@ -308,6 +308,20 @@ async function installAndStart(
     await add.exit;
   }
 
+  // Prisma: generate the client. The app imports @prisma/client but the actual
+  // client is generated from schema.prisma into .prisma/client — without this
+  // the server crashes with "Cannot find module '.prisma/client/default'".
+  const usesPrisma =
+    declared.has("@prisma/client") || declared.has("prisma") ||
+    appFiles.some((f) => /(^|\/)schema\.prisma$/.test(f.path));
+  if (usesPrisma) {
+    handlers.onStatus(`Generating Prisma client (${where || "root"})…`);
+    handlers.onLog(`\n[auto-fix] running 'prisma generate' so @prisma/client resolves.\n`);
+    const gen = await wc.spawn("npx", ["-y", "prisma", "generate"], spawnOpts);
+    gen.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
+    await gen.exit; // best-effort — don't block the run if generate hiccups
+  }
+
   const script = app.startScript!;
   const startCommand = (app.pkg.scripts?.[script] || "").trim();
   const tokens = startCommand.split(/\s+/).filter(Boolean);
