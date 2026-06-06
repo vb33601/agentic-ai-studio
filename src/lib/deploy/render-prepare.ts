@@ -95,6 +95,42 @@ function bindToEnvPort(content: string): string {
   return content.replace(/\.listen\(\s*(\d{2,5})\b/g, (_m, port) => `.listen(process.env.PORT || ${port}`);
 }
 
+/** @prisma/client is CommonJS — named imports break under ESM. Use default import. */
+function fixPrismaImport(content: string): string {
+  return content.replace(
+    /import\s*\{([^}]+)\}\s*from\s*(['"])@prisma\/client\2\s*;?/g,
+    (_m, names) => `import __prismaPkg from '@prisma/client';\nconst { ${String(names).trim()} } = __prismaPkg;`,
+  );
+}
+
+/** Drop DATABASE_URL/PORT from a committed .env so the host's values win. */
+function sanitizeEnv(content: string): string {
+  return content
+    .split("\n")
+    .filter((line) => !/^\s*(DATABASE_URL|PORT)\s*=/.test(line))
+    .join("\n");
+}
+
+/**
+ * Pin Prisma to v6. The generated schema uses `url = env(...)` in the datasource,
+ * which Prisma 7 rejects (P1012 — must move to prisma.config.ts + a driver
+ * adapter). v6 still supports it, so deploys build without a schema rewrite.
+ */
+function pinPrismaV6(pkgContent: string): string {
+  try {
+    const p = JSON.parse(pkgContent);
+    for (const sec of ["dependencies", "devDependencies"] as const) {
+      if (p[sec]?.["@prisma/client"]) p[sec]["@prisma/client"] = "^6.0.0";
+      if (p[sec]?.["prisma"]) p[sec]["prisma"] = "^6.0.0";
+    }
+    return JSON.stringify(p, null, 2);
+  } catch {
+    return pkgContent;
+  }
+}
+
+const ENV_FILE = /(^|\/)\.env(\.|$)/;
+
 export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const backendDir = detectBackendDir(input);
   const scoped = reRoot(input, backendDir);
@@ -103,9 +139,17 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const files = scoped.map((f) => {
     let content = f.content;
     if (/(^|\/)schema\.prisma$/.test(f.path)) content = toPostgres(content);
-    else if (SRC_EXT.test(f.path)) content = bindToEnvPort(content);
+    else if (ENV_FILE.test(f.path)) content = sanitizeEnv(content);
+    else if (SRC_EXT.test(f.path)) content = fixPrismaImport(bindToEnvPort(content));
+    else return { path: f.path, content };
     return { path: f.path, content };
   });
+
+  // Pin Prisma to v6 so the schema's `url = env(...)` is accepted (Prisma 7 P1012).
+  if (hasSchema) {
+    const i = files.findIndex((f) => f.path === "package.json");
+    if (i !== -1) files[i] = { path: "package.json", content: pinPrismaV6(files[i].content) };
+  }
 
   const pkg = files.find((f) => f.path === "package.json");
   const parsed = pkg ? readJson(pkg.content) : null;
