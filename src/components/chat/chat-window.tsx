@@ -229,12 +229,12 @@ export function ChatWindow() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-background/80 backdrop-blur-sm">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2 border-b bg-background/80 backdrop-blur-sm">
+        <div className="flex items-center gap-2 shrink-0">
           <Sparkles className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">AI Assistant</span>
+          <span className="text-sm font-medium hidden sm:inline">AI Assistant</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
           <AgentSelector />
           <ModelSelector />
         </div>

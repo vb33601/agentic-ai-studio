@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,12 +12,22 @@ export const metadata: Metadata = {
   },
 };
 
+// Responsive across phones, tablets, kiosks and desktops: device-width scaling,
+// safe-area handling for notches, and zoom enabled for accessibility.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: "cover",
+  themeColor: "#09090b",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="h-full overflow-hidden bg-zinc-950 text-zinc-50 antialiased">
+      <body className="h-dvh overflow-hidden bg-zinc-950 text-zinc-50 antialiased">
         {children}
       </body>
     </html>

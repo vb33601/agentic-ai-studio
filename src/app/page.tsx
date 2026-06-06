@@ -10,7 +10,7 @@ const WorkspaceLayout = dynamic(
 
 function AppLoader() {
   return (
-    <div className="h-screen bg-zinc-950 flex items-center justify-center">
+    <div className="h-dvh bg-zinc-950 flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="w-8 h-8 border-2 border-zinc-600 border-t-white rounded-full animate-spin" />
         <p className="text-sm text-zinc-400">Loading AI Platform...</p>
@@ -22,7 +22,7 @@ function AppLoader() {
 export default function Home() {
   return (
     <Providers>
-      <div className="h-screen overflow-hidden dark bg-zinc-950 text-zinc-50">
+      <div className="h-dvh overflow-hidden dark bg-zinc-950 text-zinc-50">
         <WorkspaceLayout />
       </div>
     </Providers>

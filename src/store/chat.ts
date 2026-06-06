@@ -31,6 +31,7 @@ interface ChatStore {
   setEnhancePrompt: (enabled: boolean) => void;
   setRefineOutput: (enabled: boolean) => void;
   toggleSidebar: () => void;
+  setSidebarOpen: (open: boolean) => void;
   setSessions: (sessions: ChatSession[]) => void;
   addSession: (session: ChatSession) => void;
   removeSession: (id: string) => void;
@@ -58,6 +59,7 @@ export const useChatStore = create<ChatStore>()(
       setEnhancePrompt: (enabled) => set({ enhancePrompt: enabled }),
       setRefineOutput: (enabled) => set({ refineOutput: enabled }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+      setSidebarOpen: (open) => set({ sidebarOpen: open }),
       setSessions: (sessions) => set({ sessions }),
       addSession: (session) => set((s) => ({ sessions: [session, ...s.sessions] })),
       removeSession: (id) =>

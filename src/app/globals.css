@@ -70,6 +70,18 @@ body {
   border-radius: 2px;
 }
 
+/* Hide scrollbar but keep scrolling (e.g. the responsive tab bar) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Respect device safe-areas (notches / kiosk bezels) */
+@supports (padding: env(safe-area-inset-left)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
 /* Animations */
 @keyframes pulse {
   0%, 100% { opacity: 1; }

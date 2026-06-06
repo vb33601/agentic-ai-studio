@@ -13,14 +13,16 @@ import { apiListChats, apiCreateChat, apiDeleteChat } from "@/lib/api/chats";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 
 export function Sidebar() {
-  const { sessions, activeChatId, setActiveChatId, setSessions, addSession, removeSession, selectedModel } =
+  const { sessions, activeChatId, setActiveChatId, setSessions, addSession, removeSession, selectedModel, setSidebarOpen } =
     useChatStore();
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
 
-  // Selecting a chat should also bring the chat view forward.
+  // Selecting a chat brings the chat view forward, and on mobile closes the
+  // overlay drawer so the content is visible.
   const openChat = (id: string) => {
     setActiveChatId(id);
     setActiveTab("chat");
+    if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
   };
   const [search, setSearch] = useState("");
   const [activeSection, setActiveSection] = useState<"chats" | "projects">("chats");
