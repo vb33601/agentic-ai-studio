@@ -52,19 +52,28 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const pkg = files.find((f) => f.path === "package.json");
   const parsed = pkg ? readJson(pkg.content) : null;
   const scripts = (parsed?.scripts as Record<string, string> | undefined) || {};
-  const deps = {
-    ...(parsed?.dependencies as Record<string, string> | undefined),
-    ...(parsed?.devDependencies as Record<string, string> | undefined),
-  };
-  if (deps["@prisma/client"] || deps["prisma"]) usesPrisma = true;
 
-  // Start command: prefer an explicit "start" script; otherwise run the main
-  // entry directly (avoid "dev" — it often uses --watch / nodemon).
-  const main = (parsed?.main as string | undefined) || "src/server.js";
-  const startCommand = scripts.start ? "npm run start" : `node ${main}`;
+  // Only treat it as a Prisma app if a schema is actually present — a stray
+  // @prisma/client dep without a schema would fail `prisma generate`.
+  const hasSchema = files.some((f) => /(^|\/)schema\.prisma$/.test(f.path));
+  usesPrisma = hasSchema;
+
+  // Start command: an explicit "start" script wins; otherwise run the real
+  // entry file (avoid "dev" — it often uses --watch/nodemon). Detect the entry
+  // from package.json "main" or the first common server file present.
+  const entryCandidates = [
+    "src/index.js", "src/server.js", "src/app.js", "src/main.js",
+    "index.js", "server.js", "app.js",
+  ];
+  const mainField = typeof parsed?.main === "string" ? parsed.main : null;
+  const entry =
+    (mainField && files.some((f) => f.path === mainField) && mainField) ||
+    entryCandidates.find((c) => files.some((f) => f.path === c)) ||
+    mainField || "src/index.js";
+  const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
 
   const buildSteps = ["npm install"];
-  if (usesPrisma) {
+  if (hasSchema) {
     buildSteps.push("npx prisma generate");
     // Apply the schema: migrations if present, else push the schema directly.
     buildSteps.push("(npx prisma migrate deploy || npx prisma db push --accept-data-loss)");

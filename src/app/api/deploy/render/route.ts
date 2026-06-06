@@ -23,6 +23,25 @@ export async function POST(req: NextRequest) {
     if (!process.env.RENDER_API_KEY) return NextResponse.json({ error: "RENDER_API_KEY is not configured." }, { status: 400 });
     if (!Array.isArray(files) || files.length === 0) return NextResponse.json({ error: "No files to deploy." }, { status: 400 });
 
+    // Guard against deploying the wrong folder. A deployable backend has its
+    // package.json at the (re-rooted) top. If there's no root package.json, or
+    // there are nested package.json files, the user selected a parent/monorepo
+    // folder instead of the backend itself.
+    const rootPkg = files.some((f) => f.path === "package.json");
+    const nestedPkg = files.some((f) => f.path.endsWith("/package.json"));
+    if (!rootPkg) {
+      return NextResponse.json(
+        { error: "No package.json at the root of the selected folder. In the dropdown, pick the backend folder (the one that directly contains package.json)." },
+        { status: 400 },
+      );
+    }
+    if (nestedPkg) {
+      return NextResponse.json(
+        { error: "This looks like the whole project (it contains subfolders with their own package.json). Pick the specific backend folder (e.g. …/backend) in the dropdown, then deploy." },
+        { status: 400 },
+      );
+    }
+
     const projectName = (slugify(name || "ai-backend") || "ai-backend").slice(0, 90);
 
     // Prepare: Prisma sqlite→postgres, $PORT binding, build/start commands.
