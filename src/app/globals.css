@@ -83,6 +83,13 @@ body {
   min-width: 0 !important;
 }
 
+/* Scale the whole UI up on larger screens so text and icons aren't tiny on web.
+   Tailwind sizes are rem-based, so bumping the root font enlarges text, icons
+   and spacing proportionally — mobile stays compact. */
+@media (min-width: 1024px) { html { font-size: 17px; } }
+@media (min-width: 1440px) { html { font-size: 18px; } }
+@media (min-width: 1920px) { html { font-size: 19px; } }
+
 /* Respect device safe-areas (notches / kiosk bezels) */
 @supports (padding: env(safe-area-inset-left)) {
   body {
