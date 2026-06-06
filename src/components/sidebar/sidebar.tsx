@@ -75,7 +75,7 @@ export function Sidebar() {
   return (
     <>
     <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    <div className="w-full md:w-64 flex flex-col overflow-hidden max-h-[85dvh] md:max-h-none md:h-full border-b md:border-b-0 md:border-r bg-background md:bg-muted/20 shrink-0 shadow-xl md:shadow-none rounded-b-2xl md:rounded-none">
+    <div className="w-full md:w-64 flex flex-col overflow-hidden h-full min-h-0 md:border-r bg-background md:bg-muted/20 shrink-0">
       <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
         <div className="flex items-center gap-2 flex-1">
           <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">

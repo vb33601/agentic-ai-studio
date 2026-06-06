@@ -36,16 +36,12 @@ export function WorkspaceLayout() {
           an in-flow left column on desktop. */}
       <div
         className={cn(
-          "fixed inset-x-0 top-0 z-50 transition-transform duration-200 md:static md:inset-auto md:z-auto md:translate-y-0 md:transition-none",
+          "fixed inset-0 z-50 transition-transform duration-200 md:static md:inset-auto md:z-auto md:translate-y-0 md:transition-none",
           sidebarOpen ? "translate-y-0" : "-translate-y-full md:hidden"
         )}
       >
         <Sidebar />
       </div>
-      {/* Tap-out backdrop (small screens only). */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
-      )}
 
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex items-center gap-1 px-2 sm:px-3 py-2 border-b bg-background/95 backdrop-blur-sm overflow-x-auto no-scrollbar">
