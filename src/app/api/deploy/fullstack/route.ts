@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRepoAndPush } from "@/lib/deploy/github";
 import { createRenderService, type RenderEnvVar } from "@/lib/deploy/render";
-import { prepareBackendForRender } from "@/lib/deploy/render-prepare";
+import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import { deployToVercel } from "@/lib/deploy/vercel";
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
         repoUrl = repo.htmlUrl;
         const envVars: RenderEnvVar[] = [{ key: "NODE_ENV", value: "production" }];
         const dbUrl = process.env.DEFAULT_DATABASE_URL;
-        if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: dbUrl }); dbWired = true; }
+        if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
         const svc = await createRenderService({
           name: backendName,
           repo: repo.htmlUrl,

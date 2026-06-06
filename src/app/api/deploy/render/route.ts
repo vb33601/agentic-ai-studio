@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRepoAndPush } from "@/lib/deploy/github";
 import { createRenderService, type RenderEnvVar } from "@/lib/deploy/render";
-import { prepareBackendForRender } from "@/lib/deploy/render-prepare";
+import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { slugify } from "@/lib/utils";
 import type { WorkspaceFile } from "@/store/workspace";
 
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
 
     const envVars: RenderEnvVar[] = [{ key: "NODE_ENV", value: "production" }];
     const dbUrl = process.env.DEFAULT_DATABASE_URL;
-    if (prep.usesPrisma && dbUrl) envVars.push({ key: "DATABASE_URL", value: dbUrl });
+    if (prep.usesPrisma && dbUrl) envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, projectName) });
 
     const service = await createRenderService({
       name: projectName,

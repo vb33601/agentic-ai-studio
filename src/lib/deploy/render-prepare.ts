@@ -131,6 +131,16 @@ function pinPrismaV6(pkgContent: string): string {
 
 const ENV_FILE = /(^|\/)\.env(\.|$)/;
 
+/**
+ * Give a deployed app its OWN Postgres schema so its tables never collide with
+ * the platform's (or another app's) tables in the shared Aiven `defaultdb`.
+ * Prisma creates the schema on `db push`/`migrate`.
+ */
+export function appDatabaseUrl(baseUrl: string, appName: string): string {
+  const schema = appName.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^[^a-z_]/, "a_").slice(0, 48);
+  return baseUrl + (baseUrl.includes("?") ? "&" : "?") + `schema=${schema}`;
+}
+
 export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const backendDir = detectBackendDir(input);
   const scoped = reRoot(input, backendDir);
@@ -168,10 +178,15 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     mainField || "src/index.js";
   const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
 
+  const hasMigrations = files.some((f) => /(^|\/)prisma\/migrations\/.+/.test(f.path));
   const buildSteps = ["npm install"];
   if (hasSchema) {
     buildSteps.push("npx prisma generate");
-    buildSteps.push("(npx prisma migrate deploy || npx prisma db push --accept-data-loss)");
+    // With committed migrations use migrate deploy; otherwise push the schema
+    // (generated apps rarely ship a migrations folder). The app gets its OWN
+    // Postgres schema (set via DATABASE_URL ?schema=…), so this is a clean,
+    // empty namespace — no collision with the platform's or other apps' tables.
+    buildSteps.push(hasMigrations ? "npx prisma migrate deploy" : "npx prisma db push --accept-data-loss");
   }
 
   return { files, buildCommand: buildSteps.join(" && "), startCommand, usesPrisma: hasSchema, backendDir };
