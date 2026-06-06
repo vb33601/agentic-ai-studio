@@ -75,8 +75,8 @@ export function Sidebar() {
   return (
     <>
     <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    <div className="w-full md:w-64 flex flex-col max-h-[85dvh] md:max-h-none md:h-full border-b md:border-b-0 md:border-r bg-background md:bg-muted/20 shrink-0 shadow-xl md:shadow-none rounded-b-2xl md:rounded-none">
-      <div className="flex items-center gap-2 px-4 py-3 border-b">
+    <div className="w-full md:w-64 flex flex-col overflow-hidden max-h-[85dvh] md:max-h-none md:h-full border-b md:border-b-0 md:border-r bg-background md:bg-muted/20 shrink-0 shadow-xl md:shadow-none rounded-b-2xl md:rounded-none">
+      <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
         <div className="flex items-center gap-2 flex-1">
           <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
             <Sparkles className="h-4 w-4 text-primary-foreground" />
@@ -118,7 +118,7 @@ export function Sidebar() {
         ))}
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div className="px-2 pb-2 space-y-0.5">
           {filtered.length === 0 ? (
             <div className="text-center py-8 text-xs text-muted-foreground">
@@ -155,7 +155,7 @@ export function Sidebar() {
         </div>
       </ScrollArea>
 
-      <div className="border-t p-3 space-y-1">
+      <div className="border-t p-3 space-y-1 shrink-0 bg-background md:bg-transparent">
         <QuickAccessButton icon={Globe} label="Web Search" badge="Tavily" />
         <QuickAccessButton icon={Cpu} label="Code Runner" badge="Node.js" />
         <QuickAccessButton icon={Zap} label="Image Gen" badge="Pollinations" />
