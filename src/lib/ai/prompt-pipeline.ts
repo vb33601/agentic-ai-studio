@@ -151,6 +151,7 @@ const BUILD_CONTRACT = `
 
 # Build quality bar (aim to impress)
 - Ship complete, production-ready work: no placeholders, TODOs, "...", lorem ipsum, or omitted sections. Every file must be whole and actually run.
+- ALWAYS include the application's ENTRY/START file and its root component so it launches — for ANY stack (e.g. index.html + main.jsx + App.jsx for React/Vite; the equivalent entry for Vue/Svelte/Angular/Next; the main/start file for Node/Python/Go/Rust; index.html for static). Every file the entry imports (transitively) MUST exist — never reference a file you didn't create.
 - Code: clean, idiomatic, and robust — handle empty/error/edge states, use clear names, comment only non-obvious logic, and keep a sensible project structure.
 - Anything visual: make it genuinely polished and modern, not generic. Use a cohesive restrained palette, strong typographic hierarchy, generous whitespace, subtle depth (rounded corners, soft shadows, hairline borders), and smooth hover/focus/transition micro-interactions. Fully responsive and accessible (semantic HTML, labels, visible focus, adequate contrast).
 - Make it feel alive: include realistic sample/demo content and thoughtful empty/loading states so the result looks finished, not skeletal.
@@ -406,7 +407,35 @@ export function detectArtifactFlags(artifacts: Artifact[]): string[] {
       flags.push(`\`${a.path}\` has no responsive viewport meta tag — add it so the layout works on mobile.`);
     }
   }
-  return flags.slice(0, 6);
+
+  // Cross-file: a local module imported but never created (e.g. main.jsx imports
+  // ./App.jsx that's missing). The auto-repair pass will then create it.
+  const paths = new Set(artifacts.map((a) => a.path));
+  const suffixes = ["", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".mjs", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"];
+  const join = (dir: string, rel: string) => {
+    const parts = dir ? dir.split("/") : [];
+    for (const seg of rel.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") parts.pop();
+      else parts.push(seg);
+    }
+    return parts.join("/");
+  };
+  const seen = new Set<string>();
+  for (const a of artifacts) {
+    if (!/\.(jsx?|tsx?|mjs|cjs|vue|svelte)$/.test(a.path)) continue;
+    const dir = a.path.includes("/") ? a.path.slice(0, a.path.lastIndexOf("/")) : "";
+    const re = /(?:from\s*|import\s*)['"](\.[^'"]+)['"]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(a.content))) {
+      const target = join(dir, m[1]);
+      if (suffixes.some((s) => paths.has(target + s)) || seen.has(target)) continue;
+      seen.add(target);
+      flags.push(`\`${m[1]}\` is imported by \`${a.path}\` but was never created — create that file so the app's imports resolve.`);
+    }
+  }
+
+  return flags.slice(0, 8);
 }
 
 function buildNotesBlock(flags: string[]): string {
