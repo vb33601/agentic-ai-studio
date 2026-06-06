@@ -22,7 +22,34 @@ export interface DeployPrep {
   framework: string | null;
   buildCommand?: string;
   outputDirectory?: string;
+  /** Subdirectory the app actually lives in (e.g. "frontend"); undefined = root. */
+  rootDirectory?: string;
   note?: string;
+}
+
+/** The directory part of a path ("frontend/package.json" -> "frontend"). */
+function dirOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
+/**
+ * Choose the app's package.json: a root one wins (it usually orchestrates the
+ * project); otherwise the shallowest nested one (e.g. `frontend/package.json`).
+ * Returns -1 when there is none.
+ */
+function pickAppPackageJson(files: SourceFile[]): number {
+  let best = -1;
+  let bestDepth = Infinity;
+  files.forEach((f, i) => {
+    if (f.path !== "package.json" && !f.path.endsWith("/package.json")) return;
+    const depth = f.path === "package.json" ? 0 : dirOf(f.path).split("/").length;
+    if (depth < bestDepth) {
+      bestDepth = depth;
+      best = i;
+    }
+  });
+  return best;
 }
 
 const VITE_CONFIG = `import { defineConfig } from "vite";
@@ -84,7 +111,7 @@ function detectByFiles(files: SourceFile[]): string | null {
 
 export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   let files = augmentPackageJson(input);
-  const idx = files.findIndex((f) => f.path === "package.json" || f.path.endsWith("/package.json"));
+  const idx = pickAppPackageJson(files);
 
   // No package.json: a JS site generator by file signature, else pure static
   // (works for any language's files — HTML output, docs, source, etc.).
@@ -92,11 +119,14 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
     return { files, framework: detectByFiles(files) };
   }
 
+  // The subdirectory the app lives in (so Vercel builds from there, not root).
+  const rootDirectory = dirOf(files[idx].path) || undefined;
+
   let pkg: { scripts?: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
   try {
     pkg = JSON.parse(files[idx].content);
   } catch {
-    return { files, framework: null };
+    return { files, framework: null, rootDirectory };
   }
 
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
@@ -117,10 +147,10 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
     files[idx] = { ...files[idx], content: JSON.stringify(pkg, null, 2) };
     if (!has(files, /(^|\/)vite\.config\.(js|ts|mjs|cjs)$/)) files.push({ path: "vite.config.js", content: VITE_CONFIG });
     if (!has(files, /(^|\/)tsconfig\.json$/) && has(files, /\.tsx?$/)) files.push({ path: "tsconfig.json", content: TSCONFIG });
-    return { files, framework: "vite", buildCommand: "vite build", outputDirectory: "dist" };
+    return { files, framework: "vite", buildCommand: "vite build", outputDirectory: "dist", rootDirectory };
   }
 
   // Any other recognized framework → complete manifest, let Vercel's preset build.
   // Unrecognized JS app → static.
-  return { files, framework: slug };
+  return { files, framework: slug, rootDirectory };
 }

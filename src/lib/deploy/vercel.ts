@@ -40,7 +40,7 @@ function projectName(name?: string): string {
 /** Create a production deployment from inline workspace files. */
 export async function deployToVercel(
   files: WorkspaceFile[],
-  opts: { name?: string; framework?: string | null; buildCommand?: string; outputDirectory?: string } = {}
+  opts: { name?: string; framework?: string | null; buildCommand?: string; outputDirectory?: string; rootDirectory?: string } = {}
 ): Promise<DeployResult> {
   const token = process.env.VERCEL_TOKEN;
   if (!token) throw new Error("VERCEL_TOKEN is not configured on the server.");
@@ -52,6 +52,8 @@ export async function deployToVercel(
   };
   if (opts.buildCommand) projectSettings.buildCommand = opts.buildCommand;
   if (opts.outputDirectory) projectSettings.outputDirectory = opts.outputDirectory;
+  // Build from the app's subdirectory (e.g. "frontend") when it isn't at root.
+  if (opts.rootDirectory) projectSettings.rootDirectory = opts.rootDirectory;
   const body = {
     name,
     files: files.map((f) => ({ file: f.path, data: f.content })),

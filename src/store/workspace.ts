@@ -17,12 +17,15 @@ interface WorkspaceStore {
   activeFileId: string | null;
   previewUrl: string | null;
   projectId: string | null;
+  /** Selected app folder for preview/deploy when a chat has multiple apps. */
+  selectedAppDir: string | null;
   isBuilding: boolean;
   buildLog: string[];
 
   setActiveTab: (tab: WorkspaceTab) => void;
   setActiveFileId: (id: string | null) => void;
   setPreviewUrl: (url: string | null) => void;
+  setSelectedAppDir: (dir: string | null) => void;
   setProjectId: (id: string | null) => void;
   setIsBuilding: (building: boolean) => void;
   addBuildLog: (line: string) => void;
@@ -39,12 +42,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   activeFileId: null,
   previewUrl: null,
   projectId: null,
+  selectedAppDir: null,
   isBuilding: false,
   buildLog: [],
 
   setActiveTab: (tab) => set({ activeTab: tab }),
   setActiveFileId: (id) => set({ activeFileId: id }),
   setPreviewUrl: (url) => set({ previewUrl: url }),
+  setSelectedAppDir: (dir) => set({ selectedAppDir: dir }),
   setProjectId: (id) => set({ projectId: id }),
   setIsBuilding: (building) => set({ isBuilding: building }),
   addBuildLog: (line) => set((s) => ({ buildLog: [...s.buildLog, line] })),

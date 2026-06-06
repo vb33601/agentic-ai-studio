@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useWorkspaceStore, WorkspaceFile } from "@/store/workspace";
 import { runProject, webContainerSupported, type RunResult } from "@/lib/webcontainer/runner";
+import { detectAppGroups, filesForApp, resolveAppRoot } from "@/lib/workspace/apps";
+import { AppSelector } from "@/components/workspace/app-selector";
 
 type Viewport = "desktop" | "tablet" | "mobile";
 const VIEWPORT_SIZES: Record<Viewport, string> = {
@@ -47,7 +49,12 @@ function buildPreviewDoc(files: WorkspaceFile[], indexHtml: string): string {
 type RunStatus = "idle" | "booting" | "ready" | "error";
 
 export function PreviewPanel() {
-  const { previewUrl, files } = useWorkspaceStore();
+  const { previewUrl, files, selectedAppDir } = useWorkspaceStore();
+  // When the chat has multiple apps, scope preview to the selected one (its
+  // files re-rooted), so package.json/index.html resolve at the app's root.
+  const groups = useMemo(() => detectAppGroups(files), [files]);
+  const appRoot = resolveAppRoot(groups, selectedAppDir);
+  const appFiles = useMemo(() => filesForApp(files, appRoot), [files, appRoot]);
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [customUrl, setCustomUrl] = useState(previewUrl || "");
   const [key, setKey] = useState(0);
@@ -61,13 +68,13 @@ export function PreviewPanel() {
   const [logsOpen, setLogsOpen] = useState(false);
   const runRef = useRef<RunResult | null>(null);
 
-  const hasPackageJson = files.some((f) => f.name === "package.json");
-  const indexFile = files.find((f) => f.name === "index.html");
+  const hasPackageJson = appFiles.some((f) => f.name === "package.json");
+  const indexFile = appFiles.find((f) => f.name === "index.html");
   const isNodeProject = hasPackageJson;
 
   const srcDoc = useMemo(
-    () => (!isNodeProject && indexFile ? buildPreviewDoc(files, indexFile.content) : undefined),
-    [files, indexFile, isNodeProject]
+    () => (!isNodeProject && indexFile ? buildPreviewDoc(appFiles, indexFile.content) : undefined),
+    [appFiles, indexFile, isNodeProject]
   );
 
   const appendLog = useCallback((chunk: string) => {
@@ -95,7 +102,7 @@ export function PreviewPanel() {
     setRunStatus("booting");
     try {
       runRef.current?.teardown();
-      runRef.current = await runProject(files, {
+      runRef.current = await runProject(appFiles, {
         onLog: appendLog,
         onServerReady: (url) => {
           setWcUrl(url);
@@ -107,7 +114,7 @@ export function PreviewPanel() {
       setError(e instanceof Error ? e.message : String(e));
       setRunStatus("error");
     }
-  }, [files, appendLog]);
+  }, [appFiles, appendLog]);
 
   // Tear down the running process when leaving the panel.
   useEffect(() => () => runRef.current?.teardown(), []);
@@ -117,13 +124,14 @@ export function PreviewPanel() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-2 border-b">
+        <AppSelector />
         {isNodeProject ? (
           runStatus === "ready" || runStatus === "booting" ? (
             <Button size="sm" variant="destructive" className="h-7 gap-1.5 text-xs" onClick={stop}>
               <Square className="h-3 w-3" /> Stop
             </Button>
           ) : (
-            <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={run} disabled={files.length === 0}>
+            <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={run} disabled={appFiles.length === 0}>
               <Play className="h-3 w-3" /> Run app
             </Button>
           )

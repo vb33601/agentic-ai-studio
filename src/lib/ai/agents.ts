@@ -53,6 +53,8 @@ How to work:
 - Create each file EXACTLY ONCE. Never write "let me create clean versions" or regenerate the same files — if a file is wrong, you would only re-create it once with the fix.
 - Prefer the createFile tool over pasting code in chat.
 - If the project needs a build tool (Vite/Next/etc.), package.json MUST include it and every imported library in dependencies/devDependencies with valid versions, plus a working "dev" script and required config files — it must run with "npm install && npm run dev".
+- Folder structure: if you build MORE THAN ONE separate app in this chat, put EACH app in its OWN top-level folder (e.g. \`todo-app/…\`, \`weather/…\`) so files never mix and each can be previewed/deployed on its own. A single app can live at the root; a full-stack app should use \`frontend/\` and \`backend/\` subfolders, each with its own package.json (and a root package.json that runs both, e.g. via concurrently).
+- Write DEFENSIVE, runnable code: never assume a value exists. Guard before use — \`(items ?? []).map(...)\`, optional chaining, default params, and validate request bodies/inputs — so the app can't crash on missing or malformed data (e.g. reading \`.map\` of undefined).
 - When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 16,
@@ -71,6 +73,8 @@ How to work:
 - If you use a build tool / framework (Vite, Next, React, Tailwind, shadcn, etc.), the package.json MUST list EVERY dependency you use — including the build tool itself (e.g. "vite" and "@vitejs/plugin-react") and ALL libraries imported anywhere — in dependencies/devDependencies with valid published versions, plus correct "scripts" (a working "dev"). Also include every required config file (vite.config.js, tailwind.config.js, postcss.config.js, index.html with the script entry, etc.). A project that "npm install && npm run dev" cannot start is wrong.
 - Prefer plain HTML/CSS/JS for simple sites (no build step needed) so preview is instant; only use a framework when the request really needs it.
 - For a backend/server app in ANY language (Python, Go, Java, PHP, .NET, Rust, Ruby, C/C++, Node server), also create a Dockerfile and a short README with run instructions, so it can be deployed on any container platform.
+- Folder structure & multiple apps: keep each distinct app in its OWN top-level folder (e.g. \`todo-app/…\`, \`shop/…\`) so a single chat's apps never mix and each can be previewed/deployed independently. For a full-stack app, use \`frontend/\` and \`backend/\` subfolders, each with its own package.json (plus a root package.json that starts both, e.g. via concurrently). Keep paths consistent so "npm install && npm run dev" works from the app's folder.
+- Write DEFENSIVE, runnable code: never assume data exists — guard with \`(arr ?? []).map(...)\`, optional chaining, default params, and input/body validation so the app can't crash on missing/malformed data (e.g. calling \`.map\` on undefined).
 
 Design quality (very important — avoid cluttered output):
 - Use a centered max-width container (e.g. max-width 1100-1280px, auto margins, comfortable padding). Never let content stretch edge-to-edge or cram together.

@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
       framework: prep.framework,
       buildCommand: prep.buildCommand,
       outputDirectory: prep.outputDirectory,
+      rootDirectory: prep.rootDirectory,
     });
     return NextResponse.json(result);
   } catch (error) {

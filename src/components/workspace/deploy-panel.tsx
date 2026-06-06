@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useWorkspaceStore } from "@/store/workspace";
 import { downloadProjectZip } from "@/lib/deploy/download";
+import { detectAppGroups, filesForApp, resolveAppRoot } from "@/lib/workspace/apps";
+import { AppSelector } from "@/components/workspace/app-selector";
 
 const PROVIDERS = [
   { id: "vercel", name: "Vercel", description: "Live deploy · configured", logo: "▲", configured: true },
@@ -26,7 +28,12 @@ interface Deployment {
 }
 
 export function DeployPanel() {
-  const { files, addBuildLog, buildLog, clearBuildLog } = useWorkspaceStore();
+  const { files, addBuildLog, buildLog, clearBuildLog, selectedAppDir } = useWorkspaceStore();
+  // Deploy/download the selected app only (re-rooted), so a multi-app chat
+  // ships one clean project instead of all apps mixed together.
+  const groups = useMemo(() => detectAppGroups(files), [files]);
+  const appRoot = resolveAppRoot(groups, selectedAppDir);
+  const appFiles = useMemo(() => filesForApp(files, appRoot), [files, appRoot]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [deploying, setDeploying] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("my-app");
@@ -35,7 +42,7 @@ export function DeployPanel() {
     setDeployments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
   const deploy = async (provider: string) => {
-    if (files.length === 0) {
+    if (appFiles.length === 0) {
       alert("No files to deploy. Generate some code first.");
       return;
     }
@@ -55,11 +62,11 @@ export function DeployPanel() {
     }
 
     try {
-      addBuildLog(`Uploading ${files.length} files to Vercel…`);
+      addBuildLog(`Uploading ${appFiles.length} files to Vercel…`);
       const res = await fetch("/api/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "vercel", files, name: projectName }),
+        body: JSON.stringify({ provider: "vercel", files: appFiles, name: projectName }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Deployment request failed");
@@ -106,19 +113,22 @@ export function DeployPanel() {
             <Rocket className="h-4 w-4" />
             Deploy Project
           </h2>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 text-xs"
-            disabled={files.length === 0}
-            onClick={() => downloadProjectZip(files, projectName || "project")}
-            title="Download the whole app as a .zip (includes a Dockerfile + deploy guide for any platform/language)"
-          >
-            <Download className="h-3.5 w-3.5" /> Download .zip
-          </Button>
+          <div className="flex items-center gap-2">
+            <AppSelector />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              disabled={appFiles.length === 0}
+              onClick={() => downloadProjectZip(appFiles, projectName || "project")}
+              title="Download this app as a .zip (includes a Dockerfile + deploy guide for any platform/language)"
+            >
+              <Download className="h-3.5 w-3.5" /> Download .zip
+            </Button>
+          </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
-          {files.length} files ready · Deploy to Vercel, or download the .zip (with Dockerfile) to run any stack anywhere
+          {appFiles.length} files ready · Deploy to Vercel, or download the .zip (with Dockerfile) to run any stack anywhere
         </p>
         <div className="flex items-center gap-2 mt-3">
           <label className="text-xs text-muted-foreground shrink-0">Project name</label>
