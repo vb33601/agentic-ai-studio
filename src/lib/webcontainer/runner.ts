@@ -210,6 +210,80 @@ async function installWithHealing(
   throw new Error(`npm install kept failing in ${where || "root"} after fixing versions.`);
 }
 
+const SRC_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
+const RESOLVE_SUFFIXES = ["", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"];
+
+/** Resolve a relative import target against a file's directory. */
+function joinRelative(fromDir: string, rel: string): string {
+  const parts = fromDir ? fromDir.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Rewrite `import { PrismaClient } from '@prisma/client'` to a default import +
+ * destructure. `@prisma/client` is CommonJS, so under ESM ("type":"module")
+ * named imports throw "Named export 'PrismaClient' not found".
+ */
+function fixPrismaImports(content: string): string {
+  return content.replace(
+    /import\s*\{([^}]+)\}\s*from\s*(['"])@prisma\/client\2\s*;?/g,
+    (_m, names) => `import __prismaPkg from '@prisma/client';\nconst { ${String(names).trim()} } = __prismaPkg;`,
+  );
+}
+
+/**
+ * Pre-run repair of common generated-code crashes, applied to the mounted FS
+ * before the dev server starts (deterministic, no model call):
+ *  - @prisma/client (and other CJS) named imports → default import.
+ *  - default-imported local modules that were never created → a stub file, so
+ *    Vite/bundler doesn't hard-fail with "Failed to resolve import".
+ */
+async function repairSources(wc: WebContainer, files: WorkspaceFile[], handlers: RunHandlers): Promise<void> {
+  const existing = new Set(files.map((f) => f.path));
+  let importFixes = 0;
+  const stubs: string[] = [];
+
+  for (const f of files) {
+    if (!SRC_EXT.test(f.path)) continue;
+
+    const fixed = fixPrismaImports(f.content);
+    if (fixed !== f.content) {
+      try { await wc.fs.writeFile(f.path, fixed); importFixes++; } catch { /* ignore */ }
+    }
+
+    // Stub default-imported local modules that don't exist (e.g. App.jsx imports
+    // ./pages/Signup.jsx but the model never created it).
+    const re = /import\s+[A-Za-z_$][\w$]*\s+from\s*(['"])(\.[^'"]+)\1/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(fixed))) {
+      const spec = m[2];
+      const target = joinRelative(dirOf(f.path), spec);
+      if (RESOLVE_SUFFIXES.some((s) => existing.has(target + s))) continue;
+      const stubPath = /\.\w+$/.test(target) ? target : `${target}.jsx`;
+      if (existing.has(stubPath)) continue;
+      const isComponent = /\.(jsx|tsx)$/.test(stubPath);
+      const content = isComponent
+        ? `import React from 'react';\n// Auto-generated stub: the original module was imported but never created.\nexport default function MissingModule() {\n  return React.createElement('div', { style: { padding: 24, color: '#b91c1c', fontFamily: 'system-ui' } }, 'Auto-stub for missing module: ${spec}');\n}\n`
+        : `// Auto-generated stub for a missing module (${spec}).\nexport default {};\n`;
+      try {
+        const dir = dirOf(stubPath);
+        if (dir) await wc.fs.mkdir(dir, { recursive: true });
+        await wc.fs.writeFile(stubPath, content);
+        existing.add(stubPath);
+        stubs.push(stubPath);
+      } catch { /* ignore */ }
+    }
+  }
+
+  if (importFixes) handlers.onLog(`\n[auto-fix] rewrote ${importFixes} @prisma/client named import(s) to a default import.\n`);
+  if (stubs.length) handlers.onLog(`\n[auto-fix] stubbed ${stubs.length} missing import(s): ${stubs.join(", ")}.\n`);
+}
+
 /** Spawn `npm install` (+ missing-dep safety net) then the dev script in `dir`. */
 async function installAndStart(
   wc: WebContainer,
@@ -270,6 +344,14 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
   const wc = await getWebContainer();
   handlers.onStatus("Mounting files…");
   await wc.mount(toFileSystemTree(files));
+
+  // Deterministically repair common generated-code crashes before starting.
+  handlers.onStatus("Checking sources…");
+  try {
+    await repairSources(wc, files, handlers);
+  } catch {
+    // Repair is best-effort; never block the run on it.
+  }
 
   let serverUrl: string | null = null;
   wc.on("server-ready", (_port, url) => {
