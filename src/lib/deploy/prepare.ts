@@ -57,6 +57,79 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({ plugins: [react()], build: { outDir: "dist" } });
 `;
 
+const JS_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
+const RESOLVE_SUFFIXES = ["", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"];
+
+function joinRelative(fromDir: string, rel: string): string {
+  const parts = fromDir ? fromDir.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+/** Stub default-imported local modules that don't exist so the build doesn't
+ *  fail with UNRESOLVED_IMPORT (e.g. main.jsx imports a never-created ./App.jsx). */
+function stubMissingImports(files: SourceFile[]): SourceFile[] {
+  const existing = new Set(files.map((f) => f.path));
+  const out = [...files];
+  for (const f of files) {
+    if (!JS_EXT.test(f.path)) continue;
+    const re = /import\s+[A-Za-z_$][\w$]*\s+from\s*(['"])(\.[^'"]+)\1/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(f.content))) {
+      const target = joinRelative(dirOf(f.path), m[2]);
+      if (RESOLVE_SUFFIXES.some((s) => existing.has(target + s))) continue;
+      const stubPath = /\.\w+$/.test(target) ? target : `${target}.jsx`;
+      if (existing.has(stubPath)) continue;
+      out.push({
+        path: stubPath,
+        content: /\.(jsx|tsx)$/.test(stubPath)
+          ? `export default function MissingModule() { return null; }\n`
+          : `export default {};\n`,
+      });
+      existing.add(stubPath);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pin Tailwind to v3 when used. Generated apps use v3-style `@tailwind`
+ * directives + a PostCSS config with `tailwindcss` as a plugin, but install v4
+ * (latest), whose PostCSS plugin moved to `@tailwindcss/postcss` → the build
+ * fails. v3 keeps the existing config/directives working. Also ensures
+ * postcss/autoprefixer exist.
+ */
+function pinTailwindV3(files: SourceFile[]): SourceFile[] {
+  const usesTailwind = files.some(
+    (f) =>
+      (/(^|\/)package\.json$/.test(f.path) && /["']tailwindcss["']\s*:/.test(f.content)) ||
+      (/(^|\/)postcss\.config\./.test(f.path) && /tailwindcss/.test(f.content)) ||
+      /(^|\/)tailwind\.config\./.test(f.path) ||
+      (/\.css$/.test(f.path) && /@tailwind\b/.test(f.content)),
+  );
+  if (!usesTailwind) return files;
+  const idx = files.findIndex((f) => f.path === "package.json" || f.path.endsWith("/package.json"));
+  if (idx === -1) return files;
+  try {
+    const p = JSON.parse(files[idx].content);
+    p.dependencies = p.dependencies || {};
+    p.devDependencies = p.devDependencies || {};
+    delete p.dependencies.tailwindcss;
+    p.devDependencies.tailwindcss = "^3.4.0";
+    if (!p.dependencies.autoprefixer && !p.devDependencies.autoprefixer) p.devDependencies.autoprefixer = "^10.4.0";
+    if (!p.dependencies.postcss && !p.devDependencies.postcss) p.devDependencies.postcss = "^8.4.0";
+    const next = files.slice();
+    next[idx] = { ...files[idx], content: JSON.stringify(p, null, 2) };
+    return next;
+  } catch {
+    return files;
+  }
+}
+
 const TSCONFIG = `{
   "compilerOptions": {
     "target": "ESNext", "lib": ["DOM", "DOM.Iterable", "ESNext"], "module": "ESNext",
@@ -111,6 +184,10 @@ function detectByFiles(files: SourceFile[]): string | null {
 
 export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   let files = augmentPackageJson(input);
+  // Build-resilience: stub missing local imports + pin Tailwind to v3 (applies
+  // to ALL Vercel deploys — provider grid and full-stack).
+  files = stubMissingImports(files);
+  files = pinTailwindV3(files);
   const idx = pickAppPackageJson(files);
 
   // No package.json: a JS site generator by file signature, else pure static
