@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { MessageSquare, Code, Eye, FolderOpen, Rocket, PanelLeftClose, PanelLeft } from "lucide-react";
+import { MessageSquare, Code, Eye, FolderOpen, Rocket, PanelLeftClose, PanelLeft, Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ChatWindow } from "@/components/chat/chat-window";
@@ -32,24 +32,28 @@ export function WorkspaceLayout() {
 
   return (
     <div className="flex h-dvh bg-background overflow-hidden">
-      {/* Sidebar: an overlay drawer on mobile, an in-flow column on md+. */}
+      {/* Sidebar: a top sheet (stacked menu) that drops down on mobile/tablet,
+          an in-flow left column on desktop. */}
       <div
         className={cn(
-          "fixed inset-y-0 left-0 z-50 transition-transform duration-200 md:static md:z-auto md:translate-x-0 md:transition-none",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full md:hidden"
+          "fixed inset-x-0 top-0 z-50 transition-transform duration-200 md:static md:inset-auto md:z-auto md:translate-y-0 md:transition-none",
+          sidebarOpen ? "translate-y-0" : "-translate-y-full md:hidden"
         )}
       >
         <Sidebar />
       </div>
-      {/* Tap-out backdrop (mobile only). */}
+      {/* Tap-out backdrop (small screens only). */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex items-center gap-1 px-2 sm:px-3 py-2 border-b bg-background/95 backdrop-blur-sm overflow-x-auto no-scrollbar">
-          <Button variant="ghost" size="icon" className="h-8 w-8 mr-1 shrink-0" onClick={toggleSidebar} title="Toggle sidebar">
-            {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+          <Button variant="ghost" size="icon" className="h-8 w-8 mr-1 shrink-0" onClick={toggleSidebar} title="Menu">
+            <Menu className="h-4 w-4 md:hidden" />
+            <span className="hidden md:inline-flex">
+              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+            </span>
           </Button>
           {TABS.map((tab) => (
             <button

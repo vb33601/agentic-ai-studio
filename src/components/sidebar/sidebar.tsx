@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, MessageSquare, Trash2, Search, Settings, Sparkles, Globe, Cpu, Zap } from "lucide-react";
+import { Plus, MessageSquare, Trash2, Search, Settings, Sparkles, Globe, Cpu, Zap, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -75,7 +75,7 @@ export function Sidebar() {
   return (
     <>
     <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    <div className="w-64 flex flex-col h-full border-r bg-muted/20 shrink-0">
+    <div className="w-full md:w-64 flex flex-col max-h-[85dvh] md:max-h-none md:h-full border-b md:border-b-0 md:border-r bg-background md:bg-muted/20 shrink-0 shadow-xl md:shadow-none rounded-b-2xl md:rounded-none">
       <div className="flex items-center gap-2 px-4 py-3 border-b">
         <div className="flex items-center gap-2 flex-1">
           <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
@@ -83,8 +83,11 @@ export function Sidebar() {
           </div>
           <span className="font-semibold text-sm">AI Platform</span>
         </div>
-        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={newChat}>
+        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={newChat} title="New chat">
           <Plus className="h-4 w-4" />
+        </Button>
+        <Button size="icon" variant="ghost" className="h-7 w-7 md:hidden" onClick={() => setSidebarOpen(false)} title="Close menu">
+          <X className="h-4 w-4" />
         </Button>
       </div>
 
