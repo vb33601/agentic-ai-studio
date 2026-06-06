@@ -161,6 +161,55 @@ const NPX_TOOLS = new Set([
   "astro", "vue-cli-service", "ng", "nuxt", "remix", "serve", "http-server", "live-server",
 ]);
 
+/** Package names from npm ETARGET "No matching version found for pkg@range" errors. */
+function parseBadVersions(log: string): string[] {
+  const names = new Set<string>();
+  const re = /No matching version found for (@?[\w.-]+(?:\/[\w.-]+)?)@/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(log))) names.add(m[1]);
+  return [...names];
+}
+
+/**
+ * `npm install` that self-heals hallucinated dependency versions. Generated
+ * package.json files sometimes pin versions that don't exist (e.g.
+ * `jsonwebtoken@^9.1.2` when the latest is 9.0.x), which npm rejects with
+ * ETARGET. On that failure we reset the offending packages to "latest" in
+ * package.json and retry, so the preview installs instead of dead-ending.
+ */
+async function installWithHealing(
+  wc: WebContainer,
+  app: DetectedApp,
+  handlers: RunHandlers,
+  spawnOpts: { cwd: string } | undefined,
+): Promise<void> {
+  const where = app.dir ? `${app.dir}/` : "";
+  const pkgPath = app.dir ? `${app.dir}/package.json` : "package.json";
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    handlers.onStatus(`Installing dependencies (${where || "root"})…`);
+    let out = "";
+    const install = await wc.spawn("npm", ["install", "--no-audit", "--no-fund"], spawnOpts);
+    install.output.pipeTo(new WritableStream({ write: (d) => { out += d; handlers.onLog(d); } }));
+    if ((await install.exit) === 0) return;
+
+    const bad = parseBadVersions(out);
+    if (bad.length === 0) {
+      throw new Error(`npm install failed in ${where || "root"}.`);
+    }
+    const deps = (app.pkg.dependencies ??= {});
+    const dev = (app.pkg.devDependencies ??= {});
+    for (const name of bad) {
+      if (name in dev) dev[name] = "latest";
+      else deps[name] = "latest";
+    }
+    handlers.onStatus(`Fixing invalid version(s): ${bad.slice(0, 6).join(", ")} → latest…`);
+    handlers.onLog(`\n[auto-fix] no published version matched for ${bad.join(", ")}; set to "latest" and retrying.\n`);
+    await wc.fs.writeFile(pkgPath, JSON.stringify(app.pkg, null, 2));
+  }
+  throw new Error(`npm install kept failing in ${where || "root"} after fixing versions.`);
+}
+
 /** Spawn `npm install` (+ missing-dep safety net) then the dev script in `dir`. */
 async function installAndStart(
   wc: WebContainer,
@@ -171,11 +220,7 @@ async function installAndStart(
   const where = app.dir ? `${app.dir}/` : "";
   const spawnOpts = app.dir ? { cwd: app.dir } : undefined;
 
-  handlers.onStatus(`Installing dependencies (${where || "root"})…`);
-  const install = await wc.spawn("npm", ["install"], spawnOpts);
-  install.output.pipeTo(new WritableStream({ write: (d) => handlers.onLog(d) }));
-  const installCode = await install.exit;
-  if (installCode !== 0) throw new Error(`npm install failed in ${where || "root"} (exit ${installCode}).`);
+  await installWithHealing(wc, app, handlers, spawnOpts);
 
   // Safety net: install imported-but-undeclared packages, scoped to THIS app's
   // files so a sibling app's imports don't leak in.
