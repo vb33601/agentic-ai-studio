@@ -7,7 +7,7 @@ import {
   stepCountIs,
 } from "ai";
 import { NextRequest } from "next/server";
-import { resolveModel } from "@/lib/ai/providers";
+import { resolveModel, modelCandidates } from "@/lib/ai/providers";
 import { ALL_TOOLS } from "@/lib/ai/tools";
 import { getAgentConfig, detectAgentType } from "@/lib/ai/agents";
 import {
@@ -16,6 +16,7 @@ import {
   extractArtifacts,
   buildRepairPrompt,
   REPAIR_SYSTEM,
+  ModelUnavailableError,
 } from "@/lib/ai/prompt-pipeline";
 
 export const maxDuration = 120;
@@ -69,7 +70,9 @@ export async function POST(req: NextRequest) {
     const temperature = agentConfig.temperature;
     const maxSteps = agentConfig.maxSteps;
 
-    const model = resolveModel(modelId, provider);
+    // Ordered model chain: the user's pick first, then reliable fallbacks tried
+    // when a model fails before streaming any content.
+    const candidates = modelCandidates(modelId, provider);
 
     const activeTools = enableTools
       ? Object.fromEntries(
@@ -127,52 +130,70 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       // Surface the real error text to the client (the SDK masks it by default).
       onError: (error) => (error instanceof Error ? error.message : String(error)),
       execute: async ({ writer }) => {
-        const result = streamText({
-          model,
-          system: finalSystem,
-          messages: pre.modelMessages,
-          tools: activeTools,
-          stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
-          temperature,
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
-          onFinish: async ({ usage, finishReason }) => {
-            console.log(`[chat] finished reason=${finishReason} tokens=${usage?.totalTokens}`);
-          },
-        });
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const cand = candidates[i];
+          const model = resolveModel(cand.id, cand.provider);
+          const result = streamText({
+            model,
+            system: finalSystem,
+            messages: pre.modelMessages,
+            tools: activeTools,
+            stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
+            temperature,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
+            onFinish: async ({ usage, finishReason }) => {
+              console.log(`[chat] finished model=${cand.id} reason=${finishReason} tokens=${usage?.totalTokens}`);
+            },
+          });
 
-        await applyOutputPipeline({
-          writer,
-          result,
-          agentType: resolvedAgentType,
-          refineOutput,
-          // Always stream tokens live. Buffered mode held the entire response
-          // until generation + refinement finished before showing anything,
-          // which made plain chats feel far slower than they are. Refinement
-          // still runs in live mode (appended only for low-quality answers).
-          canBuffer: false,
-          // QA the generated files (only meaningful when createFile is allowed).
-          getArtifacts: producesArtifacts
-            ? async () => extractArtifacts(await result.steps)
-            : undefined,
-          // One bounded pass to auto-fix flagged files in place.
-          repairArtifacts: canRepair
-            ? async ({ writer, artifacts, flags }) => {
-                const repair = streamText({
-                  model,
-                  system: REPAIR_SYSTEM,
-                  prompt: buildRepairPrompt(artifacts, flags),
-                  tools: activeTools,
-                  stopWhen: stepCountIs(4),
-                  temperature,
-                  maxOutputTokens: MAX_OUTPUT_TOKENS,
-                });
-                // Same message: don't re-send start, keep it open for the footer.
-                writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
-                await repair.text;
-                return extractArtifacts(await repair.steps);
-              }
-            : undefined,
-        });
+          try {
+            await applyOutputPipeline({
+              writer,
+              result,
+              agentType: resolvedAgentType,
+              refineOutput,
+              // Always stream tokens live. Buffered mode held the entire response
+              // until generation + refinement finished before showing anything,
+              // which made plain chats feel far slower than they are. Refinement
+              // still runs in live mode (appended only for low-quality answers).
+              canBuffer: false,
+              // QA the generated files (only meaningful when createFile is allowed).
+              getArtifacts: producesArtifacts
+                ? async () => extractArtifacts(await result.steps)
+                : undefined,
+              // One bounded pass to auto-fix flagged files in place.
+              repairArtifacts: canRepair
+                ? async ({ writer, artifacts, flags }) => {
+                    const repair = streamText({
+                      model,
+                      system: REPAIR_SYSTEM,
+                      prompt: buildRepairPrompt(artifacts, flags),
+                      tools: activeTools,
+                      stopWhen: stepCountIs(4),
+                      temperature,
+                      maxOutputTokens: MAX_OUTPUT_TOKENS,
+                    });
+                    // Same message: don't re-send start, keep it open for the footer.
+                    writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
+                    await repair.text;
+                    return extractArtifacts(await repair.steps);
+                  }
+                : undefined,
+            });
+            return; // succeeded (or partial content already streamed)
+          } catch (err) {
+            // Retry the next candidate only when the model failed before any
+            // content reached the client.
+            if (err instanceof ModelUnavailableError && i < candidates.length - 1) {
+              lastError = err.cause;
+              console.warn(`[chat] model ${cand.id} unavailable, falling back:`, err.message);
+              continue;
+            }
+            throw err instanceof ModelUnavailableError ? (err.cause ?? err) : err;
+          }
+        }
+        if (lastError) throw lastError;
       },
     });
 

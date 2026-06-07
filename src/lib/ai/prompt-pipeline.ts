@@ -585,6 +585,23 @@ export interface OutputPipelineArgs {
 }
 
 /**
+ * Thrown when a model call fails BEFORE streaming any visible content (e.g. the
+ * provider is down, rate-limits, or rejects the request). Because nothing was
+ * written to the client yet, the caller can safely retry with a fallback model.
+ * (An account-wide credit 402 will also surface here, but fallback won't help —
+ * every model bills the same account — so the route still ends up reporting it.)
+ */
+export class ModelUnavailableError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "ModelUnavailableError";
+  }
+}
+
+// UI-message chunks emitted before any visible content; safe to buffer/replay.
+const PRELUDE_CHUNK_TYPES = new Set(["start", "start-step"]);
+
+/**
  * Drive the model output to the client and apply the output side of the
  * pipeline:
  *  - Buffered mode (refine on + canBuffer): hold the draft, REPLACE it with the
@@ -602,8 +619,10 @@ export async function applyOutputPipeline(args: OutputPipelineArgs): Promise<voi
     let fullText = "";
     try {
       fullText = await result.text;
-    } catch {
-      return; // error surfaced via createUIMessageStream onError
+    } catch (err) {
+      // Buffered mode writes nothing until the end, so any failure is safe to
+      // retry on a fallback model.
+      throw new ModelUnavailableError(err);
     }
     const post = await postprocessOutput(fullText, { agentType, refine: true });
     const finalText = post.refinedSection ?? fullText;
@@ -614,7 +633,46 @@ export async function applyOutputPipeline(args: OutputPipelineArgs): Promise<voi
   }
 
   // Live streaming; keep the message open so we can append after completion.
-  writer.merge(result.toUIMessageStream({ sendFinish: false }));
+  // Pump the UI stream manually (instead of writer.merge) so we can detect a
+  // failure that happens BEFORE any visible content and let the caller retry on
+  // a fallback model. Prelude chunks (start/start-step) are buffered until the
+  // first real content arrives, so a pre-content error leaves the writer clean.
+  const reader = result
+    .toUIMessageStream({
+      sendFinish: false,
+      // Surface the real provider error (default masks it as "An error
+      // occurred") so fallback detection and the client banner see the cause.
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
+    })
+    .getReader();
+  const prelude: unknown[] = [];
+  let streaming = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const type = (value as { type?: string } | undefined)?.type;
+      if (!streaming && type === "error") {
+        throw new ModelUnavailableError((value as { errorText?: string }).errorText || "stream error");
+      }
+      if (!streaming && type && PRELUDE_CHUNK_TYPES.has(type)) {
+        prelude.push(value);
+        continue;
+      }
+      if (!streaming) {
+        streaming = true;
+        for (const c of prelude) writer.write(c as never);
+        prelude.length = 0;
+      }
+      writer.write(value as never);
+    }
+    if (!streaming) for (const c of prelude) writer.write(c as never);
+  } catch (err) {
+    if (err instanceof ModelUnavailableError) throw err;
+    // Stream errored before producing any visible content → retryable.
+    if (!streaming) throw new ModelUnavailableError(err);
+    return; // partial content already streamed; surfaced as-is
+  }
   let fullText = "";
   try {
     fullText = await result.text;

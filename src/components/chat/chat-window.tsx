@@ -278,12 +278,7 @@ export function ChatWindow() {
               />
             ))
           )}
-          {error && (
-            <div className="mx-4 my-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <span className="font-medium">Generation failed:</span>{" "}
-              {error.message || "The model returned an error. Try another model."}
-            </div>
-          )}
+          {error && <GenerationError message={error.message} />}
         </div>
       </ScrollArea>
 
@@ -300,6 +295,39 @@ export function ChatWindow() {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Turn a raw model/provider error into a clear, actionable message. The credit
+// case is the common one and needs a top-up link, since no retry/fallback can
+// fix an empty account balance.
+function GenerationError({ message }: { message?: string }) {
+  const msg = message || "";
+  const isCredits = /requires more credits|can only afford|insufficient.*credit|\b402\b|max_tokens/i.test(msg);
+  const isRate = /rate.?limit|\b429\b|quota/i.test(msg);
+
+  let title = "Generation failed";
+  let body = msg || "The model returned an error. Try another model.";
+  let link: { href: string; text: string } | null = null;
+
+  if (isCredits) {
+    title = "Out of model credits";
+    body = "Your OpenRouter balance is too low to finish this generation (it reserves credits for the whole response up front), so the app generated only partially. Add credits and try again.";
+    link = { href: "https://openrouter.ai/settings/credits", text: "Add OpenRouter credits →" };
+  } else if (isRate) {
+    title = "Model rate-limited";
+    body = "The model is temporarily rate-limited. Wait a moment and retry, or pick another model.";
+  }
+
+  return (
+    <div className="mx-4 my-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      <span className="font-medium">{title}:</span> {body}
+      {link && (
+        <a href={link.href} target="_blank" rel="noreferrer" className="mt-1 block font-medium underline underline-offset-2">
+          {link.text}
+        </a>
+      )}
     </div>
   );
 }

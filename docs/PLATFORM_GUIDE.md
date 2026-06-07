@@ -307,6 +307,22 @@ Server-side (set on the platform's Render service **and** in local `.env.local`)
 | `RENDER_API_KEY` | Create Render services. |
 | `DEFAULT_DATABASE_URL` | Aiven URL injected into deployed backends (one schema per app). |
 | `PROMPT_ENHANCER_MODEL` | Override the cheap model for prompt rewrite/refine. |
+| `MAX_OUTPUT_TOKENS` | Per-call output cap (default 8000). Keeps OpenRouter's upfront credit reservation small so a low balance doesn't 402 and truncate generation. |
+
+### Model reliability (resilience)
+- **Bounded output:** every model call caps `maxOutputTokens` (see above). Each
+  file is its own tool step, so a small per-call cap still builds large
+  multi-file apps across steps — and avoids the "requires more credits / you
+  requested 16384" 402 that was cutting generations off mid-file.
+- **Model fallback (all providers):** `modelCandidates()` builds an ordered chain
+  (the user's pick first, then `gpt-4o-mini` → `gemini-2.5-flash` →
+  `claude-3.5-haiku`). If a model fails BEFORE streaming any content (provider
+  down, rate-limited, rejects the request, e.g. "roles must alternate"), the
+  route retries the next candidate. `applyOutputPipeline` throws
+  `ModelUnavailableError` only when nothing was written yet, so retries never
+  duplicate visible output. OpenRouter also does its own in-request fallback via
+  the `models` list. An **account-wide credit 402 is not recoverable** by
+  fallback — it's surfaced to the user with a top-up link (chat error banner).
 
 > The auto-mode classifier blocks agent-run Render/Vercel **mutations** and
 > production DB migrations — run those via the `!` shell prefix or a dashboard,

@@ -59,6 +59,36 @@ export function getModel(modelId: string, _providerKey?: ProviderKey, apiKey?: s
   return getOpenRouter(apiKey)(modelId);
 }
 
+// Reliable, tool-capable, economical models OpenRouter falls back to when the
+// chosen model errors (provider down, rate-limited, or rejects the request —
+// e.g. "roles must alternate"). OpenRouter tries the list in order, so the
+// user's pick is honoured first and these only kick in on failure. Note: an
+// account-wide credit 402 is NOT recoverable by fallback (every model bills the
+// same account) — that's surfaced to the user with a top-up link instead.
+const OPENROUTER_FALLBACKS = [
+  "openai/gpt-4o-mini",
+  "google/gemini-2.5-flash",
+  "anthropic/claude-3.5-haiku",
+];
+
+export interface ModelCandidate {
+  id: string;
+  provider: string;
+}
+
+/**
+ * The ordered model chain to try for a request: the user's pick first, then
+ * reliable, tool-capable fallbacks. Works for ANY primary provider — if the
+ * chosen model/provider fails before streaming (down, rate-limited, rejects the
+ * request), the route retries the next candidate. OpenRouter additionally does
+ * its own in-request fallback via the `models` list (see resolveModel).
+ */
+export function modelCandidates(modelId: string, provider?: string): ModelCandidate[] {
+  const primary: ModelCandidate = { id: modelId, provider: provider || "openrouter" };
+  const fallbacks: ModelCandidate[] = OPENROUTER_FALLBACKS.map((id) => ({ id, provider: "openrouter" }));
+  return [primary, ...fallbacks.filter((c) => c.id !== modelId)];
+}
+
 /**
  * Resolve a model to an AI SDK LanguageModel, routing to the right gateway by
  * provider. OpenRouter, AIML API, and the Hugging Face router are all
@@ -71,7 +101,11 @@ export function resolveModel(modelId: string, providerSource?: string) {
     case "huggingface":
       return createOpenAI({ baseURL: "https://router.huggingface.co/v1", apiKey: process.env.HUGGINGFACE_API_KEY, name: "huggingface" }).chat(modelId);
     case "openrouter":
-    default:
-      return getOpenRouter()(modelId);
+    default: {
+      // Pass an ordered fallback list so OpenRouter auto-retries another model
+      // if the chosen one fails mid-request (kept first so it's preferred).
+      const models = [modelId, ...OPENROUTER_FALLBACKS.filter((m) => m !== modelId)];
+      return getOpenRouter()(modelId, { models });
+    }
   }
 }
