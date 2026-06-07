@@ -83,6 +83,9 @@ model Chat {
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   project  Project?  @relation(fields: [projectId], references: [id])
   messages Message[]
+
+  // Sidebar lists a user's chats newest-first (listChats).
+  @@index([userId, updatedAt])
 }
 
 model Message {
@@ -98,6 +101,10 @@ model Message {
   createdAt   DateTime    @default(now())
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  // Opening a chat loads its messages in order (getChatWithMessages); the
+  // save path also deletes by chatId.
+  @@index([chatId, createdAt])
 }
 
 model Agent {

@@ -137,7 +137,11 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           result,
           agentType: resolvedAgentType,
           refineOutput,
-          canBuffer: !producesArtifacts,
+          // Always stream tokens live. Buffered mode held the entire response
+          // until generation + refinement finished before showing anything,
+          // which made plain chats feel far slower than they are. Refinement
+          // still runs in live mode (appended only for low-quality answers).
+          canBuffer: false,
           // QA the generated files (only meaningful when createFile is allowed).
           getArtifacts: producesArtifacts
             ? async () => extractArtifacts(await result.steps)
