@@ -57,6 +57,57 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({ plugins: [react()], build: { outDir: "dist" } });
 `;
 
+/**
+ * Re-root the file set so `dir` becomes the deployment root: strip the `dir/`
+ * prefix and drop anything outside it. Inline (files[]) deployments to Vercel
+ * IGNORE the `rootDirectory` project setting — that only applies to
+ * Git-connected projects — so when the app lives in a subdirectory we must
+ * physically move it to the root instead of pointing Vercel at the subdir.
+ */
+function reRootFiles(files: SourceFile[], dir: string): SourceFile[] {
+  if (!dir) return files;
+  const prefix = `${dir}/`;
+  return files
+    .filter((f) => f.path.startsWith(prefix))
+    .map((f) => ({ ...f, path: f.path.slice(prefix.length) }));
+}
+
+/** Locate the app's client entry module so a synthesized index.html can load it. */
+function findViteEntry(files: SourceFile[]): string {
+  const preferred = [
+    "src/main.jsx", "src/main.tsx", "src/main.js", "src/main.ts",
+    "src/index.jsx", "src/index.tsx", "src/index.js", "src/index.ts",
+    "main.jsx", "main.tsx", "main.js", "main.ts",
+  ];
+  for (const p of preferred) if (files.some((f) => f.path === p)) return p;
+  const any = files.find((f) => /(^|\/)(main|index)\.(jsx?|tsx?)$/.test(f.path) && f.path !== "vite.config.js");
+  return any?.path ?? "src/main.jsx";
+}
+
+const indexHtml = (entry: string) => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/${entry}"></script>
+  </body>
+</html>
+`;
+
+/**
+ * A Vite build hard-fails with "Could not resolve entry module index.html" if
+ * there is no index.html at the build root. Generated apps frequently omit it or
+ * bury it under src/, so guarantee one at the root pointing at the real entry.
+ */
+function ensureViteIndexHtml(files: SourceFile[]): SourceFile[] {
+  if (files.some((f) => f.path === "index.html")) return files;
+  return [...files, { path: "index.html", content: indexHtml(findViteEntry(files)) }];
+}
+
 const JS_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
 const RESOLVE_SUFFIXES = ["", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"];
 
@@ -188,7 +239,7 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   // to ALL Vercel deploys — provider grid and full-stack).
   files = stubMissingImports(files);
   files = pinTailwindV3(files);
-  const idx = pickAppPackageJson(files);
+  let idx = pickAppPackageJson(files);
 
   // No package.json: a JS site generator by file signature, else pure static
   // (works for any language's files — HTML output, docs, source, etc.).
@@ -196,14 +247,21 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
     return { files, framework: detectByFiles(files) };
   }
 
-  // The subdirectory the app lives in (so Vercel builds from there, not root).
-  const rootDirectory = dirOf(files[idx].path) || undefined;
+  // The app may live in a subdirectory (e.g. "frontend"). Inline deployments
+  // ignore Vercel's rootDirectory setting, so physically re-root the files to
+  // that directory instead of returning a rootDirectory for Vercel to honor.
+  const appDir = dirOf(files[idx].path);
+  if (appDir) {
+    files = reRootFiles(files, appDir);
+    idx = pickAppPackageJson(files);
+    if (idx === -1) return { files, framework: detectByFiles(files) };
+  }
 
   let pkg: { scripts?: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
   try {
     pkg = JSON.parse(files[idx].content);
   } catch {
-    return { files, framework: null, rootDirectory };
+    return { files, framework: null };
   }
 
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
@@ -224,10 +282,12 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
     files[idx] = { ...files[idx], content: JSON.stringify(pkg, null, 2) };
     if (!has(files, /(^|\/)vite\.config\.(js|ts|mjs|cjs)$/)) files.push({ path: "vite.config.js", content: VITE_CONFIG });
     if (!has(files, /(^|\/)tsconfig\.json$/) && has(files, /\.tsx?$/)) files.push({ path: "tsconfig.json", content: TSCONFIG });
-    return { files, framework: "vite", buildCommand: "vite build", outputDirectory: "dist", rootDirectory };
+    // Vite needs an index.html entry at the root or the build hard-fails.
+    files = ensureViteIndexHtml(files);
+    return { files, framework: "vite", buildCommand: "vite build", outputDirectory: "dist" };
   }
 
   // Any other recognized framework → complete manifest, let Vercel's preset build.
   // Unrecognized JS app → static.
-  return { files, framework: slug, rootDirectory };
+  return { files, framework: slug };
 }
