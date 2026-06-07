@@ -108,6 +108,72 @@ function ensureViteIndexHtml(files: SourceFile[]): SourceFile[] {
   return [...files, { path: "index.html", content: indexHtml(findViteEntry(files)) }];
 }
 
+const ENTRY_SCRIPT_RE = /<script[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/i;
+
+/** Import specifier from `fromDir` to a module file (extension stripped). */
+function importSpecifier(fromDir: string, target: string): string {
+  const noExt = target.replace(/\.(jsx?|tsx?)$/, "");
+  const from = fromDir ? fromDir.split("/") : [];
+  const to = noExt.split("/");
+  let i = 0;
+  while (i < from.length && i < to.length && from[i] === to[i]) i++;
+  const rel = [...Array(from.length - i).fill(".."), ...to.slice(i)].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+const APP_PLACEHOLDER = `export default function App() {
+  return (
+    <div style={{ padding: 24, fontFamily: "system-ui", maxWidth: 720, margin: "40px auto" }}>
+      <h1 style={{ fontSize: 22, fontWeight: 700, color: "#b91c1c" }}>App entry was auto-generated</h1>
+      <p style={{ color: "#555", marginTop: 8 }}>
+        This project was missing its root <code>App</code> / entry module, so a
+        placeholder was created so it would still deploy. Ask the builder to
+        generate the app's entry and root component, then redeploy.
+      </p>
+    </div>
+  );
+}
+`;
+
+const mainEntry = (appImport: string, withCss: boolean) => `import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "${appImport}";${withCss ? '\nimport "./index.css";' : ""}
+
+createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+`;
+
+/**
+ * Guarantee the entry module that index.html loads actually exists. Generated
+ * apps regularly ship an index.html pointing at /src/main.jsx but never create
+ * main.jsx (or App.jsx) — Rollup then fails with "failed to resolve import
+ * /src/main.jsx". Synthesize the missing entry (and a placeholder App when there
+ * is none to mount) so the build succeeds.
+ */
+function ensureViteEntry(files: SourceFile[]): SourceFile[] {
+  const index = files.find((f) => f.path === "index.html");
+  if (!index) return files;
+  const entry = (index.content.match(ENTRY_SCRIPT_RE)?.[1] ?? "/src/main.jsx").replace(/^\.?\//, "");
+  // Already present (exact path or same path with a different JS/TS extension).
+  const base = entry.replace(/\.(jsx?|tsx?)$/, "");
+  if (files.some((f) => f.path === entry || new RegExp(`^${base}\\.(jsx?|tsx?)$`).test(f.path))) return files;
+
+  const out = [...files];
+  const entryDir = dirOf(entry);
+  // Find an existing App component anywhere to mount; otherwise create one.
+  let appPath = out.find((f) => /(^|\/)App\.(jsx?|tsx?)$/.test(f.path))?.path;
+  if (!appPath) {
+    appPath = `${entryDir ? `${entryDir}/` : ""}App${/\.tsx$/.test(entry) ? ".tsx" : ".jsx"}`;
+    out.push({ path: appPath, content: APP_PLACEHOLDER });
+  }
+  const withCss = out.some((f) => f.path === `${entryDir ? `${entryDir}/` : ""}index.css`);
+  out.push({ path: entry, content: mainEntry(importSpecifier(entryDir, appPath), withCss) });
+  return out;
+}
+
 const JS_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
 const RESOLVE_SUFFIXES = ["", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"];
 
@@ -282,8 +348,10 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
     files[idx] = { ...files[idx], content: JSON.stringify(pkg, null, 2) };
     if (!has(files, /(^|\/)vite\.config\.(js|ts|mjs|cjs)$/)) files.push({ path: "vite.config.js", content: VITE_CONFIG });
     if (!has(files, /(^|\/)tsconfig\.json$/) && has(files, /\.tsx?$/)) files.push({ path: "tsconfig.json", content: TSCONFIG });
-    // Vite needs an index.html entry at the root or the build hard-fails.
+    // Vite needs an index.html entry at the root or the build hard-fails — and
+    // the module that index.html loads must actually exist.
     files = ensureViteIndexHtml(files);
+    files = ensureViteEntry(files);
     return { files, framework: "vite", buildCommand: "vite build", outputDirectory: "dist" };
   }
 

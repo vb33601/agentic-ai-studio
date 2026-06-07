@@ -30,9 +30,9 @@ export async function POST(req: NextRequest) {
     // Prepare: auto-detect the backend folder (even inside a parent/monorepo
     // selection), re-root, swap Prisma sqlite→postgres, bind $PORT, derive cmds.
     const prep = prepareBackendForRender(files.map((f) => ({ path: f.path, content: f.content })));
-    if (!prep.files.some((f) => f.path === "package.json")) {
+    if (!prep.hasBackend) {
       return NextResponse.json(
-        { error: "Couldn't find a backend (no package.json) in the selected folder. Generate a backend or pick a folder that contains one." },
+        { error: "No runnable backend found (no server entry, backend dependencies, or Prisma schema). This looks like a frontend-only app — deploy it to Vercel instead, or generate a backend first." },
         { status: 400 },
       );
     }

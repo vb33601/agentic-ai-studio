@@ -35,7 +35,10 @@ export async function POST(req: NextRequest) {
 
     // ---- Backend → Render ----
     const backendPrep = prepareBackendForRender(repoFiles);
-    const hasBackend = backendPrep.files.some((f) => f.path === "package.json");
+    // Only deploy a backend when there's actually a runnable server — a
+    // frontend-only app (or a monorepo whose backend/ was never generated)
+    // would just crash Render at startup with "Cannot find module".
+    const hasBackend = backendPrep.hasBackend;
     if (hasBackend) {
       try {
         const token = process.env.GITHUB_TOKEN;

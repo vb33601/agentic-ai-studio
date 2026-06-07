@@ -21,6 +21,12 @@ export interface BackendPrep {
   usesPrisma: boolean;
   /** The detected backend source folder within the input ("" = already root). */
   backendDir: string;
+  /**
+   * Whether the input actually contains a runnable server. False for
+   * frontend-only projects (or monorepo roots whose `backend/` was never
+   * generated) — deploying those to Render just crashes at `node …` startup.
+   */
+  hasBackend: boolean;
 }
 
 const SRC_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
@@ -172,11 +178,21 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     "index.js", "server.js", "app.js",
   ];
   const mainField = typeof parsed?.main === "string" ? parsed.main : null;
+  const entryExists =
+    (mainField && files.some((f) => f.path === mainField)) ||
+    entryCandidates.some((c) => files.some((f) => f.path === c));
   const entry =
     (mainField && files.some((f) => f.path === mainField) && mainField) ||
     entryCandidates.find((c) => files.some((f) => f.path === c)) ||
     mainField || "src/index.js";
   const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
+
+  // Is there actually a server to deploy? A real backend has backend deps, a
+  // Prisma schema, or a real server entry file — and isn't a pure frontend.
+  const deps = depKeys(parsed);
+  const hasBackendDeps = BACKEND_DEPS.some((d) => deps.has(d));
+  const isFrontendOnly = FRONTEND_DEPS.some((d) => deps.has(d)) && !hasBackendDeps;
+  const hasBackend = !isFrontendOnly && (hasBackendDeps || hasSchema || !!entryExists);
 
   const hasMigrations = files.some((f) => /(^|\/)prisma\/migrations\/.+/.test(f.path));
   const buildSteps = ["npm install"];
@@ -189,5 +205,5 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     buildSteps.push(hasMigrations ? "npx prisma migrate deploy" : "npx prisma db push --accept-data-loss");
   }
 
-  return { files, buildCommand: buildSteps.join(" && "), startCommand, usesPrisma: hasSchema, backendDir };
+  return { files, buildCommand: buildSteps.join(" && "), startCommand, usesPrisma: hasSchema, backendDir, hasBackend };
 }
