@@ -152,6 +152,8 @@ const BUILD_CONTRACT = `
 # Build quality bar (aim to impress)
 - Ship complete, production-ready work: no placeholders, TODOs, "...", lorem ipsum, or omitted sections. Every file must be whole and actually run.
 - ALWAYS include the application's ENTRY/START file and its root component so it launches — for ANY stack (e.g. index.html + main.jsx + App.jsx for React/Vite; the equivalent entry for Vue/Svelte/Angular/Next; the main/start file for Node/Python/Go/Rust; index.html for static). Every file the entry imports (transitively) MUST exist — never reference a file you didn't create.
+- RELATIVE IMPORT PATHS must be correct from EACH file's OWN location. A file already inside \`src/components/\` imports a sibling in \`src/components/ui/\` as \`./ui/button\` — NOT \`./components/ui/button\` (that would be \`src/components/components/...\`). Use \`../\` to go up a folder. Mentally resolve every import against the importing file's directory before writing it; a wrong path breaks the build with "Could not resolve …".
+- COMPLETE every structure you scaffold. If a root/orchestrator package.json (or any script/config) references a \`backend/\`, \`frontend/\`, \`server/\`, or other folder, you MUST actually create that folder with its real entry file and package.json. Never reference or wire up a backend/service you don't generate — a half-built monorepo fails to deploy. If the user only needs a frontend, don't scaffold a phantom backend at all.
 - Code: clean, idiomatic, and robust — handle empty/error/edge states, use clear names, comment only non-obvious logic, and keep a sensible project structure.
 - Anything visual: make it genuinely polished and modern, not generic. Use a cohesive restrained palette, strong typographic hierarchy, generous whitespace, subtle depth (rounded corners, soft shadows, hairline borders), and smooth hover/focus/transition micro-interactions. Fully responsive and accessible (semantic HTML, labels, visible focus, adequate contrast).
 - Make it feel alive: include realistic sample/demo content and thoughtful empty/loading states so the result looks finished, not skeletal.
@@ -421,6 +423,15 @@ export function detectArtifactFlags(artifacts: Artifact[]): string[] {
     }
     return parts.join("/");
   };
+  // Index module files by basename so a misrouted import can be relocated to the
+  // real file (a wrong path is fixed in the importer, not by creating a dup).
+  const baseName = (p: string) => (p.split("/").pop() || p).replace(/\.(jsx?|tsx?|mjs|cjs|vue|svelte)$/, "");
+  const byBase = new Map<string, string[]>();
+  for (const a of artifacts) {
+    if (!/\.(jsx?|tsx?|mjs|cjs|vue|svelte)$/.test(a.path)) continue;
+    (byBase.get(baseName(a.path)) ?? byBase.set(baseName(a.path), []).get(baseName(a.path))!).push(a.path);
+  }
+
   const seen = new Set<string>();
   for (const a of artifacts) {
     if (!/\.(jsx?|tsx?|mjs|cjs|vue|svelte)$/.test(a.path)) continue;
@@ -431,7 +442,14 @@ export function detectArtifactFlags(artifacts: Artifact[]): string[] {
       const target = join(dir, m[1]);
       if (suffixes.some((s) => paths.has(target + s)) || seen.has(target)) continue;
       seen.add(target);
-      flags.push(`\`${m[1]}\` is imported by \`${a.path}\` but was never created — create that file so the app's imports resolve.`);
+      // If a file with that basename exists elsewhere, it's a WRONG PATH —
+      // tell the model to fix the import, not create a duplicate file.
+      const elsewhere = (byBase.get(baseName(m[1])) || []).filter((p) => p !== a.path);
+      if (elsewhere.length === 1) {
+        flags.push(`\`${a.path}\` imports \`${m[1]}\` but that path doesn't exist — the file is at \`${elsewhere[0]}\`. Fix the import path in \`${a.path}\` (relative to its own location), don't create a new file.`);
+      } else {
+        flags.push(`\`${m[1]}\` is imported by \`${a.path}\` but was never created — create that file so the app's imports resolve.`);
+      }
     }
   }
 
