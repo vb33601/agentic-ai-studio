@@ -24,7 +24,11 @@ export function ChatWindow() {
     addSession, updateSession, activeChatId, setActiveChatId,
   } = useChatStore();
   const { addFile, setActiveTab } = useWorkspaceStore();
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // Whether the view is "pinned" to the bottom. While true we follow new
+  // content; if the user scrolls up to read, it flips false and we stop
+  // yanking them back down until they return to the bottom.
+  const pinnedRef = useRef(true);
   const [inputText, setInputText] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const sessionIdRef = useRef<string | null>(activeChatId);
@@ -136,6 +140,9 @@ export function ChatWindow() {
     if (activeChatId === loadedIdRef.current) return;
     loadedIdRef.current = activeChatId;
     sessionIdRef.current = activeChatId;
+    // A freshly loaded/created chat should snap to the bottom even if the user
+    // had scrolled up in the previous session.
+    pinnedRef.current = true;
     // Reset the workspace; files repopulate from the loaded chat's messages
     // via the re-scan effect below.
     useWorkspaceStore.getState().setFiles([]);
@@ -155,9 +162,27 @@ export function ChatWindow() {
     messagesRef.current = messages;
   }, [messages]);
 
-  // Scroll to bottom on new messages
+  // Track whether the user is pinned to the bottom. Reading scroll position on
+  // a passive listener (not in the render path) avoids fighting the stream.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = viewportRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      // 64px slack so being "almost" at the bottom still counts as pinned.
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Follow streaming output by scrolling the viewport itself (not
+  // scrollIntoView, which can bubble up and shift the whole page on mobile).
+  // Instant jumps — never "smooth" — so per-token updates don't stack
+  // overlapping animations that make the view bounce up and down.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el || !pinnedRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Safety net: re-scan all assistant messages the moment streaming stops.
@@ -240,7 +265,7 @@ export function ChatWindow() {
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1" viewportRef={viewportRef}>
         <div className="pb-4 mx-auto w-full max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
           {messages.length === 0 ? (
             <EmptyState />
@@ -259,7 +284,6 @@ export function ChatWindow() {
               {error.message || "The model returned an error. Try another model."}
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
       </ScrollArea>
 
