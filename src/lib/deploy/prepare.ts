@@ -187,6 +187,48 @@ function joinRelative(fromDir: string, rel: string): string {
   return parts.join("/");
 }
 
+// Relative module specifier inside an import/export/require, capturing the spec.
+const REL_IMPORT_RE = /(\bfrom\s*|\bimport\s*|\brequire\(\s*|\bimport\(\s*)(['"])(\.[^'"]+)\2/g;
+
+/** Basename of a module path with any JS/TS extension stripped. */
+function moduleBase(p: string): string {
+  return (p.split("/").pop() || p).replace(/\.(jsx?|tsx?)$/, "");
+}
+
+/**
+ * Repair broken RELATIVE imports whose target doesn't exist but unambiguously
+ * matches a real file elsewhere in the project. Generated code frequently gets
+ * the relative depth wrong — e.g. components/Layout.jsx importing
+ * "./components/ui/button" when it should be "./ui/button" — which fails the
+ * build with "Could not resolve …". When exactly one file in the set has the
+ * imported basename, rewrite the specifier to the correct relative path. Skips
+ * imports that already resolve, and ambiguous (multiple-match) ones.
+ */
+function repairImportPaths(files: SourceFile[]): SourceFile[] {
+  const paths = new Set(files.map((f) => f.path));
+  const resolves = (target: string) => RESOLVE_SUFFIXES.some((s) => paths.has(target + s));
+  // Index module files by basename so a misrouted import can be relocated.
+  const byBase = new Map<string, string[]>();
+  for (const f of files) {
+    if (!JS_EXT.test(f.path)) continue;
+    const b = moduleBase(f.path);
+    (byBase.get(b) ?? byBase.set(b, []).get(b)!).push(f.path);
+  }
+
+  return files.map((f) => {
+    if (!JS_EXT.test(f.path)) return f;
+    const dir = dirOf(f.path);
+    const content = f.content.replace(REL_IMPORT_RE, (full, pre, q, spec) => {
+      const target = joinRelative(dir, spec);
+      if (resolves(target)) return full; // already correct
+      const matches = byBase.get(moduleBase(spec));
+      if (!matches || matches.length !== 1) return full; // missing or ambiguous
+      return `${pre}${q}${importSpecifier(dir, matches[0])}${q}`;
+    });
+    return content === f.content ? f : { ...f, content };
+  });
+}
+
 /** Stub default-imported local modules that don't exist so the build doesn't
  *  fail with UNRESOLVED_IMPORT (e.g. main.jsx imports a never-created ./App.jsx). */
 function stubMissingImports(files: SourceFile[]): SourceFile[] {
@@ -301,8 +343,10 @@ function detectByFiles(files: SourceFile[]): string | null {
 
 export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   let files = augmentPackageJson(input);
-  // Build-resilience: stub missing local imports + pin Tailwind to v3 (applies
-  // to ALL Vercel deploys — provider grid and full-stack).
+  // Build-resilience: repair misrouted relative imports, stub still-missing
+  // local imports, and pin Tailwind to v3 (applies to ALL Vercel deploys —
+  // provider grid and full-stack).
+  files = repairImportPaths(files);
   files = stubMissingImports(files);
   files = pinTailwindV3(files);
   let idx = pickAppPackageJson(files);
