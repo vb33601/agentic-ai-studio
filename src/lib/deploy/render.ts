@@ -30,13 +30,34 @@ export interface RenderServiceResult {
   deployId?: string;
 }
 
+/**
+ * Read a Render API response without throwing the opaque "Unexpected end of
+ * JSON input" when the body is empty or non-JSON (Render returns those for some
+ * rate-limit / quota / gateway errors). Returns the parsed object plus the raw
+ * text so callers can build an actionable message.
+ */
+async function readBody(res: Response): Promise<{ data: Record<string, unknown>; raw: string }> {
+  const raw = await res.text();
+  try {
+    return { data: raw ? (JSON.parse(raw) as Record<string, unknown>) : {}, raw };
+  } catch {
+    return { data: {}, raw };
+  }
+}
+
 async function getOwnerId(key: string): Promise<string> {
   const res = await fetch(`${API}/owners?limit=1`, {
     headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Render /owners → ${res.status}`);
-  const owner = data?.[0]?.owner?.id;
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`Render /owners → ${res.status}: ${raw.slice(0, 160) || "empty response"}`);
+  let data: unknown;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    throw new Error("Render /owners returned a non-JSON response — check RENDER_API_KEY.");
+  }
+  const owner = Array.isArray(data) ? (data[0] as { owner?: { id?: string } } | undefined)?.owner?.id : undefined;
   if (!owner) throw new Error("No Render owner/workspace found for this API key.");
   return owner;
 }
@@ -71,14 +92,25 @@ export async function createRenderService(input: CreateServiceInput): Promise<Re
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Render create service → ${res.status}: ${data.message || JSON.stringify(data)}`.slice(0, 300));
+  const { data, raw } = await readBody(res);
+  if (!res.ok) {
+    const detail = (data.message as string) || (data.error as string) || raw.replace(/<[^>]+>/g, " ").trim().slice(0, 160) || `HTTP ${res.status}`;
+    // 402/429 (or a quota message) on Render usually means the account's
+    // free-instance limit is reached — the most common cause here.
+    const limitHit = res.status === 402 || res.status === 429 || /limit|quota|maximum|too many/i.test(detail);
+    const hint = limitHit
+      ? " You've likely reached your Render free-tier service limit — delete unused services at https://dashboard.render.com, then redeploy."
+      : "";
+    throw new Error(`Render couldn't create the service (HTTP ${res.status}): ${detail}.${hint}`.slice(0, 400));
+  }
 
-  const svc = data.service ?? data;
+  const svc = (data.service ?? data) as {
+    id?: string; slug?: string; dashboardUrl?: string; serviceDetails?: { url?: string };
+  };
   return {
-    id: svc.id,
+    id: svc.id ?? "",
     url: svc.serviceDetails?.url || `https://${svc.slug}.onrender.com`,
     dashboardUrl: svc.dashboardUrl || `https://dashboard.render.com/web/${svc.id}`,
-    deployId: data.deployId,
+    deployId: data.deployId as string | undefined,
   };
 }
