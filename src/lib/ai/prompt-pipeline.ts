@@ -239,6 +239,8 @@ async function rewritePrompt(text: string, agentType: string): Promise<string> {
     temperature: isArtifactAgent(agentType) ? 0.4 : 0.2,
     system: isArtifactAgent(agentType) ? BUILD_REWRITE_SYSTEM : PROSE_REWRITE_SYSTEM,
     prompt: text,
+    // Keep the upfront credit reservation small (a rewrite is short).
+    maxOutputTokens: 1500,
   });
   return out;
 }
@@ -484,6 +486,7 @@ async function refineAnswer(text: string, _agentType: string): Promise<string> {
     temperature: 0.3,
     system: `You are an editor. Improve the answer's clarity, structure, and markdown formatting WITHOUT changing its meaning, adding new facts, or removing correct information. Preserve the original language. Return ONLY the improved answer in clean markdown.`,
     prompt: text,
+    maxOutputTokens: 4000,
   });
   return out;
 }

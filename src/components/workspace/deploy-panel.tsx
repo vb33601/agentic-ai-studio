@@ -11,6 +11,43 @@ import { downloadProjectZip } from "@/lib/deploy/download";
 import { detectAppGroups, filesForApp, resolveAppRoot } from "@/lib/workspace/apps";
 import { AppSelector } from "@/components/workspace/app-selector";
 
+/**
+ * Read a fetch Response as JSON without throwing the opaque
+ * "Unexpected token '<' … is not valid JSON" when the server returns a non-JSON
+ * body — e.g. a gateway 502/504 HTML page when a long deploy times out. Surfaces
+ * a clear, actionable message instead.
+ */
+interface DeployResponse {
+  error?: string;
+  url?: string;
+  inspectorUrl?: string;
+  id?: string;
+  readyState?: string;
+  repoUrl?: string;
+  dashboardUrl?: string;
+  usesPrisma?: boolean;
+  dbWired?: boolean;
+  backendDir?: string;
+  backendUrl?: string;
+  backendDashboard?: string;
+  backendError?: string;
+  frontendUrl?: string;
+  frontendError?: string;
+}
+
+async function readJson(res: Response): Promise<DeployResponse> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as DeployResponse) : {};
+  } catch {
+    throw new Error(
+      res.ok
+        ? "The server returned an unreadable response — the deploy likely timed out. Wait a moment and try again (large apps can take a while)."
+        : `Deploy failed (HTTP ${res.status}). ${text.replace(/<[^>]+>/g, " ").trim().slice(0, 160) || "Please try again."}`,
+    );
+  }
+}
+
 const PROVIDERS = [
   { id: "vercel", name: "Vercel", description: "Live deploy · configured", logo: "▲", configured: true },
   { id: "netlify", name: "Netlify", description: "Static + serverless", logo: "◆", configured: false },
@@ -59,7 +96,7 @@ export function DeployPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files: appFiles, name: projectName }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Full-stack deploy failed");
       if (data.backendDir) addBuildLog(`Backend folder: ${data.backendDir}/`);
       if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
@@ -95,7 +132,7 @@ export function DeployPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files: appFiles, name: projectName }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Render deploy failed");
       if (data.backendDir) addBuildLog(`Detected backend folder: ${data.backendDir}/`);
       addBuildLog(`Repo created → ${data.repoUrl}`);
@@ -138,7 +175,7 @@ export function DeployPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider: "vercel", files: appFiles, name: projectName }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Deployment request failed");
 
       addBuildLog(`Deployment created → ${data.url}`);

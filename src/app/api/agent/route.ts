@@ -20,6 +20,10 @@ import {
 
 export const maxDuration = 300;
 
+// See chat/route.ts — bound per-call output so OpenRouter's upfront credit
+// reservation stays small and generation isn't cut off with a 402.
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 8000;
+
 export async function POST(req: NextRequest) {
   try {
     const {
@@ -73,6 +77,7 @@ export async function POST(req: NextRequest) {
           tools,
           stopWhen: stepCountIs(config.maxSteps),
           temperature: config.temperature,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
         });
 
         await applyOutputPipeline({
@@ -93,6 +98,7 @@ export async function POST(req: NextRequest) {
                   tools,
                   stopWhen: stepCountIs(4),
                   temperature: config.temperature,
+                  maxOutputTokens: MAX_OUTPUT_TOKENS,
                 });
                 writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
                 await repair.text;

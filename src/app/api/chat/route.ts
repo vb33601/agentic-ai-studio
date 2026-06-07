@@ -20,6 +20,13 @@ import {
 
 export const maxDuration = 120;
 
+// Cap output tokens per model call. OpenRouter reserves credits for the FULL
+// max_tokens up front, so an unbounded request (their 16k default) gets a 402
+// "requires more credits" on a low-balance key and the generation is cut off
+// mid-file. Each file is its own tool step, so a bounded per-call cap still
+// produces large multi-file apps across steps. Override with MAX_OUTPUT_TOKENS.
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 8000;
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -127,6 +134,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           tools: activeTools,
           stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
           temperature,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
           onFinish: async ({ usage, finishReason }) => {
             console.log(`[chat] finished reason=${finishReason} tokens=${usage?.totalTokens}`);
           },
@@ -156,6 +164,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
                   tools: activeTools,
                   stopWhen: stepCountIs(4),
                   temperature,
+                  maxOutputTokens: MAX_OUTPUT_TOKENS,
                 });
                 // Same message: don't re-send start, keep it open for the footer.
                 writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
