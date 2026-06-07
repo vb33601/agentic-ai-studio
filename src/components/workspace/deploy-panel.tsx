@@ -177,6 +177,7 @@ export function DeployPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      <ScrollArea className="flex-1 min-h-0">
       <div className="px-6 py-4 border-b">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold flex items-center gap-2">
@@ -268,7 +269,7 @@ export function DeployPanel() {
         </div>
       )}
 
-      <ScrollArea className="flex-1 p-4">
+      <div className="p-4">
         <p className="text-xs font-medium mb-3 text-muted-foreground">Deployment History</p>
         {deployments.length === 0 ? (
           <p className="text-xs text-muted-foreground text-center py-8">No deployments yet</p>
@@ -313,6 +314,7 @@ export function DeployPanel() {
             ))}
           </div>
         )}
+      </div>
       </ScrollArea>
     </div>
   );

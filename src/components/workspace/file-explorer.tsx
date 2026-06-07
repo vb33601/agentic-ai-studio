@@ -56,7 +56,7 @@ export function FileExplorer() {
           </Button>
         </div>
       </div>
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div className="p-2">
           {Object.entries(groups).map(([dir, dirFiles]) => (
             <div key={dir} className="mb-2">

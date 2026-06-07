@@ -205,7 +205,7 @@ export function PreviewPanel() {
         </div>
       )}
 
-      <div className="flex-1 bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center overflow-auto p-4">
+      <div className="flex-1 min-h-0 bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center overflow-auto p-4">
         {!isNodeProject && !srcDoc && !customUrl ? (
           <div className="text-center text-muted-foreground text-sm">
             <Monitor className="h-10 w-10 mx-auto mb-3 opacity-40" />

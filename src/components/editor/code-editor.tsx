@@ -67,12 +67,12 @@ export function CodeEditor() {
             </div>
           </div>
           {activeFile.language === "image" ? (
-            <div className="flex-1 flex items-center justify-center overflow-auto bg-zinc-900 p-6">
+            <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-zinc-900 p-6">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={activeFile.content} alt={activeFile.name} className="max-w-full max-h-full object-contain rounded-lg border" />
             </div>
           ) : (
-          <div className="flex-1">
+          <div className="flex-1 min-h-0">
             <MonacoEditor
               height="100%"
               path={activeFile.path}
