@@ -43,7 +43,12 @@ export async function POST(req: NextRequest) {
       description: "Backend deployed from agentic-ai-studio",
     });
 
-    const envVars: RenderEnvVar[] = [{ key: "NODE_ENV", value: "production" }];
+    // Pin Node 22 LTS — Render defaults to Node 24, which lacks prebuilt
+    // binaries for common native deps (better-sqlite3 etc.) and fails to compile.
+    const envVars: RenderEnvVar[] = [
+      { key: "NODE_ENV", value: "production" },
+      { key: "NODE_VERSION", value: "22" },
+    ];
     const dbUrl = process.env.DEFAULT_DATABASE_URL;
     if (prep.usesPrisma && dbUrl) envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, projectName) });
 

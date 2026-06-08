@@ -167,6 +167,14 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     if (i !== -1) files[i] = { path: "package.json", content: pinPrismaV6(files[i].content) };
   }
 
+  // Pin Node 22 LTS via a .node-version file (Render's most reliable selector,
+  // alongside the NODE_VERSION env var). Node 24 — Render's default — has no
+  // prebuilt binaries for native deps like better-sqlite3 and fails to compile
+  // them. 22 has prebuilts and runs everything generated backends use.
+  if (!files.some((f) => f.path === ".node-version" || f.path === ".nvmrc")) {
+    files.push({ path: ".node-version", content: "22\n" });
+  }
+
   const pkg = files.find((f) => f.path === "package.json");
   const parsed = pkg ? readJson(pkg.content) : null;
   const scripts = (parsed?.scripts as Record<string, string> | undefined) || {};
