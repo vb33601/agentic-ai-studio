@@ -68,6 +68,7 @@ export async function POST(req: NextRequest) {
       usesPrisma: prep.usesPrisma,
       dbWired: prep.usesPrisma && !!dbUrl,
       backendDir: prep.backendDir,
+      warnings: prep.warnings,
     });
   } catch (error) {
     console.error("[deploy/render]", error);

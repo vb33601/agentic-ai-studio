@@ -27,7 +27,14 @@ export interface BackendPrep {
    * generated) — deploying those to Render just crashes at `node …` startup.
    */
   hasBackend: boolean;
+  /** Non-fatal advisories to show in the deploy log (e.g. ephemeral storage). */
+  warnings: string[];
 }
+
+// File-based SQLite drivers: they work on Render but write to EPHEMERAL disk, so
+// data is lost on restart/redeploy. (Prisma+sqlite is handled separately by the
+// sqlite→postgres swap, so it's excluded here.)
+const RAW_SQLITE_DEPS = ["better-sqlite3", "sqlite3", "sql.js"];
 
 const SRC_EXT = /\.(jsx?|tsx?|mjs|cjs)$/;
 
@@ -213,5 +220,15 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     buildSteps.push(hasMigrations ? "npx prisma migrate deploy" : "npx prisma db push --accept-data-loss");
   }
 
-  return { files, buildCommand: buildSteps.join(" && "), startCommand, usesPrisma: hasSchema, backendDir, hasBackend };
+  // Advisories. Raw file-based SQLite runs on Render but its data lives on
+  // ephemeral disk — gone on every restart/redeploy. Steer toward the managed
+  // Postgres (Prisma apps get DATABASE_URL wired automatically).
+  const warnings: string[] = [];
+  if (RAW_SQLITE_DEPS.some((d) => deps.has(d))) {
+    warnings.push(
+      "This backend uses file-based SQLite (better-sqlite3/sqlite3). It will run, but Render's disk is ephemeral so the database resets on every restart/redeploy. For persistent data, switch to the managed Postgres (e.g. Prisma with provider \"postgresql\" reading process.env.DATABASE_URL).",
+    );
+  }
+
+  return { files, buildCommand: buildSteps.join(" && "), startCommand, usesPrisma: hasSchema, backendDir, hasBackend, warnings };
 }

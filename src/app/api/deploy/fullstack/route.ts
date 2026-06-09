@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
       frontendDir: front.dir,
       backendError,
       frontendError,
+      warnings: hasBackend ? backendPrep.warnings : [],
     });
   } catch (error) {
     console.error("[deploy/fullstack]", error);

@@ -33,6 +33,7 @@ interface DeployResponse {
   backendError?: string;
   frontendUrl?: string;
   frontendError?: string;
+  warnings?: string[];
 }
 
 async function readJson(res: Response): Promise<DeployResponse> {
@@ -102,6 +103,7 @@ export function DeployPanel() {
       if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
       if (data.backendUrl) addBuildLog(`Backend (Render) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
       if (data.backendError) addBuildLog(`⚠ Backend: ${data.backendError}`);
+      for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
       if (data.frontendUrl) addBuildLog(`✓ FRONTEND LIVE → ${data.frontendUrl}`);
       if (data.frontendError) addBuildLog(`⚠ Frontend: ${data.frontendError}`);
       const primary = data.frontendUrl || data.backendUrl;
@@ -138,6 +140,7 @@ export function DeployPanel() {
       addBuildLog(`Repo created → ${data.repoUrl}`);
       if (data.dbWired) addBuildLog("DATABASE_URL wired to managed Postgres (Aiven).");
       else if (data.usesPrisma) addBuildLog("⚠ DB app, but DEFAULT_DATABASE_URL isn't set — add it in Render env.");
+      for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
       addBuildLog(`Render service → ${data.url} (building, ~few min)`);
       update(deployId, { status: "deployed", url: data.url, inspectorUrl: data.dashboardUrl });
     } catch (e) {
