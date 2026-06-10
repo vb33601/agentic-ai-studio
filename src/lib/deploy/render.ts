@@ -114,3 +114,36 @@ export async function createRenderService(input: CreateServiceInput): Promise<Re
     deployId: data.deployId as string | undefined,
   };
 }
+
+/**
+ * Set (upsert) environment variables on an existing service and trigger a fresh
+ * deploy so they take effect. Used to wire the backend's CORS_ORIGIN/FRONTEND_URL
+ * to the frontend's real Vercel URL once it's known (the frontend deploys after
+ * the backend, so the URL isn't available at service-creation time).
+ *
+ * Best-effort: returns false (never throws) so a wiring hiccup can't fail an
+ * otherwise-successful deploy.
+ */
+export async function updateRenderEnvVars(serviceId: string, vars: RenderEnvVar[]): Promise<boolean> {
+  const key = process.env.RENDER_API_KEY;
+  if (!key || !serviceId || vars.length === 0) return false;
+  try {
+    for (const v of vars) {
+      const res = await fetch(`${API}/services/${serviceId}/env-vars/${encodeURIComponent(v.key)}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ value: v.value }),
+      });
+      if (!res.ok) return false;
+    }
+    // Env-var changes don't always auto-redeploy; trigger one explicitly.
+    await fetch(`${API}/services/${serviceId}/deploys`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ clearCache: "do_not_clear" }),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

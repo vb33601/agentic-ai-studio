@@ -154,12 +154,132 @@ export function appDatabaseUrl(baseUrl: string, appName: string): string {
   return baseUrl + (baseUrl.includes("?") ? "&" : "?") + `schema=${schema}`;
 }
 
+/**
+ * Make the backend honor the frontend's (dynamic) origin for cross-origin calls.
+ * The browser on the Vercel domain calls the Render backend directly whenever the
+ * frontend uses an absolute API URL (VITE_API_URL/etc.), so the server must send
+ * CORS headers for that origin — which isn't known until deploy time.
+ *
+ * `process.env.CORS_ORIGIN` (a comma-separated allow-list, wired to the Vercel URL
+ * at deploy time) is the source of truth; it falls back to reflecting any origin
+ * so the app never hard-breaks if the var is missing. We:
+ *  - rewrite hardcoded localhost CORS origins to read that env,
+ *  - inject the `cors` middleware into an Express server that has none,
+ *  - add `cors` to dependencies when we rely on it.
+ */
+const CORS_ORIGIN_EXPR =
+  "(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : true)";
+
+function usesExpress(files: RepoFile[]): boolean {
+  return files.some(
+    (f) => SRC_EXT.test(f.path) && /(require\(\s*['"]express['"]\s*\)|from\s+['"]express['"])/.test(f.content),
+  );
+}
+
+function hasCorsUsage(files: RepoFile[]): boolean {
+  return files.some((f) => SRC_EXT.test(f.path) && /\bcors\s*\(/.test(f.content));
+}
+
+/** Replace hardcoded localhost CORS origins with the env-driven allow-list. */
+function normalizeCorsOrigin(content: string): string {
+  return content
+    .replace(/origin\s*:\s*(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\1/g, `origin: ${CORS_ORIGIN_EXPR}`)
+    .replace(/origin\s*:\s*\[[^\]]*(?:localhost|127\.0\.0\.1)[^\]]*\]/g, `origin: ${CORS_ORIGIN_EXPR}`);
+}
+
+/** Inject `cors` into the Express entry file that defines `… = express()`. */
+function injectCors(content: string): string | null {
+  const init = /((?:const|let|var)\s+(\w+)\s*=\s*express\(\)\s*;?)/.exec(content);
+  if (!init) return null;
+  const appVar = init[2];
+  const esm = /(^|\n)\s*import\s.+from\s/.test(content) || /(^|\n)\s*import\s+['"]/.test(content);
+  const importLine = esm ? "import cors from 'cors';\n" : "const cors = require('cors');\n";
+  const middleware = `\n${appVar}.use(cors({ origin: ${CORS_ORIGIN_EXPR}, credentials: true }));`;
+  // Add the import at the very top, the middleware right after the app is created.
+  const withMiddleware = content.replace(init[1], `${init[1]}${middleware}`);
+  return importLine + withMiddleware;
+}
+
+function addDep(pkgContent: string, name: string, version: string, dev = false): string {
+  try {
+    const p = JSON.parse(pkgContent);
+    const sec = dev ? "devDependencies" : "dependencies";
+    p[sec] = p[sec] || {};
+    if (!p[sec][name] && !p.dependencies?.[name] && !p.devDependencies?.[name]) p[sec][name] = version;
+    return JSON.stringify(p, null, 2);
+  } catch {
+    return pkgContent;
+  }
+}
+
+/** Wire CORS across the backend files. Returns the (possibly) updated files. */
+function wireBackendCors(files: RepoFile[], entry: string): RepoFile[] {
+  let out = files.map((f) =>
+    SRC_EXT.test(f.path) ? { path: f.path, content: normalizeCorsOrigin(f.content) } : f,
+  );
+
+  let reliesOnCors = out.some((f) => SRC_EXT.test(f.path) && /\bcors\s*\(/.test(f.content));
+
+  // No CORS anywhere but it's an Express app → inject it into the entry file.
+  if (!hasCorsUsage(out) && usesExpress(out)) {
+    const i = out.findIndex((f) => f.path === entry);
+    if (i !== -1) {
+      const injected = injectCors(out[i].content);
+      if (injected) {
+        out[i] = { path: entry, content: injected };
+        reliesOnCors = true;
+      }
+    }
+  }
+
+  if (reliesOnCors) {
+    const pi = out.findIndex((f) => f.path === "package.json");
+    if (pi !== -1) out[pi] = { path: "package.json", content: addDep(out[pi].content, "cors", "^2.8.5") };
+  }
+  return out;
+}
+
+/**
+ * Resolve how to seed the database after the schema is applied, so deploys load
+ * initial/seed data — not just create empty tables. Honors, in order: a configured
+ * `prisma.seed`, an npm `seed` script, or a bare prisma/seed file (for which we add
+ * the `prisma.seed` config + a `tsx`/`node` runner). Returns the build step to run
+ * plus any package.json change needed.
+ */
+function resolveSeed(
+  files: RepoFile[],
+  parsed: Record<string, unknown> | null,
+  scripts: Record<string, string>,
+): { step: string | null; pkg: string | null } {
+  const prismaCfg = (parsed?.prisma as { seed?: unknown } | undefined) || undefined;
+  if (prismaCfg?.seed) return { step: "npx prisma db seed", pkg: null };
+  if (typeof scripts.seed === "string") return { step: "npm run seed", pkg: null };
+
+  const seedFile = files.find((f) => /(^|\/)(prisma\/)?seed\.(t|j)sx?$/.test(f.path));
+  if (!seedFile) return { step: null, pkg: null };
+
+  const pi = files.findIndex((f) => f.path === "package.json");
+  if (pi === -1) return { step: null, pkg: null };
+  const isTs = /\.tsx?$/.test(seedFile.path);
+  try {
+    const p = JSON.parse(files[pi].content);
+    p.prisma = { ...(p.prisma || {}), seed: isTs ? `tsx ${seedFile.path}` : `node ${seedFile.path}` };
+    if (isTs) {
+      p.devDependencies = p.devDependencies || {};
+      if (!p.devDependencies.tsx && !p.dependencies?.tsx) p.devDependencies.tsx = "^4.0.0";
+    }
+    return { step: "npx prisma db seed", pkg: JSON.stringify(p, null, 2) };
+  } catch {
+    return { step: null, pkg: null };
+  }
+}
+
 export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const backendDir = detectBackendDir(input);
   const scoped = reRoot(input, backendDir);
 
   const hasSchema = scoped.some((f) => /(^|\/)schema\.prisma$/.test(f.path));
-  const files = scoped.map((f) => {
+  let files = scoped.map((f) => {
     let content = f.content;
     if (/(^|\/)schema\.prisma$/.test(f.path)) content = toPostgres(content);
     else if (ENV_FILE.test(f.path)) content = sanitizeEnv(content);
@@ -202,6 +322,9 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     mainField || "src/index.js";
   const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
 
+  // Wire CORS so the (dynamic) Vercel frontend can call this backend directly.
+  files = wireBackendCors(files, entry);
+
   // Is there actually a server to deploy? A real backend has backend deps, a
   // Prisma schema, or a real server entry file — and isn't a pure frontend.
   const deps = depKeys(parsed);
@@ -218,6 +341,16 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     // Postgres schema (set via DATABASE_URL ?schema=…), so this is a clean,
     // empty namespace — no collision with the platform's or other apps' tables.
     buildSteps.push(hasMigrations ? "npx prisma migrate deploy" : "npx prisma db push --accept-data-loss");
+    // Load seed/initial data after the schema exists, so deploys aren't left with
+    // empty tables. resolveSeed may also patch package.json (prisma.seed config).
+    const seed = resolveSeed(files, parsed, scripts);
+    if (seed.step) {
+      buildSteps.push(seed.step);
+      if (seed.pkg) {
+        const pi = files.findIndex((f) => f.path === "package.json");
+        if (pi !== -1) files[pi] = { path: "package.json", content: seed.pkg };
+      }
+    }
   }
 
   // Advisories. Raw file-based SQLite runs on Render but its data lives on
