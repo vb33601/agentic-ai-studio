@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRepoAndPush } from "@/lib/deploy/github";
-import { createRenderService, updateRenderEnvVars, type RenderEnvVar } from "@/lib/deploy/render";
+import { createRenderService, type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
@@ -28,12 +28,11 @@ export async function POST(req: NextRequest) {
     const repoFiles = files.map((f) => ({ path: f.path, content: f.content }));
 
     // The frontend's Vercel project name is the slug, so its production URL is
-    // predictable BEFORE it deploys. We seed the backend's CORS_ORIGIN with it so
-    // cross-origin calls work on the first boot, then reconcile with the actual
-    // URL after the frontend deploys (below). Dynamic URLs, wired both ways.
+    // predictable. We expose it to the backend as FRONTEND_URL and seed CORS_ORIGIN
+    // with it. (The backend also reflects any *.vercel.app origin, so the immutable
+    // per-deploy URL works too without a second deploy.)
     const predictedFrontendUrl = `https://${slug}.vercel.app`;
 
-    let backendId: string | null = null;
     let backendUrl: string | null = null;
     let backendDashboard: string | null = null;
     let repoUrl: string | null = null;
@@ -77,7 +76,6 @@ export async function POST(req: NextRequest) {
           startCommand: backendPrep.startCommand,
           envVars,
         });
-        backendId = svc.id;
         backendUrl = svc.url;
         backendDashboard = svc.dashboardUrl;
       } catch (e) {
@@ -106,22 +104,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Reconcile: if the frontend's real URL differs from what we predicted (or
-    // the deployment URL differs from the production alias), update the backend's
-    // CORS allow-list to include both and redeploy. Best-effort — never fails the
-    // deploy. Allowing both the production alias and the immutable deploy URL
-    // means the frontend works however the user reaches it.
-    let corsReconciled = false;
-    if (backendId && frontendUrl) {
-      const origins = Array.from(new Set([predictedFrontendUrl, frontendUrl])).join(",");
-      if (origins !== predictedFrontendUrl) {
-        corsReconciled = await updateRenderEnvVars(backendId, [
-          { key: "CORS_ORIGIN", value: origins },
-          { key: "FRONTEND_URL", value: frontendUrl },
-        ]);
-      }
-    }
-
     if (!hasBackend && !front.found) {
       return NextResponse.json({ error: "No frontend or backend found in the selected files." }, { status: 400 });
     }
@@ -132,7 +114,6 @@ export async function POST(req: NextRequest) {
       backendDashboard,
       repoUrl,
       dbWired,
-      corsReconciled,
       backendDir: backendPrep.backendDir,
       frontendDir: front.dir,
       backendError,

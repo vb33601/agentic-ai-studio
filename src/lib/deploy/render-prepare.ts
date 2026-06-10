@@ -160,15 +160,18 @@ export function appDatabaseUrl(baseUrl: string, appName: string): string {
  * frontend uses an absolute API URL (VITE_API_URL/etc.), so the server must send
  * CORS headers for that origin — which isn't known until deploy time.
  *
- * `process.env.CORS_ORIGIN` (a comma-separated allow-list, wired to the Vercel URL
- * at deploy time) is the source of truth; it falls back to reflecting any origin
- * so the app never hard-breaks if the var is missing. We:
- *  - rewrite hardcoded localhost CORS origins to read that env,
+ * The frontend's URL is dynamic: Vercel serves it at both a stable production
+ * alias (`<project>.vercel.app`) and an immutable per-deploy URL
+ * (`<project>-<hash>.vercel.app`) — both end in `.vercel.app`. So instead of
+ * pinning one URL (which misses the other and needs a second deploy to fix), the
+ * backend reflects ANY `*.vercel.app` origin, plus an explicit `CORS_ORIGIN`
+ * allow-list for anything else. We:
+ *  - rewrite hardcoded localhost CORS origins to this rule,
  *  - inject the `cors` middleware into an Express server that has none,
  *  - add `cors` to dependencies when we rely on it.
  */
-const CORS_ORIGIN_EXPR =
-  "(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : true)";
+const CORS_ORIGIN_FN =
+  "(origin, cb) => cb(null, !origin || /\\.vercel\\.app$/.test(origin) || (process.env.CORS_ORIGIN || '').split(',').map((o) => o.trim()).filter(Boolean).includes(origin))";
 
 function usesExpress(files: RepoFile[]): boolean {
   return files.some(
@@ -180,11 +183,11 @@ function hasCorsUsage(files: RepoFile[]): boolean {
   return files.some((f) => SRC_EXT.test(f.path) && /\bcors\s*\(/.test(f.content));
 }
 
-/** Replace hardcoded localhost CORS origins with the env-driven allow-list. */
+/** Replace hardcoded localhost CORS origins with the dynamic allow rule. */
 function normalizeCorsOrigin(content: string): string {
   return content
-    .replace(/origin\s*:\s*(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\1/g, `origin: ${CORS_ORIGIN_EXPR}`)
-    .replace(/origin\s*:\s*\[[^\]]*(?:localhost|127\.0\.0\.1)[^\]]*\]/g, `origin: ${CORS_ORIGIN_EXPR}`);
+    .replace(/origin\s*:\s*(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\1/g, `origin: ${CORS_ORIGIN_FN}`)
+    .replace(/origin\s*:\s*\[[^\]]*(?:localhost|127\.0\.0\.1)[^\]]*\]/g, `origin: ${CORS_ORIGIN_FN}`);
 }
 
 /** Inject `cors` into the Express entry file that defines `… = express()`. */
@@ -194,7 +197,7 @@ function injectCors(content: string): string | null {
   const appVar = init[2];
   const esm = /(^|\n)\s*import\s.+from\s/.test(content) || /(^|\n)\s*import\s+['"]/.test(content);
   const importLine = esm ? "import cors from 'cors';\n" : "const cors = require('cors');\n";
-  const middleware = `\n${appVar}.use(cors({ origin: ${CORS_ORIGIN_EXPR}, credentials: true }));`;
+  const middleware = `\n${appVar}.use(cors({ origin: ${CORS_ORIGIN_FN}, credentials: true }));`;
   // Add the import at the very top, the middleware right after the app is created.
   const withMiddleware = content.replace(init[1], `${init[1]}${middleware}`);
   return importLine + withMiddleware;
@@ -214,7 +217,7 @@ function addDep(pkgContent: string, name: string, version: string, dev = false):
 
 /** Wire CORS across the backend files. Returns the (possibly) updated files. */
 function wireBackendCors(files: RepoFile[], entry: string): RepoFile[] {
-  let out = files.map((f) =>
+  const out = files.map((f) =>
     SRC_EXT.test(f.path) ? { path: f.path, content: normalizeCorsOrigin(f.content) } : f,
   );
 
