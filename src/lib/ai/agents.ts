@@ -7,6 +7,21 @@ export interface AgentConfig {
   temperature: number;
 }
 
+// Shared, deploy-aware rules appended to the code-generating agents. Generated
+// apps are deployed by the platform (frontend → Vercel, backend → Render with a
+// managed Postgres), so they must be COMPLETE and self-consistent — these rules
+// encode the failures that broke real deploys.
+const FULLSTACK_RULES = `
+
+Full-stack & deploy-readiness (CRITICAL — generated apps get deployed: frontend → Vercel, backend → Render + managed Postgres):
+- NEVER promise a part you don't build. If the root package.json references a backend (e.g. "start": "npm run start --prefix backend", or a concurrently/dev script that runs backend/), you MUST fully implement that backend/ folder. A script that points at a folder, --prefix target, or file you didn't create is a broken app.
+- Every backend MUST have a REAL server entry file that its package.json "main"/"start" points to, and that file MUST create the server AND listen — e.g. Express → \`src/index.js\`: \`const app = express(); app.use(cors()); app.use(express.json()); /* mount EVERY router here */ app.listen(process.env.PORT || 3000);\`. Build this entry FIRST, then the routes/controllers it mounts. If "start" points at a missing file the deploy crashes with MODULE_NOT_FOUND.
+- Bind the server to \`process.env.PORT\` (the host injects it) with a local fallback — never a hard-coded port only. Read ALL config/secrets from \`process.env\` (DATABASE_URL, JWT_SECRET, PORT, API keys); never hard-code credentials.
+- Make the frontend↔backend API contract line up EXACTLY: the frontend calls \`/api/<resource>\` (e.g. /api/companies, /api/auth/login), so mount each router at the matching \`/api/...\` path on the backend. Every endpoint the frontend calls must exist.
+- The frontend MUST read its API base URL from an env var with a localhost fallback (Vite → \`import.meta.env.VITE_API_URL ?? 'http://localhost:<port>'\`; CRA → \`process.env.REACT_APP_API_URL\`) — never hard-code a backend URL; the platform injects the real one at deploy. Enable CORS on the backend (a permissive or env-driven allow-list) so the deployed frontend can reach it.
+- Put JSX ONLY in \`.jsx\`/\`.tsx\` files — never in \`.js\`/\`.ts\` (Vite/Rollup won't parse JSX in a .js file and the build fails). A hook/context/util that returns JSX must be named \`.jsx\`/\`.tsx\`.
+- For data that must PERSIST after deploy use Prisma reading \`env("DATABASE_URL")\` (provider "sqlite" for the in-browser preview; the platform swaps it to postgresql at deploy). Avoid raw better-sqlite3/sqlite3 — its file lives on ephemeral disk and resets on every restart.`;
+
 export const AGENT_CONFIGS: Record<string, AgentConfig> = {
   orchestrator: {
     name: "Orchestrator",
@@ -59,7 +74,7 @@ How to work:
 - Create EVERY file you import or reference. If \`App.jsx\` imports \`./pages/Signup.jsx\`, you MUST also create \`pages/Signup.jsx\`. Never import a component/route/module you didn't generate — it breaks the build with "Failed to resolve import". Before finishing, re-check that the entry file and ALL of its (transitive) imports exist.
 - Match imports to package.json "type". With ESM ("type":"module"), a CommonJS library like @prisma/client has NO named exports — import the default and destructure: \`import pkg from '@prisma/client'; const { PrismaClient } = pkg;\` (NOT \`import { PrismaClient } from '@prisma/client'\`).
 - Databases: default to SQLite so it runs in the preview (Prisma \`provider = "sqlite"\`, \`url = env("DATABASE_URL")\`, plus a \`.env\` with \`DATABASE_URL="file:./dev.db"\`). Read the URL from \`process.env.DATABASE_URL\` — never hardcode credentials — so a managed Postgres can be swapped in at deploy time. For any app whose data must PERSIST after deployment, use Prisma (not raw better-sqlite3/sqlite3): the platform swaps Prisma's sqlite→postgresql at deploy, whereas a raw SQLite file lives on ephemeral disk and is wiped on every restart/redeploy.
-- When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.`,
+- When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.${FULLSTACK_RULES}`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 16,
     temperature: 0.3,
@@ -89,7 +104,7 @@ Design quality (very important — avoid cluttered output):
 - A simple, cohesive color palette (a couple of accent colors + neutral grays), subtle borders/shadows, rounded corners.
 - Lay out sections with CSS grid/flex and sensible gaps; group related controls; don't put everything on one dense screen.
 - Fully responsive (mobile-first); stacks cleanly on small screens.
-- When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.`,
+- When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.${FULLSTACK_RULES}`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 18,
     temperature: 0.3,
