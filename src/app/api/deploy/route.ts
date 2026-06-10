@@ -3,7 +3,7 @@ import { deployToVercel, getDeploymentStatus } from "@/lib/deploy/vercel";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import type { WorkspaceFile } from "@/store/workspace";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 export async function POST(req: NextRequest) {
   try {

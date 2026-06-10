@@ -8,7 +8,7 @@ import { deployToVercel } from "@/lib/deploy/vercel";
 import { slugify } from "@/lib/utils";
 import type { WorkspaceFile } from "@/store/workspace";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 /**
  * Full-stack one-click deploy: backend → Render (wired to Aiven Postgres),

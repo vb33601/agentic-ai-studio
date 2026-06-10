@@ -5,7 +5,7 @@ import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-pre
 import { slugify } from "@/lib/utils";
 import type { WorkspaceFile } from "@/store/workspace";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 /**
  * One-click "Deploy backend → Render". Pushes the selected backend folder to a

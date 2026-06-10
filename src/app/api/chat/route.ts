@@ -19,7 +19,7 @@ import {
   ModelUnavailableError,
 } from "@/lib/ai/prompt-pipeline";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 // Cap output tokens per model call. OpenRouter reserves credits for the FULL
 // max_tokens up front, so an unbounded request (their 16k default) gets a 402

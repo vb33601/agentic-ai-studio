@@ -19,7 +19,7 @@ import {
   ModelUnavailableError,
 } from "@/lib/ai/prompt-pipeline";
 
-export const maxDuration = 300;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 // See chat/route.ts — bound per-call output so OpenRouter's upfront credit
 // reservation stays small and generation isn't cut off with a 402.

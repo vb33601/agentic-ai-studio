@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { generateImage } from "@/lib/ai/image-gen";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
 // Same-origin image proxy: the browser loads /api/image?prompt=... so there is
 // never any CORS, and provider API keys stay server-side. Returns image bytes.
