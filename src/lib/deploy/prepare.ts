@@ -229,6 +229,50 @@ function repairImportPaths(files: SourceFile[]): SourceFile[] {
   });
 }
 
+// Strong JSX signals (closing tag, self-closing tag, fragment, or returning a
+// component) — tight enough to avoid TS generics / less-than false positives.
+const JSX_SIGNAL =
+  /<\/[A-Za-z][\w.]*\s*>|<[A-Za-z][\w.]*(\s[^<>]*)?\/>|<>|<\/>|(?:return|=>)\s*\(?\s*<[A-Za-z]/;
+
+/**
+ * Generated apps frequently put JSX in a `.js`/`.ts` file (e.g. a hook or
+ * context that returns `<Provider>…`). Vite/Rollup only parse JSX in `.jsx`/
+ * `.tsx`, so the build hard-fails with "contains invalid JS syntax … name the
+ * file with the .jsx or .tsx extension". Rename those files to .jsx/.tsx —
+ * imports are almost always extensionless so resolution still works — and fix
+ * any explicit `.js`/`.ts` import specifiers that pointed at a renamed file.
+ */
+function renameJsxSourceFiles(files: SourceFile[]): SourceFile[] {
+  const renames = new Map<string, string>();
+  const taken = new Set(files.map((f) => f.path));
+  for (const f of files) {
+    const m = /\.(js|ts)$/.exec(f.path);
+    if (!m || !JSX_SIGNAL.test(f.content)) continue;
+    const np = f.path.replace(/\.(js|ts)$/, m[1] === "ts" ? ".tsx" : ".jsx");
+    if (taken.has(np)) continue;
+    renames.set(f.path, np);
+    taken.add(np);
+  }
+  if (renames.size === 0) return files;
+  // resolved-path-without-ext -> new extension, for fixing explicit imports.
+  const renamedNoExt = new Map<string, string>();
+  for (const [oldP, newP] of renames) renamedNoExt.set(oldP.replace(/\.(js|ts)$/, ""), newP.endsWith(".tsx") ? "tsx" : "jsx");
+  return files.map((f) => {
+    const newPath = renames.get(f.path) ?? f.path;
+    let content = f.content;
+    if (JS_EXT.test(f.path)) {
+      content = content.replace(
+        /(\bfrom\s*|\bimport\s*|\brequire\(\s*|\bimport\(\s*)(['"])(\.[^'"]+?)\.(?:js|ts)\2/g,
+        (full, pre, q, spec) => {
+          const nx = renamedNoExt.get(joinRelative(dirOf(f.path), spec));
+          return nx ? `${pre}${q}${spec}.${nx}${q}` : full;
+        },
+      );
+    }
+    return content === f.content && newPath === f.path ? f : { ...f, path: newPath, content };
+  });
+}
+
 /** Stub default-imported local modules that don't exist so the build doesn't
  *  fail with UNRESOLVED_IMPORT (e.g. main.jsx imports a never-created ./App.jsx). */
 function stubMissingImports(files: SourceFile[]): SourceFile[] {
@@ -343,9 +387,10 @@ function detectByFiles(files: SourceFile[]): string | null {
 
 export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   let files = augmentPackageJson(input);
-  // Build-resilience: repair misrouted relative imports, stub still-missing
-  // local imports, and pin Tailwind to v3 (applies to ALL Vercel deploys —
-  // provider grid and full-stack).
+  // Build-resilience: rename JSX-in-.js/.ts files to .jsx/.tsx, repair misrouted
+  // relative imports, stub still-missing local imports, and pin Tailwind to v3
+  // (applies to ALL Vercel deploys — provider grid and full-stack).
+  files = renameJsxSourceFiles(files);
   files = repairImportPaths(files);
   files = stubMissingImports(files);
   files = pinTailwindV3(files);
