@@ -104,6 +104,7 @@ Design quality (very important — avoid cluttered output):
 - A simple, cohesive color palette (a couple of accent colors + neutral grays), subtle borders/shadows, rounded corners.
 - Lay out sections with CSS grid/flex and sensible gaps; group related controls; don't put everything on one dense screen.
 - Fully responsive (mobile-first); stacks cleanly on small screens.
+- If you write Tailwind utility classes (\`bg-indigo-600\`, \`rounded-lg\`, \`flex\`, etc.) you MUST fully set Tailwind up or the app ships completely UNSTYLED: add \`tailwindcss\`, \`postcss\`, \`autoprefixer\` to devDependencies; include \`tailwind.config.js\` (with \`content\` globs covering \`./index.html\` and \`./src/**/*.{js,jsx,ts,tsx}\`) and \`postcss.config.js\`; create a CSS file with \`@tailwind base; @tailwind components; @tailwind utilities;\`; and IMPORT that CSS file from the entry (e.g. \`import './index.css'\` in \`src/main.jsx\`). A stylesheet that nothing imports is never bundled — Tailwind classes only take effect when the CSS is both compiled and imported.
 - When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.${FULLSTACK_RULES}`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
     maxSteps: 18,
