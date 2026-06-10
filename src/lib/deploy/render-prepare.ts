@@ -277,6 +277,107 @@ function resolveSeed(
   }
 }
 
+/** Pull a script's run target, e.g. "node src/index.js" -> "src/index.js". */
+function scriptEntryTarget(script: string | undefined): string | null {
+  if (!script) return null;
+  const m = /\b(?:node|nodemon|ts-node|tsx)\b([^&|;]*)/.exec(script);
+  if (!m) return null;
+  const tokens = m[1].trim().split(/\s+/).filter(Boolean).filter((t) => !t.startsWith("-"));
+  return tokens.find((t) => /\.[cm]?[jt]sx?$/.test(t)) || tokens[0] || null;
+}
+
+/** Relative require/import specifier (no extension) from a dir to a target file. */
+function relRequire(fromDir: string, target: string): string {
+  const noExt = target.replace(/\.[cm]?[jt]sx?$/, "");
+  const from = fromDir ? fromDir.split("/") : [];
+  const to = noExt.split("/");
+  let i = 0;
+  while (i < from.length && i < to.length && from[i] === to[i]) i++;
+  const rel = [...Array(from.length - i).fill(".."), ...to.slice(i)].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+/** Mount base for a router file: "authRoutes.js" -> "auth", "dealRoutes.js" -> "deal". */
+function mountBase(routeFile: string): string {
+  const fname = (routeFile.split("/").pop() || routeFile).replace(/\.[cm]?[jt]sx?$/, "");
+  return fname.replace(/(routes?|router)$/i, "").replace(/[^a-zA-Z0-9]+/g, "").toLowerCase() || "api";
+}
+
+/** Naive English plural so a router mounts at both the singular and the plural
+ *  REST path (e.g. "company" -> "companies") — clients use either convention. */
+function pluralize(base: string): string {
+  if (/[^aeiou]y$/.test(base)) return base.slice(0, -1) + "ies";
+  if (/(s|x|z|ch|sh)$/.test(base)) return base + "es";
+  return base + "s";
+}
+
+/**
+ * Generated backends sometimes ship every route/controller but NO server
+ * bootstrap — the file `main`/`start` points at never gets generated. `node
+ * <entry>` then crash-loops with MODULE_NOT_FOUND and the Render deploy fails.
+ * When the entry is missing, synthesize a minimal Express server that enables
+ * CORS for the Vercel frontend, parses JSON, mounts every router found under
+ * routes/ (at `/api/<name>` + plural, inferred from filename), and binds to
+ * Render's $PORT — so the service boots instead of failing. Mirrors the
+ * frontend's `ensureViteEntry`.
+ */
+function ensureBackendEntry(
+  files: RepoFile[],
+  entryPath: string,
+  parsed: Record<string, unknown> | null,
+): { files: RepoFile[]; synthesized: boolean } {
+  if (files.some((f) => f.path === entryPath)) return { files, synthesized: false };
+
+  const esm = parsed?.type === "module";
+  const entryDir = dirOf(entryPath);
+  const routeFiles = files
+    .filter((f) => /(^|\/)routes\/[^/]+\.[cm]?[jt]sx?$/.test(f.path))
+    .map((f) => f.path)
+    .sort();
+
+  const imports: string[] = [];
+  const mounts: string[] = [];
+  routeFiles.forEach((rf, i) => {
+    const spec = relRequire(entryDir, rf) + (esm ? ".js" : "");
+    const v = `r${i}`;
+    imports.push(esm ? `import ${v} from '${spec}';` : `const ${v} = require('${spec}');`);
+    const base = mountBase(rf);
+    const plural = pluralize(base);
+    const paths = [...new Set([`/api/${base}`, `/api/${plural}`])];
+    mounts.push(`app.use(${JSON.stringify(paths)}, ${v});`);
+  });
+
+  const head = esm
+    ? "import express from 'express';\nimport cors from 'cors';"
+    : "const express = require('express');\nconst cors = require('cors');";
+  const content = `// Auto-generated server entry. The app was missing "${entryPath}" (no server
+// bootstrap was generated), so the deploy created one: it enables CORS for the
+// Vercel frontend, parses JSON, mounts the routers under routes/, and binds to
+// Render's $PORT. Mount paths are inferred from filenames — adjust if your
+// client calls different ones.
+${head}
+
+const app = express();
+app.use(cors({ origin: ${CORS_ORIGIN_FN}, credentials: true }));
+app.use(express.json());
+
+app.get('/', (req, res) => res.json({ ok: true }));
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+${imports.join("\n")}
+${mounts.join("\n")}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('Server listening on ' + PORT));
+`;
+
+  let out = [...files, { path: entryPath, content }];
+  // The synthesized server needs express; ensure it's a dependency.
+  const pi = out.findIndex((f) => f.path === "package.json");
+  if (pi !== -1) out[pi] = { path: "package.json", content: addDep(out[pi].content, "express", "^4.19.2") };
+  return { files: out, synthesized: true };
+}
+
 export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const backendDir = detectBackendDir(input);
   const scoped = reRoot(input, backendDir);
@@ -309,20 +410,33 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const parsed = pkg ? readJson(pkg.content) : null;
   const scripts = (parsed?.scripts as Record<string, string> | undefined) || {};
 
-  // Start command: an explicit "start" script wins; otherwise run the real
-  // entry file (avoid "dev" — it often uses --watch/nodemon).
+  // Resolve the server entry. Prefer the start/main script's actual target so a
+  // synthesized fallback lands at the exact path the start command runs. (Avoid
+  // "dev" — it often uses --watch/nodemon.)
   const entryCandidates = [
     "src/index.js", "src/server.js", "src/app.js", "src/main.js",
     "index.js", "server.js", "app.js",
   ];
   const mainField = typeof parsed?.main === "string" ? parsed.main : null;
-  const entryExists =
-    (mainField && files.some((f) => f.path === mainField)) ||
-    entryCandidates.some((c) => files.some((f) => f.path === c));
+  const startTarget = scriptEntryTarget(scripts.start);
   const entry =
+    startTarget ||
     (mainField && files.some((f) => f.path === mainField) && mainField) ||
     entryCandidates.find((c) => files.some((f) => f.path === c)) ||
     mainField || "src/index.js";
+
+  // If that entry file doesn't exist, synthesize a minimal Express bootstrap so
+  // the service boots instead of crash-looping with MODULE_NOT_FOUND (the most
+  // common cause of a generated-backend Render deploy failure).
+  let entryPresent = files.some((f) => f.path === entry);
+  let synthesizedEntry = false;
+  if (!entryPresent) {
+    const ens = ensureBackendEntry(files, entry, parsed);
+    files = ens.files;
+    synthesizedEntry = ens.synthesized;
+    entryPresent = ens.synthesized;
+  }
+
   const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
 
   // Wire CORS so the (dynamic) Vercel frontend can call this backend directly.
@@ -333,7 +447,7 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const deps = depKeys(parsed);
   const hasBackendDeps = BACKEND_DEPS.some((d) => deps.has(d));
   const isFrontendOnly = FRONTEND_DEPS.some((d) => deps.has(d)) && !hasBackendDeps;
-  const hasBackend = !isFrontendOnly && (hasBackendDeps || hasSchema || !!entryExists);
+  const hasBackend = !isFrontendOnly && (hasBackendDeps || hasSchema || entryPresent);
 
   const hasMigrations = files.some((f) => /(^|\/)prisma\/migrations\/.+/.test(f.path));
   const buildSteps = ["npm install"];
@@ -360,6 +474,11 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   // ephemeral disk — gone on every restart/redeploy. Steer toward the managed
   // Postgres (Prisma apps get DATABASE_URL wired automatically).
   const warnings: string[] = [];
+  if (synthesizedEntry) {
+    warnings.push(
+      `The app had no server entry (${entry}) — one was generated so the backend boots. Routers under routes/ were mounted at /api/<name> (+plural); if your frontend calls different paths, ask the builder to generate the real server entry and redeploy.`,
+    );
+  }
   if (RAW_SQLITE_DEPS.some((d) => deps.has(d))) {
     warnings.push(
       "This backend uses file-based SQLite (better-sqlite3/sqlite3). It will run, but Render's disk is ephemeral so the database resets on every restart/redeploy. For persistent data, switch to the managed Postgres (e.g. Prisma with provider \"postgresql\" reading process.env.DATABASE_URL).",

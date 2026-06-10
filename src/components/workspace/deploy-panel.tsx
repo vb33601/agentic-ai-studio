@@ -64,7 +64,10 @@ interface Deployment {
   status: "pending" | "building" | "deployed" | "failed";
   url?: string;
   inspectorUrl?: string;
-  /** Backend (Render) links, shown alongside the frontend for full-stack deploys. */
+  /** Full-stack deploys track each side separately so the UI never mislabels a
+   *  backend URL as the frontend (e.g. when the Vercel deploy didn't happen). */
+  frontendUrl?: string;
+  frontendError?: string;
   backendUrl?: string;
   backendDashboard?: string;
   timestamp: Date;
@@ -119,6 +122,8 @@ export function DeployPanel() {
         status: primary ? "deployed" : "failed",
         url: primary,
         inspectorUrl: data.backendDashboard,
+        frontendUrl: data.frontendUrl,
+        frontendError: data.frontendError,
         backendUrl: data.backendUrl,
         backendDashboard: data.backendDashboard,
       });
@@ -337,38 +342,35 @@ export function DeployPanel() {
                   {d.status === "building" && <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />}
                   <div className="min-w-0">
                     <p className="text-xs font-medium capitalize">{d.provider}</p>
-                    {d.url ? (
-                      <a
-                        href={d.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-primary hover:underline truncate block"
-                      >
-                        {d.provider === "fullstack" ? "Frontend: " : ""}{d.url}
+                    {d.provider === "fullstack" ? (
+                      <>
+                        {/* Frontend (Vercel): only labelled when it actually deployed. */}
+                        {d.frontendUrl ? (
+                          <a href={d.frontendUrl} target="_blank" rel="noreferrer" className="text-[10px] text-primary hover:underline truncate block">
+                            Frontend: {d.frontendUrl}
+                          </a>
+                        ) : (
+                          <p className="text-[10px] text-amber-500 truncate" title={d.frontendError}>
+                            Frontend: not deployed{d.frontendError ? ` — ${d.frontendError}` : ""}
+                          </p>
+                        )}
+                        {d.backendUrl && (
+                          <a href={d.backendUrl} target="_blank" rel="noreferrer" className="text-[10px] text-primary hover:underline truncate block">
+                            Backend: {d.backendUrl}
+                          </a>
+                        )}
+                        {d.backendDashboard && (
+                          <a href={d.backendDashboard} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground hover:underline truncate block">
+                            Render dashboard ↗
+                          </a>
+                        )}
+                      </>
+                    ) : d.url ? (
+                      <a href={d.url} target="_blank" rel="noreferrer" className="text-[10px] text-primary hover:underline truncate block">
+                        {d.url}
                       </a>
                     ) : (
                       <p className="text-[10px] text-muted-foreground">{d.timestamp.toLocaleTimeString()}</p>
-                    )}
-                    {/* Full-stack deploys have a separate Render backend — show it too. */}
-                    {d.backendUrl && (
-                      <a
-                        href={d.backendUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-primary hover:underline truncate block"
-                      >
-                        Backend: {d.backendUrl}
-                      </a>
-                    )}
-                    {d.backendDashboard && (
-                      <a
-                        href={d.backendDashboard}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-muted-foreground hover:underline truncate block"
-                      >
-                        Render dashboard ↗
-                      </a>
                     )}
                   </div>
                 </div>
