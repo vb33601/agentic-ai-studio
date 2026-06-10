@@ -1,0 +1,34 @@
+{
+  "functions": {
+    "src/app/api/agent/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/chat/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/deploy/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/deploy/render/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/deploy/fullstack/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/image/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/parse/route.ts": {
+      "maxDuration": 120
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }
+      ]
+    }
+  ]
+}
