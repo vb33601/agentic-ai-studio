@@ -495,6 +495,20 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const hasMigrations = files.some((f) => /(^|\/)prisma\/migrations\/.+/.test(f.path));
   const buildSteps = ["npm install"];
   if (hasSchema) {
+    // Normalize the schema BEFORE generate/push. LLM-generated schemas often
+    // declare a relation on only one side (e.g. `Task.company Company?` with no
+    // `Company.tasks Task[]` back-relation), which Prisma rejects at validation
+    // time with P1012 ("missing an opposite relation field") and aborts the
+    // build. `prisma format` deterministically inserts the missing back-relation
+    // field, fixing the most common generated-schema failure. Non-fatal: a
+    // schema format can't repair (e.g. ambiguous relations) would fail the
+    // subsequent generate/push anyway with a clearer error, so don't let format
+    // itself introduce a new failure for apps that currently build fine.
+    // Subshell so the `|| echo` recovers ONLY a format failure — it must not
+    // swallow a failure of the preceding `npm install` (flat `&&`/`||` are
+    // left-associative with equal precedence, so an unwrapped `|| echo` here
+    // would let an install failure fall through to generate/push).
+    buildSteps.push('( npx prisma format || echo "⚠ prisma format failed — continuing" )');
     buildSteps.push("npx prisma generate");
     // With committed migrations use migrate deploy; otherwise push the schema
     // (generated apps rarely ship a migrations folder). The app gets its OWN
