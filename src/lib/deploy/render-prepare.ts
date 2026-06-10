@@ -286,6 +286,40 @@ function scriptEntryTarget(script: string | undefined): string | null {
   return tokens.find((t) => /\.[cm]?[jt]sx?$/.test(t)) || tokens[0] || null;
 }
 
+/** A source file that imports/requires a server framework — the strongest
+ *  signal of real backend code (vs `express` merely living in an orchestrator's
+ *  root deps for `concurrently`). */
+function importsServerFramework(content: string): boolean {
+  return /(?:require\(\s*['"]|from\s+['"])(express|fastify|koa|@nestjs\/core|@hapi\/hapi|restify|apollo-server[\w-]*)['"]/.test(content);
+}
+
+/** Real, deployable backend source: a Prisma schema or a file that imports a
+ *  server framework. Used so we don't fabricate/deploy a backend for a monorepo
+ *  ROOT that just has `express` in its deps but no actual server. */
+function hasServerSource(files: RepoFile[]): boolean {
+  return files.some(
+    (f) =>
+      /(^|\/)schema\.prisma$/.test(f.path) ||
+      (SRC_EXT.test(f.path) && importsServerFramework(f.content)),
+  );
+}
+
+/** Whether a package.json "start" script actually runs THIS service — not a
+ *  monorepo orchestrator that delegates to a sibling dir (`--prefix`/`cd`) or
+ *  runs several processes (concurrently), nor one pointing at a missing entry. */
+function startScriptRunnable(start: string | undefined, files: RepoFile[]): boolean {
+  if (!start) return false;
+  if (/\bconcurrently\b|\bnpm-run-all\b/.test(start)) return false;
+  const deleg = /(?:--prefix|--cwd|-C)\s+(\S+)|\bcd\s+(\S+)/.exec(start);
+  if (deleg) {
+    const dir = (deleg[1] || deleg[2]).replace(/['"]/g, "").replace(/\/$/, "");
+    return files.some((f) => f.path === `${dir}/package.json`);
+  }
+  const target = scriptEntryTarget(start);
+  if (target) return files.some((f) => f.path === target);
+  return true; // a command we can't introspect (e.g. "node .") — trust it
+}
+
 /** Relative require/import specifier (no extension) from a dir to a target file. */
 function relRequire(fromDir: string, target: string): string {
   const noExt = target.replace(/\.[cm]?[jt]sx?$/, "");
@@ -425,29 +459,38 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     entryCandidates.find((c) => files.some((f) => f.path === c)) ||
     mainField || "src/index.js";
 
-  // If that entry file doesn't exist, synthesize a minimal Express bootstrap so
-  // the service boots instead of crash-looping with MODULE_NOT_FOUND (the most
-  // common cause of a generated-backend Render deploy failure).
-  let entryPresent = files.some((f) => f.path === entry);
+  // Is there ACTUAL server code to deploy? A real backend has a server entry
+  // file, a Prisma schema, or source that imports a server framework — NOT just
+  // `express` sitting in a monorepo-root orchestrator's deps (for concurrently).
+  // Deploying such a root produced a broken service (`npm run start --prefix
+  // backend` with no backend/ dir, or a fabricated health-only stub).
+  const entryInInput = files.some((f) => f.path === entry);
+  const serverSource = hasServerSource(files);
+  const realBackend = entryInInput || serverSource;
+
+  // Synthesize a minimal Express bootstrap ONLY when there is real server source
+  // whose entry file is missing (routes/controllers generated, server entry
+  // forgotten) — so it boots instead of crash-looping with MODULE_NOT_FOUND.
+  let entryPresent = entryInInput;
   let synthesizedEntry = false;
-  if (!entryPresent) {
+  if (realBackend && !entryInInput) {
     const ens = ensureBackendEntry(files, entry, parsed);
     files = ens.files;
     synthesizedEntry = ens.synthesized;
     entryPresent = ens.synthesized;
   }
 
-  const startCommand = scripts.start ? "npm run start" : `node ${entry}`;
+  // Start command: an explicit "start" wins only if it actually runs THIS
+  // service; otherwise run the resolved entry directly.
+  const startCommand = startScriptRunnable(scripts.start, files) ? "npm run start" : `node ${entry}`;
 
   // Wire CORS so the (dynamic) Vercel frontend can call this backend directly.
   files = wireBackendCors(files, entry);
 
-  // Is there actually a server to deploy? A real backend has backend deps, a
-  // Prisma schema, or a real server entry file — and isn't a pure frontend.
   const deps = depKeys(parsed);
   const hasBackendDeps = BACKEND_DEPS.some((d) => deps.has(d));
   const isFrontendOnly = FRONTEND_DEPS.some((d) => deps.has(d)) && !hasBackendDeps;
-  const hasBackend = !isFrontendOnly && (hasBackendDeps || hasSchema || entryPresent);
+  const hasBackend = !isFrontendOnly && realBackend;
 
   const hasMigrations = files.some((f) => /(^|\/)prisma\/migrations\/.+/.test(f.path));
   const buildSteps = ["npm install"];
