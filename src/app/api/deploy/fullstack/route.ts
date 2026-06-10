@@ -92,6 +92,7 @@ export async function POST(req: NextRequest) {
 
     // ---- Frontend → Vercel (wired to the backend URL) ----
     let frontendUrl: string | null = null;
+    let frontendId: string | null = null;
     let frontendError: string | null = null;
     const front = prepareFrontendForVercel(repoFiles, backendUrl);
     if (front.found) {
@@ -106,6 +107,9 @@ export async function POST(req: NextRequest) {
           rootDirectory: prep.rootDirectory,
         });
         frontendUrl = result.url;
+        // The Vercel build runs async — return the id so the client can poll it
+        // to readiness instead of optimistically reporting "live".
+        frontendId = result.id;
       } catch (e) {
         frontendError = e instanceof Error ? e.message : String(e);
       }
@@ -126,6 +130,7 @@ export async function POST(req: NextRequest) {
       hasBackend,
       backendError,
       backendNote,
+      frontendId,
       frontendError,
       warnings: hasBackend ? backendPrep.warnings : [],
     });

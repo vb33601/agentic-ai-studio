@@ -505,7 +505,10 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
     // empty tables. resolveSeed may also patch package.json (prisma.seed config).
     const seed = resolveSeed(files, parsed, scripts);
     if (seed.step) {
-      buildSteps.push(seed.step);
+      // Seeding is best-effort: a brittle generated seed (bad model refs, dup
+      // keys) must NOT fail an otherwise-good deploy — the schema is already
+      // applied. Make it non-fatal so the service still ships.
+      buildSteps.push(`${seed.step} || echo "⚠ seed step failed — continuing without seed data"`);
       if (seed.pkg) {
         const pi = files.findIndex((f) => f.path === "package.json");
         if (pi !== -1) files[pi] = { path: "package.json", content: seed.pkg };

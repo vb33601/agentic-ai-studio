@@ -34,6 +34,7 @@ interface DeployResponse {
   backendNote?: string;
   hasBackend?: boolean;
   frontendUrl?: string;
+  frontendId?: string;
   frontendError?: string;
   warnings?: string[];
 }
@@ -115,18 +116,53 @@ export function DeployPanel() {
       // No server in the app at all — explain it instead of silently shipping FE-only.
       if (!data.hasBackend && data.backendNote) addBuildLog(`ℹ ${data.backendNote}`);
       for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
-      if (data.frontendUrl) addBuildLog(`✓ FRONTEND LIVE → ${data.frontendUrl}`);
+      if (data.frontendUrl) addBuildLog(`Frontend deploying on Vercel → ${data.frontendUrl} (building…)`);
       if (data.frontendError) addBuildLog(`⚠ Frontend: ${data.frontendError}`);
-      const primary = data.frontendUrl || data.backendUrl;
+      // The Vercel build runs async — mark "building" and confirm the real
+      // outcome by polling, rather than claiming "live" before it succeeds.
       update(deployId, {
-        status: primary ? "deployed" : "failed",
-        url: primary,
+        status: data.frontendUrl || data.backendUrl ? "building" : "failed",
+        url: data.frontendUrl || data.backendUrl,
         inspectorUrl: data.backendDashboard,
         frontendUrl: data.frontendUrl,
         frontendError: data.frontendError,
         backendUrl: data.backendUrl,
         backendDashboard: data.backendDashboard,
       });
+
+      // Poll the Vercel frontend build to readiness so the result is honest.
+      if (data.frontendId) {
+        let settled = false;
+        for (let i = 0; i < 40 && !settled; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const s = await fetch(`/api/deploy?id=${data.frontendId}`).then((r) => r.json()).catch(() => null);
+          if (!s?.readyState) continue;
+          if (s.readyState === "READY") {
+            addBuildLog(`✓ FRONTEND LIVE → ${s.url || data.frontendUrl}`);
+            update(deployId, { status: "deployed", url: s.url || data.frontendUrl, frontendUrl: s.url || data.frontendUrl });
+            settled = true;
+          } else if (s.readyState === "ERROR" || s.readyState === "CANCELED") {
+            addBuildLog(`✗ Frontend build ${s.readyState.toLowerCase()} on Vercel — check its build log.`);
+            // Backend may still be live → keep the deploy as a partial success.
+            update(deployId, {
+              status: data.backendUrl ? "deployed" : "failed",
+              url: data.backendUrl ?? undefined,
+              frontendUrl: undefined,
+              frontendError: `Vercel build ${s.readyState.toLowerCase()}`,
+            });
+            settled = true;
+          } else {
+            addBuildLog(`Frontend status: ${s.readyState}…`);
+          }
+        }
+        if (!settled) {
+          addBuildLog("Frontend still building — open the URL to check progress.");
+          update(deployId, { status: "deployed" });
+        }
+      } else {
+        // No frontend deployment to poll (backend-only or frontend errored upfront).
+        update(deployId, { status: data.backendUrl || data.frontendUrl ? "deployed" : "failed" });
+      }
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
       update(deployId, { status: "failed" });
