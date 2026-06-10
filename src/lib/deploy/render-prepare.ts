@@ -412,6 +412,109 @@ app.listen(PORT, () => console.log('Server listening on ' + PORT));
   return { files: out, synthesized: true };
 }
 
+/** Resolve a relative import specifier against the importing file's directory. */
+function resolveRelPath(fromDir: string, spec: string): string {
+  const parts = (fromDir ? fromDir.split("/") : []).concat(spec.split("/"));
+  const stack: string[] = [];
+  for (const p of parts) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") stack.pop();
+    else stack.push(p);
+  }
+  return stack.join("/");
+}
+
+const MODULE_EXTS = ["", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json"];
+
+/** Does a file satisfying this resolved import path exist in the set? */
+function importTargetExists(resolved: string, paths: Set<string>): boolean {
+  for (const e of MODULE_EXTS) if (paths.has(resolved + e)) return true;
+  for (const e of MODULE_EXTS.filter(Boolean)) if (paths.has(`${resolved}/index${e}`)) return true;
+  return false;
+}
+
+/**
+ * Generated backends frequently `require('./routes/auth')` (and controllers,
+ * middleware, etc.) that the model never actually created — the build passes but
+ * the server crash-loops at boot with MODULE_NOT_FOUND, the Render deploy fails,
+ * and any frontend that calls it hangs forever on a loading screen.
+ *
+ * Stub every missing RELATIVE import so the server boots and serves instead of
+ * crashing. The stub is a Proxy over an Express Router: it works mounted as a
+ * router (`app.use('/api/x', stub)`), as middleware, and as any destructured
+ * handler (`const { login } = require(...)`) — each unknown member resolves to a
+ * 501 "Not implemented" handler. The referenced feature is unavailable until the
+ * real file is generated, but the rest of the app runs.
+ */
+function stubMissingBackendImports(files: RepoFile[]): RepoFile[] {
+  const paths = new Set(files.map((f) => f.path));
+  // target path -> { esm, names } unioned across all importers of that target.
+  const missing = new Map<string, { esm: boolean; names: Set<string> }>();
+
+  const REL = /(?:require\(\s*|(?:import|export)\b[^'"]*?\bfrom\s*|import\s*)['"](\.[^'"]+)['"]/g;
+  for (const f of files) {
+    if (!SRC_EXT.test(f.path)) continue;
+    const dir = dirOf(f.path);
+    let m: RegExpExecArray | null;
+    REL.lastIndex = 0;
+    while ((m = REL.exec(f.content))) {
+      const spec = m[1];
+      const resolved = resolveRelPath(dir, spec);
+      if (!resolved || importTargetExists(resolved, paths)) continue;
+      const usesImport = /\bimport\b|\bexport\b/.test(m[0]);
+      const entry = missing.get(resolved) || { esm: false, names: new Set<string>() };
+      if (usesImport) {
+        entry.esm = true;
+        // Collect named bindings so ESM `import { a, b } from './x'` links.
+        const named = new RegExp(`import\\s+([^'";]+?)\\s+from\\s+['"]${spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).exec(f.content);
+        const braces = named && /\{([^}]*)\}/.exec(named[1]);
+        if (braces) braces[1].split(",").map((s) => s.trim().split(/\s+as\s+/)[0].trim()).filter(Boolean).forEach((n) => entry.names.add(n));
+      }
+      missing.set(resolved, entry);
+    }
+  }
+  if (missing.size === 0) return files;
+
+  const out = [...files];
+  for (const [target, info] of missing) {
+    if (/\.json$/.test(target)) {
+      out.push({ path: target, content: "{}\n" });
+      continue;
+    }
+    const path = `${target}.js`;
+    if (paths.has(path)) continue;
+    const named = [...info.names].map((n) => `export const ${n} = handler;`).join("\n");
+    // The Proxy lets the stub work BOTH as a mounted router/middleware and as a
+    // source of named handlers (`const { login } = require(...)`). Framework and
+    // JS-internal props (set/handle/emit/then/_*…) MUST pass through to the real
+    // Router untouched — otherwise Express's `fn.handle && fn.set` sub-app check
+    // misfires (a fake `.set` makes it mount the stub as an app and crash). Only
+    // genuine, unknown identifier-looking members resolve to the 501 handler.
+    const proxyDef = `const PASS = new Set(['handle','set','emit','on','once','off','addListener','removeListener','mount','listen','init','engine','render','route','param','use','all','get','post','put','delete','patch','options','head','stack','then','catch','finally','constructor','prototype','toString','valueOf']);
+const wrap = (t) => new Proxy(t, { get: (o, p, r) => (typeof p !== 'string' || (p in o) || PASS.has(p) || p[0] === '_') ? Reflect.get(o, p, r) : handler });`;
+    const body = info.esm
+      ? `import express from 'express';
+const router = express.Router();
+const handler = (req, res) => res.status(501).json({ error: 'Not implemented (auto-generated stub).' });
+${proxyDef}
+${named}
+export default wrap(router);
+`
+      : `const express = require('express');
+const router = express.Router();
+const handler = (req, res) => res.status(501).json({ error: 'Not implemented (auto-generated stub).' });
+${proxyDef}
+module.exports = wrap(router);
+`;
+    out.push({
+      path,
+      content: `// Auto-generated stub: '${target}' was imported but never created in the\n// generated app. This no-op keeps the server booting (it would otherwise\n// crash-loop with MODULE_NOT_FOUND); the referenced feature is unavailable\n// until the real module is generated.\n${body}`,
+    });
+    paths.add(path);
+  }
+  return out;
+}
+
 export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   const backendDir = detectBackendDir(input);
   const scoped = reRoot(input, backendDir);
@@ -486,6 +589,12 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
 
   // Wire CORS so the (dynamic) Vercel frontend can call this backend directly.
   files = wireBackendCors(files, entry);
+
+  // Stub any relative import the entry/sources reference but that was never
+  // generated (e.g. `require('./routes/auth')` with no routes/auth file) so the
+  // server boots instead of crash-looping with MODULE_NOT_FOUND — which would
+  // take the backend down and leave the frontend stuck on a loading screen.
+  files = stubMissingBackendImports(files);
 
   const deps = depKeys(parsed);
   const hasBackendDeps = BACKEND_DEPS.some((d) => deps.has(d));
