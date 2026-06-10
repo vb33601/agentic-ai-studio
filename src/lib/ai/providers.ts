@@ -9,11 +9,16 @@ export type ProviderKey =
   | "cohere"
   | "groq"
   | "openrouter"
+  | "kilocode"
   | "aimlapi"
   | "huggingface"
   | "together"
   | "fireworks"
   | "ollama";
+
+// Kilo Code gateway: OpenAI-compatible, ~335 models behind one key. The host
+// canonicalises kilocode.ai → kilo.ai, so use the final host to avoid a 308 hop.
+export const KILOCODE_BASE_URL = "https://kilo.ai/api/openrouter";
 
 export interface ModelOption {
   id: string;
@@ -71,6 +76,9 @@ const OPENROUTER_FALLBACKS = [
   "anthropic/claude-3.5-haiku",
 ];
 
+// Kilo Code's own reliable auto-routers, used as fallbacks within that gateway.
+const KILOCODE_FALLBACKS = ["kilo-auto/balanced", "kilo-auto/free"];
+
 export interface ModelCandidate {
   id: string;
   provider: string;
@@ -84,8 +92,13 @@ export interface ModelCandidate {
  * its own in-request fallback via the `models` list (see resolveModel).
  */
 export function modelCandidates(modelId: string, provider?: string): ModelCandidate[] {
-  const primary: ModelCandidate = { id: modelId, provider: provider || "openrouter" };
-  const fallbacks: ModelCandidate[] = OPENROUTER_FALLBACKS.map((id) => ({ id, provider: "openrouter" }));
+  const p = provider || "openrouter";
+  const primary: ModelCandidate = { id: modelId, provider: p };
+  // Fall back within the same gateway so the configured key keeps working.
+  const fallbacks: ModelCandidate[] =
+    p === "kilocode"
+      ? KILOCODE_FALLBACKS.map((id) => ({ id, provider: "kilocode" }))
+      : OPENROUTER_FALLBACKS.map((id) => ({ id, provider: "openrouter" }));
   return [primary, ...fallbacks.filter((c) => c.id !== modelId)];
 }
 
@@ -100,6 +113,8 @@ export function resolveModel(modelId: string, providerSource?: string) {
       return createOpenAI({ baseURL: "https://api.aimlapi.com/v1", apiKey: process.env.AIMLAPI_API_KEY, name: "aimlapi" }).chat(modelId);
     case "huggingface":
       return createOpenAI({ baseURL: "https://router.huggingface.co/v1", apiKey: process.env.HUGGINGFACE_API_KEY, name: "huggingface" }).chat(modelId);
+    case "kilocode":
+      return createOpenAI({ baseURL: KILOCODE_BASE_URL, apiKey: process.env.KILOCODE_API_KEY, name: "kilocode" }).chat(modelId);
     case "openrouter":
     default: {
       // Pass an ordered fallback list so OpenRouter auto-retries another model

@@ -1,4 +1,4 @@
-import type { ModelOption } from "./providers";
+import { KILOCODE_BASE_URL, type ModelOption } from "./providers";
 
 /**
  * Dynamic model catalogue aggregated across gateways (server-side):
@@ -43,6 +43,36 @@ async function fetchOpenRouter(): Promise<ModelOption[]> {
           description: ((m.description as string) || "").slice(0, 100),
         };
       });
+  } catch {
+    return [];
+  }
+}
+
+async function fetchKiloCode(): Promise<ModelOption[]> {
+  const key = process.env.KILOCODE_API_KEY;
+  if (!key) return [];
+  try {
+    const res = await fetch(`${KILOCODE_BASE_URL}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: timeout(15000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const list = (data.data as Array<Record<string, unknown>>) || [];
+    return list.map((m) => {
+      const arch = (m.architecture as { input_modalities?: string[]; output_modalities?: string[] }) || {};
+      const params = (m.supported_parameters as string[]) || [];
+      return {
+        id: m.id as string,
+        name: (m.name as string) || (m.id as string),
+        provider: "kilocode" as const,
+        contextWindow: (m.context_length as number) || 8192,
+        supportsVision: (arch.input_modalities || []).includes("image"),
+        // Real tool-calling support per the model's advertised parameters.
+        supportsTools: params.includes("tools"),
+        description: ((m.description as string) || "via Kilo Code").slice(0, 100),
+      };
+    });
   } catch {
     return [];
   }
@@ -105,11 +135,17 @@ async function fetchHuggingFaceTop(): Promise<ModelOption[]> {
   }
 }
 
-/** Full catalogue (OpenRouter + AIML + Hugging Face top), cached. */
+/** Full catalogue (Kilo Code + OpenRouter + AIML + Hugging Face top), cached. */
 export async function getModelCatalog(): Promise<ModelOption[]> {
   if (cache && Date.now() - cache.at < TTL) return cache.models;
-  const [or, aiml, hf] = await Promise.all([fetchOpenRouter(), fetchAIML(), fetchHuggingFaceTop()]);
-  const models = [...or, ...aiml, ...hf];
+  const [kilo, or, aiml, hf] = await Promise.all([
+    fetchKiloCode(),
+    fetchOpenRouter(),
+    fetchAIML(),
+    fetchHuggingFaceTop(),
+  ]);
+  // Kilo Code first so its ~335 models lead the selector.
+  const models = [...kilo, ...or, ...aiml, ...hf];
   if (models.length > 0) cache = { at: Date.now(), models };
   return models;
 }

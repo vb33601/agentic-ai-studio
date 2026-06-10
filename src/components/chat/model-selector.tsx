@@ -10,6 +10,7 @@ import { useChatStore } from "@/store/chat";
 import { cn } from "@/lib/utils";
 
 const PROVIDER_COLORS: Partial<Record<ProviderKey, string>> = {
+  kilocode: "bg-orange-500",
   openrouter: "bg-indigo-500",
   aimlapi: "bg-emerald-500",
   huggingface: "bg-yellow-500",
@@ -95,7 +96,7 @@ export function ModelSelector() {
                 {searching ? "Searching Hugging Face…" : "No models found — type 3+ chars to search Hugging Face"}
               </Command.Empty>
               <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                {searching ? "Searching Hugging Face…" : `${all.length} models · OpenRouter · AIML · Hugging Face`}
+                {searching ? "Searching Hugging Face…" : `${all.length} models · Kilo Code · OpenRouter · AIML · Hugging Face`}
               </div>
               {all.map((m) => (
                 <Command.Item

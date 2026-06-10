@@ -24,3 +24,6 @@ services:
         sync: false
       - key: NEXTAUTH_URL
         sync: false
+      # Kilo Code gateway key (~335 models). Set the value in the dashboard.
+      - key: KILOCODE_API_KEY
+        sync: false
