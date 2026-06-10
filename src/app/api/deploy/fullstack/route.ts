@@ -38,6 +38,9 @@ export async function POST(req: NextRequest) {
     let repoUrl: string | null = null;
     let dbWired = false;
     let backendError: string | null = null;
+    // Why no backend service was created, when there isn't one (so the UI can
+    // explain it instead of silently shipping only the frontend).
+    let backendNote: string | null = null;
 
     // ---- Backend → Render ----
     const backendPrep = prepareBackendForRender(repoFiles);
@@ -45,11 +48,15 @@ export async function POST(req: NextRequest) {
     // frontend-only app (or a monorepo whose backend/ was never generated)
     // would just crash Render at startup with "Cannot find module".
     const hasBackend = backendPrep.hasBackend;
+    if (!hasBackend) {
+      backendNote =
+        "No backend/server was detected in the selected files (no Express/Fastify/Prisma/etc. or server entry), so only the frontend was deployed. If this app should have a backend, ask the builder to generate it, then redeploy.";
+    }
     if (hasBackend) {
       try {
         const token = process.env.GITHUB_TOKEN;
-        if (!token) throw new Error("GITHUB_TOKEN is not configured.");
-        if (!process.env.RENDER_API_KEY) throw new Error("RENDER_API_KEY is not configured.");
+        if (!token) throw new Error("GITHUB_TOKEN is not configured on the server — set it in the platform host's environment to enable backend deploys.");
+        if (!process.env.RENDER_API_KEY) throw new Error("RENDER_API_KEY is not configured on the server — set it in the platform host's environment to enable backend deploys.");
         const repo = await createRepoAndPush(token, backendName, backendPrep.files, {
           private: true,
           description: "Backend deployed from agentic-ai-studio",
@@ -116,7 +123,9 @@ export async function POST(req: NextRequest) {
       dbWired,
       backendDir: backendPrep.backendDir,
       frontendDir: front.dir,
+      hasBackend,
       backendError,
+      backendNote,
       frontendError,
       warnings: hasBackend ? backendPrep.warnings : [],
     });

@@ -31,6 +31,8 @@ interface DeployResponse {
   backendUrl?: string;
   backendDashboard?: string;
   backendError?: string;
+  backendNote?: string;
+  hasBackend?: boolean;
   frontendUrl?: string;
   frontendError?: string;
   warnings?: string[];
@@ -62,6 +64,9 @@ interface Deployment {
   status: "pending" | "building" | "deployed" | "failed";
   url?: string;
   inspectorUrl?: string;
+  /** Backend (Render) links, shown alongside the frontend for full-stack deploys. */
+  backendUrl?: string;
+  backendDashboard?: string;
   timestamp: Date;
 }
 
@@ -101,13 +106,22 @@ export function DeployPanel() {
       if (!res.ok) throw new Error(data.error || "Full-stack deploy failed");
       if (data.backendDir) addBuildLog(`Backend folder: ${data.backendDir}/`);
       if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
-      if (data.backendUrl) addBuildLog(`Backend (Render) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
-      if (data.backendError) addBuildLog(`⚠ Backend: ${data.backendError}`);
+      if (data.backendUrl) addBuildLog(`✓ BACKEND LIVE (Render) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
+      if (data.backendDashboard) addBuildLog(`Backend dashboard → ${data.backendDashboard}`);
+      if (data.backendError) addBuildLog(`⚠ Backend NOT deployed: ${data.backendError}`);
+      // No server in the app at all — explain it instead of silently shipping FE-only.
+      if (!data.hasBackend && data.backendNote) addBuildLog(`ℹ ${data.backendNote}`);
       for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
       if (data.frontendUrl) addBuildLog(`✓ FRONTEND LIVE → ${data.frontendUrl}`);
       if (data.frontendError) addBuildLog(`⚠ Frontend: ${data.frontendError}`);
       const primary = data.frontendUrl || data.backendUrl;
-      update(deployId, { status: primary ? "deployed" : "failed", url: primary, inspectorUrl: data.backendDashboard });
+      update(deployId, {
+        status: primary ? "deployed" : "failed",
+        url: primary,
+        inspectorUrl: data.backendDashboard,
+        backendUrl: data.backendUrl,
+        backendDashboard: data.backendDashboard,
+      });
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
       update(deployId, { status: "failed" });
@@ -330,10 +344,31 @@ export function DeployPanel() {
                         rel="noreferrer"
                         className="text-[10px] text-primary hover:underline truncate block"
                       >
-                        {d.url}
+                        {d.provider === "fullstack" ? "Frontend: " : ""}{d.url}
                       </a>
                     ) : (
                       <p className="text-[10px] text-muted-foreground">{d.timestamp.toLocaleTimeString()}</p>
+                    )}
+                    {/* Full-stack deploys have a separate Render backend — show it too. */}
+                    {d.backendUrl && (
+                      <a
+                        href={d.backendUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-primary hover:underline truncate block"
+                      >
+                        Backend: {d.backendUrl}
+                      </a>
+                    )}
+                    {d.backendDashboard && (
+                      <a
+                        href={d.backendDashboard}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-muted-foreground hover:underline truncate block"
+                      >
+                        Render dashboard ↗
+                      </a>
                     )}
                   </div>
                 </div>

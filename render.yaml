@@ -36,6 +36,11 @@ services:
       # Managed Postgres handed to deployed user apps (Aiven or any Postgres):
       - key: DEFAULT_DATABASE_URL
         sync: false
+      # Disable Vercel Deployment Protection on deployed user apps so their public
+      # URLs are viewable without a Vercel login (otherwise they show a blank/SSO
+      # wall). Requires the VERCEL_TOKEN to have access to the project.
+      - key: VERCEL_PUBLIC_DEPLOYMENTS
+        value: "true"
       # LLM provider keys (users can also supply their own via the UI):
       - key: OPENAI_API_KEY
         sync: false
