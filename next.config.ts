@@ -19,6 +19,9 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "**.openai.com" },
     ],
   },
+  turbopack: {
+    root: __dirname,
+  },
   // Cross-origin isolation enables WebContainers' in-browser Node/dev-server
   // preview (Run app). COEP "credentialless" still lets cross-origin assets
   // (Monaco CDN, etc.) load. Image generation is a same-origin /api/image proxy

@@ -17,10 +17,6 @@ services:
         value: production
       - key: NEXT_TELEMETRY_DISABLED
         value: "1"
-      - key: PORT
-        value: "3000"
-      - key: HOSTNAME
-        value: "0.0.0.0"
       # Set in the dashboard / via API (sync:false keeps them out of git):
       - key: DATABASE_URL
         sync: false
@@ -28,31 +24,6 @@ services:
         sync: false
       - key: NEXTAUTH_URL
         sync: false
-      # Required for the one-click deploy routes (backend→Render, frontend→Vercel):
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: RENDER_API_KEY
-        sync: false
-      - key: VERCEL_TOKEN
-        sync: false
-      # Managed Postgres for deployed user apps (Aiven or any Postgres):
-      - key: DEFAULT_DATABASE_URL
-        sync: false
-      # LLM Provider Keys (users can also supply their own via the UI):
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: GOOGLE_GENERATIVE_AI_API_KEY
-        sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
+      # Kilo Code gateway key (~335 models). Set the value in the dashboard.
       - key: KILOCODE_API_KEY
         sync: false
-      # Optional search/image tools:
-      - key: TAVILY_API_KEY
-        sync: false
-      - key: CLOUDFLARE_ACCOUNT_ID
-        sync: false
-      - key: VERCEL_PUBLIC_DEPLOYMENTS
-        value: "true"

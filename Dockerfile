@@ -24,7 +24,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 # Placeholder DATABASE_URL so any Prisma client construction during the build
 # succeeds. The real connection string is injected at runtime by the host.
-ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db"
+ENV DATABASE_URL="postgresql://user:password@localhost:5432/db"
 
 # Prisma v7 uses the "client" engine + driver adapter (no native query engine
 # binary), so `generate` just emits the JS client.
@@ -46,8 +46,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
-# Render injects PORT at runtime — default to 3000 for local/other hosts.
+EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-EXPOSE 3000
 CMD ["node", "server.js"]
