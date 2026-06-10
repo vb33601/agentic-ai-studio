@@ -455,6 +455,39 @@ export function detectArtifactFlags(artifacts: Artifact[]): string[] {
     }
   }
 
+  // package.json sanity: a server "start" that points at an entry file or a
+  // delegated sub-app that was never created — the #1 cause of failed backend
+  // deploys (crash on boot / ENOENT). The repair pass then creates the file.
+  const hasFile = (p: string) => suffixes.some((s) => paths.has(p + s));
+  const NODE_RUN = /\b(?:node|nodemon|ts-node|tsx)\b\s+([^\s&|;]+)/;
+  const DELEGATE = /(?:--prefix|--cwd|-C)\s+(\S+)|\bcd\s+(\S+)/;
+  for (const a of artifacts) {
+    if (a.path !== "package.json" && !a.path.endsWith("/package.json")) continue;
+    let pkg: { scripts?: Record<string, string> } | null = null;
+    try { pkg = JSON.parse(a.content); } catch { continue; }
+    const start = typeof pkg?.scripts?.start === "string" ? pkg.scripts.start : "";
+    if (!start) continue;
+    const dir = a.path.includes("/") ? a.path.slice(0, a.path.lastIndexOf("/")) : "";
+
+    const del = DELEGATE.exec(start);
+    if (del) {
+      const sub = (del[1] || del[2]).replace(/['"]/g, "").replace(/\/$/, "");
+      const subDir = join(dir, sub);
+      if (!paths.has(`${subDir}/package.json`)) {
+        flags.push(`\`${a.path}\` "start" delegates to \`${sub}/\` (e.g. via --prefix) but no \`${subDir}/package.json\` was created — build the \`${sub}/\` app (its package.json, server entry, and routes) so the start script can run, or change "start" to run the app you actually built.`);
+      }
+      continue;
+    }
+    const run = NODE_RUN.exec(start);
+    if (run) {
+      const target = run[1].replace(/^['"]|['"]$/g, "").replace(/^\.?\//, "");
+      const full = join(dir, target);
+      if (target && !hasFile(full) && !paths.has(full)) {
+        flags.push(`\`${a.path}\` "start" runs \`${target}\` but that file was never created — create \`${full}\`: the server entry that boots the app (e.g. Express — create the app, mount every route, then \`app.listen(process.env.PORT || 3000)\`).`);
+      }
+    }
+  }
+
   return flags.slice(0, 8);
 }
 
@@ -525,7 +558,7 @@ export const REPAIR_SYSTEM = `You are fixing specific issues in files that were 
 Rules:
 - Fix only the listed issues; preserve everything else that is already correct.
 - Output whole, runnable files — never placeholders, TODOs, or partial snippets.
-- Do not create new files or rename existing ones. Keep changes minimal and faithful to the original intent.
+- Only create a file when an issue explicitly says to create a specific missing file (e.g. a missing import target or server entry); otherwise fix the listed file in place. Never rename files or add unrelated ones. Keep changes minimal and faithful to the original intent.
 - After fixing, give a one-line note of what changed. No long narration.`;
 
 /** Build the repair instruction listing each flagged file, its issues, and its
