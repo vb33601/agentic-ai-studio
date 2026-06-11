@@ -77,6 +77,23 @@ function hasRootDockerfile(files: RepoFile[]): boolean {
   return files.some((f) => f.path === "Dockerfile");
 }
 
+/**
+ * Rewrite an app's IPv4-only listen address (0.0.0.0) to dual-stack `[::]`.
+ *
+ * Fly.io's proxy reaches the app over the private IPv6 (6PN) network, so a server
+ * bound only to 0.0.0.0 (IPv4) is unreachable there — the edge completes TLS but
+ * returns an empty reply (the symptom: works on Render, "won't deploy" on Fly).
+ * `[::]` listens on IPv6 AND, with Linux's default `bindv6only=0`, accepts IPv4
+ * too, so Render/Railway keep working unchanged. Covers gunicorn (`--bind/-b`),
+ * uvicorn/hypercorn/daphne (`--host`), and Django's `runserver`.
+ */
+export function bindDualStack(dockerfile: string): string {
+  return dockerfile
+    .replace(/(-{1,2}b(?:ind)?[=\s]+)0\.0\.0\.0:/g, "$1[::]:")
+    .replace(/(--host[=\s]+)0\.0\.0\.0\b/g, "$1::")
+    .replace(/(runserver\s+)0\.0\.0\.0:/g, "$1[::]:");
+}
+
 export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const plan = detectStackPlan(input);
 
@@ -86,12 +103,22 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   );
 
   // Inject the generated Dockerfile + .dockerignore unless the repo already
-  // provides its own (author's Dockerfile wins).
+  // provides its own (author's Dockerfile wins). Either way, rewrite an
+  // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
+  // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
   const notes = [...plan.notes];
   if (!hasRootDockerfile(files)) {
-    files = [...files, { path: "Dockerfile", content: plan.dockerfile }];
+    files = [...files, { path: "Dockerfile", content: bindDualStack(plan.dockerfile) }];
   } else {
     notes.unshift("Using the project's existing Dockerfile (a generated one was not added).");
+    files = files.map((f) => {
+      if (f.path !== "Dockerfile") return f;
+      const patched = bindDualStack(f.content);
+      if (patched !== f.content) {
+        notes.unshift("Rewrote the Dockerfile's listen address to [::] (dual-stack) for Fly.io IPv6 reachability.");
+      }
+      return { path: f.path, content: patched };
+    });
   }
   if (!files.some((f) => f.path === ".dockerignore")) {
     files = [...files, { path: ".dockerignore", content: plan.dockerignore }];

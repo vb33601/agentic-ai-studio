@@ -284,23 +284,25 @@ export function DeployPanel() {
     }
   };
 
-  // Push the selected backend folder to GitHub and deploy it on Render, wired to
-  // the platform's managed Postgres (Aiven) via DATABASE_URL.
-  const deployBackendToRender = async () => {
+  // Push the selected backend folder to GitHub and deploy it on a container
+  // provider (Render by default, or an explicit target like Fly), wired to the
+  // platform's managed Postgres (Aiven) via DATABASE_URL.
+  const deployBackend = async (provider: "render" | "fly" | "railway" = "render") => {
     if (appFiles.length === 0) {
       alert("No files to deploy. Generate a backend first.");
       return;
     }
     const deployId = crypto.randomUUID().replace(/-/g, "");
-    setDeploying("render");
+    setDeploying(provider);
     clearBuildLog();
-    setDeployments((prev) => [{ id: deployId, provider: "render", status: "building", timestamp: new Date() }, ...prev]);
+    setDeployments((prev) => [{ id: deployId, provider, status: "building", timestamp: new Date() }, ...prev]);
     try {
-      addBuildLog(`Pushing ${appFiles.length} files to GitHub and creating a Render service…`);
+      const target = provider === "render" ? "Render" : provider === "fly" ? "Fly.io" : "Railway";
+      addBuildLog(`Pushing ${appFiles.length} files to GitHub and deploying to ${target}…`);
       const res = await fetch("/api/deploy/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: appFiles, name: projectName }),
+        body: JSON.stringify({ files: appFiles, name: projectName, provider }),
       });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Backend deploy failed");
@@ -401,11 +403,22 @@ export function DeployPanel() {
               size="sm"
               className="h-7 gap-1.5 text-xs"
               disabled={!!deploying || appFiles.length === 0}
-              onClick={deployBackendToRender}
+              onClick={() => deployBackend("render")}
               title="Push the selected backend to GitHub and deploy it on Render, wired to your managed Postgres (Aiven)"
             >
               {deploying === "render" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
-              Backend only → Render
+              Backend → Render
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              disabled={!!deploying || appFiles.length === 0}
+              onClick={() => deployBackend("fly")}
+              title="Push the selected backend to GitHub and deploy it on Fly.io (remote-build via GitHub Actions), wired to your managed Postgres (Aiven)"
+            >
+              {deploying === "fly" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
+              Backend → Fly
             </Button>
             <Button
               variant="outline"

@@ -28,6 +28,12 @@ export interface ContainerDeployInput {
   startCommand?: string;
   dockerfilePath?: string;
   envVars: RenderEnvVar[];
+  /**
+   * Force a specific container provider instead of the render→railway→fly
+   * fallback. When set, ONLY that provider is tried (so "deploy to Fly" means
+   * Fly — errors surface instead of silently landing on Render).
+   */
+  provider?: ProviderId;
 }
 
 export interface ContainerDeployResult {
@@ -42,11 +48,26 @@ export interface ContainerDeployResult {
 const BACKEND_ORDER: ProviderId[] = ["render", "railway", "fly"];
 
 export async function deployContainer(input: ContainerDeployInput): Promise<ContainerDeployResult> {
-  const candidates = BACKEND_ORDER.filter(isConfigured);
-  if (candidates.length === 0) {
-    throw new Error(
-      "No container deploy provider is configured. Set RENDER_API_KEY (+GITHUB_TOKEN), RAILWAY_API_TOKEN (+GITHUB_TOKEN), or FLY_API_TOKEN (+GITHUB_TOKEN).",
-    );
+  // Explicit provider → try only that one; otherwise the configured fallback chain.
+  let candidates: ProviderId[];
+  if (input.provider) {
+    if (!BACKEND_ORDER.includes(input.provider)) {
+      throw new Error(`"${input.provider}" is not a container backend provider (use render, railway, or fly).`);
+    }
+    if (!isConfigured(input.provider)) {
+      throw new Error(
+        `Provider "${input.provider}" isn't configured on the server — set its credentials ` +
+          `(${input.provider === "fly" ? "FLY_API_TOKEN + GITHUB_TOKEN (Contents/Workflows/Secrets)" : input.provider === "railway" ? "RAILWAY_API_TOKEN + GITHUB_TOKEN" : "RENDER_API_KEY + GITHUB_TOKEN"}).`,
+      );
+    }
+    candidates = [input.provider];
+  } else {
+    candidates = BACKEND_ORDER.filter(isConfigured);
+    if (candidates.length === 0) {
+      throw new Error(
+        "No container deploy provider is configured. Set RENDER_API_KEY (+GITHUB_TOKEN), RAILWAY_API_TOKEN (+GITHUB_TOKEN), or FLY_API_TOKEN (+GITHUB_TOKEN).",
+      );
+    }
   }
 
   // Push the repo once; every candidate builds from it.

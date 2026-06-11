@@ -5,6 +5,7 @@ import { prepareForContainer } from "@/lib/deploy/universal-prepare";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { deployContainer } from "@/lib/deploy/providers/container-deploy";
 import { configuredProviders } from "@/lib/deploy/providers/registry";
+import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
 import type { WorkspaceFile } from "@/store/workspace";
 
@@ -25,7 +26,12 @@ export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
  */
 export async function POST(req: NextRequest) {
   try {
-    const { files, name } = (await req.json()) as { files: WorkspaceFile[]; name?: string };
+    const { files, name, provider } = (await req.json()) as {
+      files: WorkspaceFile[];
+      name?: string;
+      /** Optional explicit container target: "render" | "railway" | "fly". */
+      provider?: ProviderId;
+    };
 
     const githubToken = process.env.GITHUB_TOKEN;
     if (!githubToken) return NextResponse.json({ error: "GITHUB_TOKEN is not configured on the server." }, { status: 400 });
@@ -58,7 +64,7 @@ export async function POST(req: NextRequest) {
 
       const result = await deployContainer({
         githubToken, name: projectName, files: prep.files, runtime: "node",
-        buildCommand: prep.buildCommand, startCommand: prep.startCommand, envVars,
+        buildCommand: prep.buildCommand, startCommand: prep.startCommand, envVars, provider,
       });
       return NextResponse.json({
         provider: result.provider, url: result.url, dashboardUrl: result.dashboardUrl, repoUrl: result.repoUrl,
@@ -74,9 +80,22 @@ export async function POST(req: NextRequest) {
     const dbWired = prep.needsDatabase && !!dbUrl;
     if (dbWired) envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl!, projectName) });
 
+    // Django rejects requests whose Host isn't in ALLOWED_HOSTS (→ 400 DisallowedHost),
+    // which is host-specific and a common reason an app that runs on Render fails on
+    // Fly (or vice-versa). Inject the conventional env vars so apps that read them work
+    // on whatever domain wins; harmless for apps that don't. Wildcard CSRF origins are
+    // valid in Django 4+.
+    if (prep.plan.framework === "django") {
+      envVars.push(
+        { key: "DJANGO_ALLOWED_HOSTS", value: "*" },
+        { key: "ALLOWED_HOSTS", value: "*" },
+        { key: "CSRF_TRUSTED_ORIGINS", value: "https://*.fly.dev,https://*.onrender.com" },
+      );
+    }
+
     const result = await deployContainer({
       githubToken, name: projectName, files: prep.files, runtime: "docker",
-      dockerfilePath: prep.dockerfilePath, envVars,
+      dockerfilePath: prep.dockerfilePath, envVars, provider,
       description: `Container deploy (${prep.plan.label}/${prep.plan.framework}) from agentic-ai-studio`,
     });
 
