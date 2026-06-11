@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download, Server } from "lucide-react";
+import { Rocket, ExternalLink, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -60,10 +60,12 @@ async function readJson(res: Response): Promise<DeployResponse> {
 }
 
 const PROVIDERS = [
-  { id: "vercel", name: "Vercel", description: "Live deploy · configured", logo: "▲", configured: true },
-  { id: "netlify", name: "Netlify", description: "Static + serverless", logo: "◆", configured: false },
-  { id: "cloudflare", name: "Cloudflare Pages", description: "Global edge network", logo: "○", configured: false },
-  { id: "github", name: "GitHub Pages", description: "Free static hosting", logo: "◉", configured: false },
+  { id: "vercel", name: "Vercel", description: "Frontend · live deploy", logo: "▲", configured: true, kind: "frontend" as const },
+  { id: "render", name: "Render", description: "Backend · any language (Docker)", logo: "◆", configured: true, kind: "backend" as const },
+  { id: "fly", name: "Fly.io", description: "Backend · global, remote-build", logo: "✦", configured: true, kind: "backend" as const },
+  { id: "netlify", name: "Netlify", description: "Static + serverless", logo: "◢", configured: false, kind: "frontend" as const },
+  { id: "cloudflare", name: "Cloudflare Pages", description: "Global edge network", logo: "○", configured: false, kind: "frontend" as const },
+  { id: "github", name: "GitHub Pages", description: "Free static hosting", logo: "◉", configured: false, kind: "frontend" as const },
 ];
 
 interface Deployment {
@@ -402,28 +404,6 @@ export function DeployPanel() {
               variant="outline"
               size="sm"
               className="h-7 gap-1.5 text-xs"
-              disabled={!!deploying || appFiles.length === 0}
-              onClick={() => deployBackend("render")}
-              title="Push the selected backend to GitHub and deploy it on Render, wired to your managed Postgres (Aiven)"
-            >
-              {deploying === "render" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
-              Backend → Render
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              disabled={!!deploying || appFiles.length === 0}
-              onClick={() => deployBackend("fly")}
-              title="Push the selected backend to GitHub and deploy it on Fly.io (remote-build via GitHub Actions), wired to your managed Postgres (Aiven)"
-            >
-              {deploying === "fly" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />}
-              Backend → Fly
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
               disabled={appFiles.length === 0}
               onClick={() => downloadProjectZip(appFiles, projectName || "project")}
               title="Download this app as a .zip (includes a Dockerfile + deploy guide for any platform/language)"
@@ -433,7 +413,7 @@ export function DeployPanel() {
           </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
-          {appFiles.length} files ready · Deploy to Vercel, or download the .zip (with Dockerfile) to run any stack anywhere
+          {appFiles.length} files ready · Pick a target below (frontend → Vercel; backend → Render or Fly), deploy the full app, or download the .zip
         </p>
         <div className="flex items-center gap-2 mt-3">
           <label className="text-xs text-muted-foreground shrink-0">Project name</label>
@@ -450,15 +430,20 @@ export function DeployPanel() {
         {PROVIDERS.map((p) => (
           <button
             key={p.id}
-            onClick={() => deploy(p.id)}
-            disabled={!!deploying}
+            onClick={() =>
+              p.kind === "backend"
+                ? deployBackend(p.id as "render" | "fly" | "railway")
+                : deploy(p.id)
+            }
+            disabled={!!deploying || appFiles.length === 0}
             className="relative flex items-center gap-3 p-3 rounded-xl border hover:border-primary/60 hover:bg-primary/5 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-left"
           >
             <span className="text-2xl">{p.logo}</span>
             <div className="min-w-0">
               <p className="text-sm font-medium flex items-center gap-1.5">
                 {p.name}
-                {p.configured && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                <span className="text-[10px] font-normal text-muted-foreground">{p.kind}</span>
+                {p.configured && <span className="w-1.5 h-1.5 rounded-full bg-green-500" title="configured" />}
               </p>
               <p className="text-xs text-muted-foreground truncate">{p.description}</p>
             </div>
