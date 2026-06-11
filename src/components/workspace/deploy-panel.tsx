@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useWorkspaceStore } from "@/store/workspace";
+import { useWorkspaceStore, type WorkspaceFile } from "@/store/workspace";
 import { downloadProjectZip } from "@/lib/deploy/download";
 import { detectAppGroups, filesForApp, resolveAppRoot } from "@/lib/workspace/apps";
 import { AppSelector } from "@/components/workspace/app-selector";
@@ -75,7 +75,7 @@ interface Deployment {
 }
 
 export function DeployPanel() {
-  const { files, addBuildLog, buildLog, clearBuildLog, selectedAppDir } = useWorkspaceStore();
+  const { files, addBuildLog, buildLog, clearBuildLog, selectedAppDir, updateFile, addFile } = useWorkspaceStore();
   // Deploy/download the selected app only (re-rooted), so a multi-app chat
   // ships one clean project instead of all apps mixed together.
   const groups = useMemo(() => detectAppGroups(files), [files]);
@@ -103,6 +103,104 @@ export function DeployPanel() {
     } catch {
       addBuildLog("  (could not fetch the build log)");
     }
+  };
+
+  // How many times a failed build will auto-repair (web-search the fix +
+  // redeploy) before giving up. Each attempt searches deeper.
+  const MAX_AUTO_REPAIRS = 2;
+
+  // Raw build-log text for a failed Vercel deployment (for the repair engine).
+  const fetchBuildLogText = async (vercelId: string): Promise<string> => {
+    try {
+      const r = await fetch(`/api/deploy?id=${vercelId}&logs=1`).then((res) => res.json()).catch(() => null);
+      return Array.isArray(r?.logs) ? r.logs.join("\n") : "";
+    } catch {
+      return "";
+    }
+  };
+
+  // Write the engine's patched files back into the workspace so the preview and
+  // future deploys use the fix. Existing files are matched by id; new files are
+  // added under the app's root.
+  const applyPatchedFiles = (patched: WorkspaceFile[]) => {
+    const known = new Set(files.map((f) => f.id));
+    for (const pf of patched) {
+      if (pf.id && known.has(pf.id)) {
+        updateFile(pf.id, { content: pf.content });
+      } else {
+        const full = appRoot ? `${appRoot}/${pf.path}` : pf.path;
+        if (!files.some((f) => f.path === full)) addFile({ ...pf, path: full });
+      }
+    }
+  };
+
+  // Poll a Vercel deployment to a terminal state.
+  const pollVercel = async (vercelId: string): Promise<{ state: "READY" | "ERROR" | "TIMEOUT"; url?: string }> => {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const s = await fetch(`/api/deploy?id=${vercelId}`).then((r) => r.json()).catch(() => null);
+      if (!s?.readyState) continue;
+      if (s.readyState === "READY") return { state: "READY", url: s.url };
+      if (s.readyState === "ERROR" || s.readyState === "CANCELED") return { state: "ERROR" };
+      addBuildLog(`Status: ${s.readyState}…`);
+    }
+    return { state: "TIMEOUT" };
+  };
+
+  // On a failed build: fetch the real log, web-search the known fix for this
+  // error across the app's stack, apply it, and redeploy. Returns the new
+  // deployment id to poll, or null if no reliable fix was found.
+  const autoRepairDeploy = async (vercelId: string, attempt: number, backendUrl?: string | null): Promise<string | null> => {
+    const log = await fetchBuildLogText(vercelId);
+    for (const line of log.split("\n").slice(-12)) if (line.trim()) addBuildLog(`  ${line}`);
+    addBuildLog(`🔧 Auto-repair ${attempt + 1}/${MAX_AUTO_REPAIRS}: searching known fixes for this error…`);
+    try {
+      const res = await fetch("/api/deploy/repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: appFiles, name: projectName, buildLog: log, attempt, backendUrl: backendUrl ?? null, mode: "deploy" }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.changed) {
+        addBuildLog(`  No reliable fix found${data?.report?.note ? `: ${data.report.note}` : "."}`);
+        return null;
+      }
+      const rep = data.report ?? {};
+      if (rep.rootCause) addBuildLog(`  Root cause: ${rep.rootCause}`);
+      if (Array.isArray(rep.editedPaths) && rep.editedPaths.length) addBuildLog(`  Patched: ${rep.editedPaths.join(", ")}`);
+      if (Array.isArray(rep.sources) && rep.sources[0]) addBuildLog(`  Per: ${rep.sources[0].url}`);
+      if (Array.isArray(data.files)) applyPatchedFiles(data.files as WorkspaceFile[]);
+      if (data.frontendUrl) addBuildLog(`  Redeploying patched build → ${data.frontendUrl}`);
+      return data.frontendId ?? null;
+    } catch (e) {
+      addBuildLog(`  Auto-repair error: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  };
+
+  // Poll a deployment; if the build fails, auto-repair and poll the redeploy,
+  // up to MAX_AUTO_REPAIRS. Returns the final status + live url.
+  const deployWithAutoRepair = async (
+    vercelId: string,
+    opts: { backendUrl?: string | null } = {},
+  ): Promise<{ status: "live" | "building" | "failed"; url?: string }> => {
+    let currentId = vercelId;
+    for (let attempt = 0; attempt <= MAX_AUTO_REPAIRS; attempt++) {
+      const r = await pollVercel(currentId);
+      if (r.state === "READY") return { status: "live", url: r.url };
+      if (r.state === "TIMEOUT") return { status: "building" };
+      // Build errored.
+      if (attempt === MAX_AUTO_REPAIRS) {
+        addBuildLog("✗ Build failed on Vercel:");
+        await printBuildLogs(currentId);
+        return { status: "failed" };
+      }
+      addBuildLog("✗ Build failed on Vercel — attempting auto-repair:");
+      const nextId = await autoRepairDeploy(currentId, attempt, opts.backendUrl);
+      if (!nextId) return { status: "failed" };
+      currentId = nextId;
+    }
+    return { status: "failed" };
   };
 
   // Full-stack: backend → Render (Aiven), frontend → Vercel (wired to the
@@ -147,35 +245,25 @@ export function DeployPanel() {
         backendDashboard: data.backendDashboard,
       });
 
-      // Poll the Vercel frontend build to readiness so the result is honest.
+      // Poll the Vercel frontend build to readiness so the result is honest —
+      // and on a build failure, auto-repair (web-search the fix) and redeploy.
       if (data.frontendId) {
-        let settled = false;
-        for (let i = 0; i < 40 && !settled; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const s = await fetch(`/api/deploy?id=${data.frontendId}`).then((r) => r.json()).catch(() => null);
-          if (!s?.readyState) continue;
-          if (s.readyState === "READY") {
-            addBuildLog(`✓ FRONTEND LIVE → ${s.url || data.frontendUrl}`);
-            update(deployId, { status: "deployed", url: s.url || data.frontendUrl, frontendUrl: s.url || data.frontendUrl });
-            settled = true;
-          } else if (s.readyState === "ERROR" || s.readyState === "CANCELED") {
-            addBuildLog(`✗ Frontend build ${s.readyState.toLowerCase()} on Vercel:`);
-            await printBuildLogs(data.frontendId);
-            // Backend may still be live → keep the deploy as a partial success.
-            update(deployId, {
-              status: data.backendUrl ? "deployed" : "failed",
-              url: data.backendUrl ?? undefined,
-              frontendUrl: undefined,
-              frontendError: `Vercel build ${s.readyState.toLowerCase()}`,
-            });
-            settled = true;
-          } else {
-            addBuildLog(`Frontend status: ${s.readyState}…`);
-          }
-        }
-        if (!settled) {
+        const outcome = await deployWithAutoRepair(data.frontendId, { backendUrl: data.backendUrl ?? null });
+        if (outcome.status === "live") {
+          const url = outcome.url || data.frontendUrl;
+          addBuildLog(`✓ FRONTEND LIVE → ${url}`);
+          update(deployId, { status: "deployed", url, frontendUrl: url });
+        } else if (outcome.status === "building") {
           addBuildLog("Frontend still building — open the URL to check progress.");
-          update(deployId, { status: "deployed" });
+          update(deployId, { status: "deployed", url: data.frontendUrl, frontendUrl: data.frontendUrl });
+        } else {
+          // Backend may still be live → keep the deploy as a partial success.
+          update(deployId, {
+            status: data.backendUrl ? "deployed" : "failed",
+            url: data.backendUrl ?? undefined,
+            frontendUrl: undefined,
+            frontendError: "Vercel build failed (auto-repair exhausted)",
+          });
         }
       } else {
         // No frontend deployment to poll (backend-only or frontend errored upfront).
@@ -254,32 +342,22 @@ export function DeployPanel() {
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Deployment request failed");
 
+      if (!data.id) throw new Error("Vercel did not return a deployment id to poll.");
       addBuildLog(`Deployment created → ${data.url}`);
       addBuildLog("Building on Vercel…");
       update(deployId, { url: data.url, inspectorUrl: data.inspectorUrl });
 
-      // Poll readiness for up to ~2 minutes.
-      let settled = false;
-      for (let i = 0; i < 40 && !settled; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const s = await fetch(`/api/deploy?id=${data.id}`).then((r) => r.json()).catch(() => null);
-        if (!s?.readyState) continue;
-        if (s.readyState === "READY") {
-          addBuildLog("✓ Deployment is live!");
-          update(deployId, { status: "deployed", url: s.url || data.url });
-          settled = true;
-        } else if (s.readyState === "ERROR" || s.readyState === "CANCELED") {
-          addBuildLog(`✗ Build ${s.readyState.toLowerCase()} on Vercel:`);
-          await printBuildLogs(data.id);
-          update(deployId, { status: "failed" });
-          settled = true;
-        } else {
-          addBuildLog(`Status: ${s.readyState}…`);
-        }
-      }
-      if (!settled) {
+      // Poll readiness; on a build failure, auto-repair (web-search the fix) and
+      // redeploy, up to MAX_AUTO_REPAIRS, so we end on working code when possible.
+      const outcome = await deployWithAutoRepair(data.id);
+      if (outcome.status === "live") {
+        addBuildLog("✓ Deployment is live!");
+        update(deployId, { status: "deployed", url: outcome.url || data.url });
+      } else if (outcome.status === "building") {
         addBuildLog("Still building — opening the URL will show progress.");
         update(deployId, { status: "deployed", url: data.url });
+      } else {
+        update(deployId, { status: "failed" });
       }
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);

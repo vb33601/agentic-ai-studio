@@ -150,6 +150,13 @@ export interface RunHandlers {
   onLog: (chunk: string) => void;
   onServerReady: (url: string) => void;
   onStatus: (status: string) => void;
+  /**
+   * Optional: called with the full patched file set after the web-search
+   * auto-fix repairs a failed preview build, so the caller can sync the edits
+   * back into the editor/store. Omit it and the preview still self-heals in the
+   * mounted FS — wiring it just keeps the visible files in step.
+   */
+  onFilesPatched?: (files: WorkspaceFile[]) => void;
 }
 
 export interface RunResult {
@@ -374,6 +381,68 @@ async function installAndStart(
   return proc;
 }
 
+// Build-error signatures that warrant a web-search auto-fix (vs. a transient or
+// environmental hiccup we shouldn't burn a model call on).
+const BUILD_ERROR_SIGNAL =
+  /could not resolve|failed to resolve import|is not exported by|cannot find module|module not found|error\s+ts\d+|invalid js syntax|unexpected token|failed to compile|ERR_MODULE_NOT_FOUND/i;
+
+/**
+ * Last resort when the preview build fails for a reason the deterministic
+ * repairs above didn't cover: send the captured error log + files to the
+ * web-search-grounded repair engine (`/api/deploy/repair`, patch mode), which
+ * searches the known fix across the app's stack and returns search/replace edits.
+ * Best-effort and fully isolated — any failure here just returns null and the
+ * caller surfaces the original error, so it can never break a working preview.
+ * Returns the patched files (already written into the mounted FS) or null.
+ */
+async function attemptWebSearchFix(
+  wc: WebContainer,
+  files: WorkspaceFile[],
+  errorLog: string,
+  handlers: RunHandlers,
+): Promise<WorkspaceFile[] | null> {
+  if (!BUILD_ERROR_SIGNAL.test(errorLog)) return null;
+  try {
+    handlers.onStatus("Build failed — searching the web for a known fix…");
+    handlers.onLog("\n[auto-fix] searching known fixes for this error…\n");
+    const res = await fetch("/api/deploy/repair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files, buildLog: errorLog, mode: "patch" }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.changed || !Array.isArray(data.files)) {
+      handlers.onLog(`[auto-fix] no reliable fix found${data?.report?.note ? `: ${data.report.note}` : "."}\n`);
+      return null;
+    }
+    // Write only the files that actually changed back into the mounted FS.
+    const before = new Map(files.map((f) => [f.path, f.content]));
+    const patched = data.files as WorkspaceFile[];
+    let written = 0;
+    for (const f of patched) {
+      if (before.get(f.path) === f.content) continue;
+      try {
+        const dir = dirOf(f.path);
+        if (dir) await wc.fs.mkdir(dir, { recursive: true });
+        await wc.fs.writeFile(f.path, f.content);
+        written++;
+      } catch {
+        /* ignore individual write failures */
+      }
+    }
+    const rep = data.report ?? {};
+    if (rep.rootCause) handlers.onLog(`[auto-fix] ${rep.rootCause}\n`);
+    if (Array.isArray(rep.editedPaths) && rep.editedPaths.length) handlers.onLog(`[auto-fix] patched ${rep.editedPaths.join(", ")}\n`);
+    if (Array.isArray(rep.sources) && rep.sources[0]) handlers.onLog(`[auto-fix] per ${rep.sources[0].url}\n`);
+    if (written === 0) return null;
+    handlers.onFilesPatched?.(patched);
+    return patched;
+  } catch (e) {
+    handlers.onLog(`[auto-fix] skipped: ${e instanceof Error ? e.message : String(e)}\n`);
+    return null;
+  }
+}
+
 /**
  * Mount files, install deps, and run the dev server(s). Detects where the app
  * actually lives (root, nested `frontend/`, or a `frontend/`+`backend/` split)
@@ -390,13 +459,26 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
   }
 
   const wc = await getWebContainer();
-  handlers.onStatus("Mounting files…");
+
+  // Tee all log output into a rolling buffer so a failed build can be handed to
+  // the web-search auto-fix with its real error text. Capped so it can't grow
+  // unbounded. Everything below uses `h` instead of the raw handlers.
+  let logBuffer = "";
+  const h: RunHandlers = {
+    ...handlers,
+    onLog: (chunk) => {
+      logBuffer = (logBuffer + chunk).slice(-12000);
+      handlers.onLog(chunk);
+    },
+  };
+
+  h.onStatus("Mounting files…");
   await wc.mount(toFileSystemTree(files));
 
   // Deterministically repair common generated-code crashes before starting.
-  handlers.onStatus("Checking sources…");
+  h.onStatus("Checking sources…");
   try {
-    await repairSources(wc, files, handlers);
+    await repairSources(wc, files, h);
   } catch {
     // Repair is best-effort; never block the run on it.
   }
@@ -406,8 +488,8 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
     // The first server to bind becomes the preview (frontend in a split).
     if (serverUrl) return;
     serverUrl = url;
-    handlers.onServerReady(url);
-    handlers.onStatus("Running");
+    h.onServerReady(url);
+    h.onStatus("Running");
   });
 
   const procs: Array<Awaited<ReturnType<typeof wc.spawn>>> = [];
@@ -415,13 +497,26 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
   // Start background services (e.g. an API backend) first so the frontend can
   // reach them, then start the preview app.
   for (const bg of plan.background) {
-    handlers.onLog(`\n— starting background service: ${bg.dir || "root"} —\n`);
-    procs.push(await installAndStart(wc, bg, files, handlers));
+    h.onLog(`\n— starting background service: ${bg.dir || "root"} —\n`);
+    procs.push(await installAndStart(wc, bg, files, h));
   }
-  procs.push(await installAndStart(wc, plan.preview, files, handlers));
+
+  // Start the preview app. If it fails to install/build, try ONE web-search
+  // auto-fix (patch the mounted FS) and restart it once; otherwise surface the
+  // original error. This never loops and never runs on a healthy preview.
+  try {
+    procs.push(await installAndStart(wc, plan.preview, files, h));
+  } catch (err) {
+    h.onLog(`\n[preview] start failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    const patched = await attemptWebSearchFix(wc, files, logBuffer, h);
+    if (!patched) throw err;
+    h.onStatus("Retrying the preview with the patched code…");
+    const plan2 = planRun(detectApps(patched)) ?? plan;
+    procs.push(await installAndStart(wc, plan2.preview, patched, h));
+  }
 
   setTimeout(() => {
-    if (!serverUrl) handlers.onStatus("Still starting — installing/binding the dev server…");
+    if (!serverUrl) h.onStatus("Still starting — installing/binding the dev server…");
   }, 25000);
 
   return {

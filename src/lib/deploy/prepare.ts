@@ -247,6 +247,123 @@ function repairImportPaths(files: SourceFile[]): SourceFile[] {
   });
 }
 
+/** Named bindings a module exports (default and `export *` flagged separately). */
+function collectNamedExports(content: string): { names: Set<string>; hasStar: boolean } {
+  const names = new Set<string>();
+  // export const/let/var/function/class NAME
+  const declRe = /export\s+(?:async\s+)?(?:const|let|var|async\s+function\*?|function\*?|class)\s+([A-Za-z_$][\w$]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = declRe.exec(content))) names.add(m[1]);
+  // export { a, b as c }  — also re-exports `export { a } from '...'`. The
+  // EXPORTED name is what importers reference (the alias after `as`, if any).
+  const braceRe = /export\s*\{([^}]*)\}/g;
+  while ((m = braceRe.exec(content))) {
+    for (const part of m[1].split(",")) {
+      const seg = part.trim();
+      if (!seg) continue;
+      const asMatch = /\bas\s+([A-Za-z_$][\w$]*)\s*$/.exec(seg);
+      const exported = asMatch ? asMatch[1] : seg;
+      if (/^[A-Za-z_$][\w$]*$/.test(exported) && exported !== "default") names.add(exported);
+    }
+  }
+  // `export * from '...'` re-exports an unknown surface → can't reason about it.
+  const hasStar = /export\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*\s*)?from/.test(content);
+  return { names, hasStar };
+}
+
+/** Levenshtein edit distance (iterative, single row). */
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= b.length; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const tmp = dp[i];
+      dp[i] = a[i - 1] === b[j - 1] ? prev : Math.min(prev, dp[i - 1], dp[i]) + 1;
+      prev = tmp;
+    }
+  }
+  return dp[m];
+}
+
+/**
+ * The single export name closest to `want`, or null when there is no confident,
+ * unambiguous match. Confidence scales with length so plural/case/typo slips on
+ * longer names (serviceRequestApi → serviceRequestsApi) are fixed while short,
+ * unrelated names are left alone. Same first letter required as a cheap guard.
+ */
+function closestExport(want: string, names: Set<string>): string | null {
+  let best: string | null = null;
+  let bestD = Infinity;
+  let tie = false;
+  for (const n of names) {
+    const d = editDistance(want.toLowerCase(), n.toLowerCase());
+    if (d < bestD) { bestD = d; best = n; tie = false; }
+    else if (d === bestD) tie = true;
+  }
+  if (!best || tie) return null;
+  if (want[0]?.toLowerCase() !== best[0]?.toLowerCase()) return null;
+  const limit = Math.min(2, Math.max(1, Math.floor(Math.min(want.length, best.length) / 4)));
+  return bestD <= limit ? best : null;
+}
+
+// import { a, b as c } from './x'  — captures an optional default prefix so it
+// is preserved on rewrite. [^}] matches newlines, so multi-line imports work.
+const NAMED_IMPORT_RE = /import\s+((?:[A-Za-z_$][\w$]*\s*,\s*)?)\{([^}]*)\}\s*from\s*(['"])(\.[^'"]+)\3/g;
+
+/**
+ * Reconcile NAMED imports against a local module that exists but doesn't export
+ * the requested name. Generated code routinely mismatches singular/plural or
+ * casing between an export and its importers — e.g. `services/api` exports
+ * `serviceRequestsApi` but pages `import { serviceRequestApi }` — which Rollup
+ * rejects with `"X" is not exported by "Y"`, hard-failing `vite build`. When the
+ * target exports exactly one close match, alias the import to it
+ * (`import { serviceRequestsApi as serviceRequestApi }`) so every existing usage
+ * of the local name keeps working without touching consumer code. Conservative:
+ * skips modules with `export *`, names that already resolve, and ambiguous or
+ * distant matches; runs after repairImportPaths (so the target path is correct)
+ * and before stubMissingImports (genuinely missing modules still get stubbed).
+ */
+function reconcileNamedImports(files: SourceFile[]): SourceFile[] {
+  const byPath = new Map(files.map((f) => [f.path, f.content] as const));
+  const resolve = (target: string): string | null => {
+    for (const s of RESOLVE_SUFFIXES) if (byPath.has(target + s)) return target + s;
+    return null;
+  };
+  const exportCache = new Map<string, { names: Set<string>; hasStar: boolean }>();
+  const exportsOf = (path: string) => {
+    let e = exportCache.get(path);
+    if (!e) { e = collectNamedExports(byPath.get(path) ?? ""); exportCache.set(path, e); }
+    return e;
+  };
+
+  return files.map((f) => {
+    if (!JS_EXT.test(f.path)) return f;
+    const dir = dirOf(f.path);
+    const content = f.content.replace(NAMED_IMPORT_RE, (full, defPrefix, clause, q, spec) => {
+      const resolved = resolve(joinRelative(dir, spec));
+      if (!resolved || resolved === f.path) return full;
+      const { names, hasStar } = exportsOf(resolved);
+      if (hasStar || names.size === 0) return full;
+      let changed = false;
+      const parts = clause.split(",").map((raw: string) => {
+        const seg = raw.trim();
+        if (!seg) return raw;
+        const asMatch = /^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/.exec(seg);
+        const imported = asMatch ? asMatch[1] : seg;
+        if (!/^[A-Za-z_$][\w$]*$/.test(imported) || names.has(imported)) return raw;
+        const fix = closestExport(imported, names);
+        if (!fix) return raw;
+        changed = true;
+        return ` ${fix} as ${asMatch ? asMatch[2] : imported}`;
+      });
+      return changed ? `import ${defPrefix}{${parts.join(",")} } from ${q}${spec}${q}` : full;
+    });
+    return content === f.content ? f : { ...f, content };
+  });
+}
+
 // Strong JSX signals (closing tag, self-closing tag, fragment, or returning a
 // component) — tight enough to avoid TS generics / less-than false positives.
 const JSX_SIGNAL =
@@ -410,6 +527,7 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   // (applies to ALL Vercel deploys — provider grid and full-stack).
   files = renameJsxSourceFiles(files);
   files = repairImportPaths(files);
+  files = reconcileNamedImports(files);
   files = stubMissingImports(files);
   files = pinTailwindV3(files);
   let idx = pickAppPackageJson(files);

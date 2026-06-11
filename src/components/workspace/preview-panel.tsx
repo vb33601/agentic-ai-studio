@@ -49,7 +49,7 @@ function buildPreviewDoc(files: WorkspaceFile[], indexHtml: string): string {
 type RunStatus = "idle" | "booting" | "ready" | "error";
 
 export function PreviewPanel() {
-  const { previewUrl, files, selectedAppDir } = useWorkspaceStore();
+  const { previewUrl, files, selectedAppDir, updateFile, addFile } = useWorkspaceStore();
   // When the chat has multiple apps, scope preview to the selected one (its
   // files re-rooted), so package.json/index.html resolve at the app's root.
   const groups = useMemo(() => detectAppGroups(files), [files]);
@@ -109,12 +109,26 @@ export function PreviewPanel() {
           setRunStatus("ready");
         },
         onStatus: setStatusMsg,
+        // Sync the web-search auto-fix's edits back into the editor/store so the
+        // visible files match what's now running in the preview. Existing files
+        // are matched by id; new files are added under the app's root.
+        onFilesPatched: (patched) => {
+          const known = new Set(files.map((f) => f.id));
+          for (const pf of patched) {
+            if (pf.id && known.has(pf.id)) {
+              updateFile(pf.id, { content: pf.content });
+            } else {
+              const full = appRoot ? `${appRoot}/${pf.path}` : pf.path;
+              if (!files.some((f) => f.path === full)) addFile({ ...pf, path: full });
+            }
+          }
+        },
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setRunStatus("error");
     }
-  }, [appFiles, appendLog]);
+  }, [appFiles, appendLog, files, appRoot, updateFile, addFile]);
 
   // Tear down the running process when leaving the panel.
   useEffect(() => () => runRef.current?.teardown(), []);

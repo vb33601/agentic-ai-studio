@@ -1,67 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-
-async function searchWithTavily(query: string, maxResults: number) {
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: process.env.TAVILY_API_KEY,
-      query,
-      max_results: maxResults,
-      include_answer: true,
-      include_raw_content: false,
-    }),
-  });
-  const data = await res.json();
-  return {
-    answer: data.answer as string | undefined,
-    results: (data.results as Array<{ title: string; url: string; content: string; score: number }> | undefined)?.map((r) => ({
-      title: r.title,
-      url: r.url,
-      snippet: r.content,
-    })) || [],
-  };
-}
-
-async function searchWithSerper(query: string, maxResults: number) {
-  const res = await fetch("https://google.serper.dev/search", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-KEY": process.env.SERPER_API_KEY!,
-    },
-    body: JSON.stringify({ q: query, num: maxResults }),
-  });
-  const data = await res.json();
-  type SerperResult = { title: string; link: string; snippet: string };
-  return {
-    answer: (data.answerBox?.answer || data.answerBox?.snippet) as string | undefined,
-    results: ((data.organic as SerperResult[] | undefined) || []).map((r) => ({
-      title: r.title,
-      url: r.link,
-      snippet: r.snippet,
-    })),
-  };
-}
-
-async function searchWithDuckDuckGo(query: string) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-  const res = await fetch(url, { headers: { "User-Agent": "AI-Platform/1.0" } });
-  const data = await res.json();
-  type DDGTopic = { Text?: string; FirstURL?: string; Topics?: DDGTopic[] };
-  const topics: DDGTopic[] = data.RelatedTopics || [];
-  const results = topics
-    .flatMap((t: DDGTopic) => (t.Topics ? t.Topics : [t]))
-    .filter((t: DDGTopic) => t.Text && t.FirstURL)
-    .slice(0, 8)
-    .map((t: DDGTopic) => ({ title: t.Text!.split(" - ")[0], url: t.FirstURL!, snippet: t.Text! }));
-  return {
-    answer: (data.AbstractText as string | undefined) || undefined,
-    results,
-    note: "Results from DuckDuckGo (limited). For better results, configure TAVILY_API_KEY or SERPER_API_KEY.",
-  };
-}
+import { searchWeb } from "./web-search";
 
 export const webSearchTool = tool({
   description: "Search the web for current information, news, and facts",
@@ -69,15 +8,7 @@ export const webSearchTool = tool({
     query: z.string().describe("The search query"),
     maxResults: z.number().optional().default(5).describe("Maximum number of results"),
   }),
-  execute: async ({ query, maxResults = 5 }) => {
-    try {
-      if (process.env.TAVILY_API_KEY) return await searchWithTavily(query, maxResults);
-      if (process.env.SERPER_API_KEY) return await searchWithSerper(query, maxResults);
-      return await searchWithDuckDuckGo(query);
-    } catch (e) {
-      return { error: String(e), results: [] as Array<{ title: string; url: string; snippet: string }> };
-    }
-  },
+  execute: async ({ query, maxResults = 5 }) => searchWeb(query, maxResults),
 });
 
 export const codeExecutionTool = tool({
