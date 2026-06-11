@@ -81,35 +81,49 @@ async function fetchKiloCode(): Promise<ModelOption[]> {
 async function fetchAIML(): Promise<ModelOption[]> {
   const key = process.env.AIMLAPI_API_KEY;
   if (!key) return [];
-  try {
-    const res = await fetch("https://api.aimlapi.com/models", {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: timeout(15000),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const list = (data.data as Array<Record<string, unknown>>) || [];
-    const seen = new Set<string>();
-    const out: ModelOption[] = [];
-    for (const m of list) {
-      if (m.type !== "openai/chat-completions" && m.type !== "anthropic/messages") continue;
-      const id = m.id as string;
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      out.push({
-        id,
-        name: id,
-        provider: "aimlapi",
-        contextWindow: (m.context_length as number) || 8192,
-        supportsVision: false,
-        supportsTools: true,
-        description: "via AIML API",
+  // AIML has moved its model-listing endpoint before, so try the documented
+  // path and the OpenAI-standard one. Whichever responds wins; both shapes
+  // (AIML's `{data:[{id,type}]}` and OpenAI's `{data:[{id}]}`) are handled.
+  const endpoints = ["https://api.aimlapi.com/models", "https://api.aimlapi.com/v1/models"];
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: timeout(15000),
       });
+      if (!res.ok) {
+        // Surface the real status so an invalid key / moved endpoint is
+        // diagnosable in logs instead of models silently vanishing.
+        console.warn(`[models] AIML ${url} → ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      const list = (data.data as Array<Record<string, unknown>>) || [];
+      const seen = new Set<string>();
+      const out: ModelOption[] = [];
+      for (const m of list) {
+        // AIML tags chat models with `type`; the OpenAI-standard list has no
+        // `type` — accept those too rather than dropping everything.
+        if ("type" in m && m.type !== "openai/chat-completions" && m.type !== "anthropic/messages") continue;
+        const id = m.id as string;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          name: id,
+          provider: "aimlapi",
+          contextWindow: (m.context_length as number) || 8192,
+          supportsVision: false,
+          supportsTools: true,
+          description: "via AIML API",
+        });
+      }
+      if (out.length) return out;
+    } catch (e) {
+      console.warn(`[models] AIML ${url} fetch failed:`, e instanceof Error ? e.message : e);
     }
-    return out;
-  } catch {
-    return [];
   }
+  return [];
 }
 
 /** Top trending Hugging Face text-generation models (the long tail is searched). */
