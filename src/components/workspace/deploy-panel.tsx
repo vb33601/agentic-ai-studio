@@ -37,6 +37,13 @@ interface DeployResponse {
   frontendId?: string;
   frontendError?: string;
   warnings?: string[];
+  /** Universal-deploy metadata: detected stack/framework + chosen provider. */
+  provider?: string;
+  framework?: string;
+  runtime?: string;
+  stack?: string;
+  backendRuntime?: string;
+  backendFramework?: string;
 }
 
 async function readJson(res: Response): Promise<DeployResponse> {
@@ -296,13 +303,14 @@ export function DeployPanel() {
         body: JSON.stringify({ files: appFiles, name: projectName }),
       });
       const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error || "Render deploy failed");
+      if (!res.ok) throw new Error(data.error || "Backend deploy failed");
+      if (data.framework) addBuildLog(`Detected stack: ${data.framework}${data.runtime ? ` (${data.runtime} runtime)` : ""}`);
       if (data.backendDir) addBuildLog(`Detected backend folder: ${data.backendDir}/`);
       addBuildLog(`Repo created → ${data.repoUrl}`);
       if (data.dbWired) addBuildLog("DATABASE_URL wired to managed Postgres (Aiven).");
       else if (data.usesPrisma) addBuildLog("⚠ DB app, but DEFAULT_DATABASE_URL isn't set — add it in Render env.");
       for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
-      addBuildLog(`Render service → ${data.url} (building, ~few min)`);
+      addBuildLog(`Deployed via ${data.provider || "render"} → ${data.url} (building, ~few min)`);
       update(deployId, { status: "deployed", url: data.url, inspectorUrl: data.dashboardUrl });
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);

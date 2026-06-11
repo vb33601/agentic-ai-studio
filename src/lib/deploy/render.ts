@@ -16,11 +16,23 @@ export interface CreateServiceInput {
   name: string;
   repo: string;
   branch: string;
-  buildCommand: string;
-  startCommand: string;
   envVars: RenderEnvVar[];
   region?: string;
   plan?: string;
+  /**
+   * "node" (native, default) builds with build/start commands; "docker" builds
+   * the repo's Dockerfile — the universal path for any language Render has no
+   * native runtime for (Python/Django, Rails, Spring, PHP, Go, Rust, …).
+   */
+  runtime?: "node" | "docker";
+  /** Native runtime (runtime !== "docker"). */
+  buildCommand?: string;
+  startCommand?: string;
+  /** Docker runtime (runtime === "docker"). */
+  dockerfilePath?: string;
+  dockerContext?: string;
+  /** Optional CMD override; "" uses the Dockerfile's own CMD. */
+  dockerCommand?: string;
 }
 
 export interface RenderServiceResult {
@@ -62,11 +74,30 @@ async function getOwnerId(key: string): Promise<string> {
   return owner;
 }
 
-/** Create a Node web service that builds & deploys from a GitHub repo. */
+/**
+ * Create a web service that builds & deploys from a GitHub repo. Supports both
+ * Render's native Node runtime (build/start commands) and the universal Docker
+ * runtime (builds the repo's Dockerfile) — the Render API `serviceDetails`
+ * carries either `nativeEnvironmentDetails` (buildCommand/startCommand) or
+ * `dockerDetails` (dockerfilePath/dockerContext/dockerCommand) under
+ * `envSpecificDetails`, selected by `runtime`.
+ */
 export async function createRenderService(input: CreateServiceInput): Promise<RenderServiceResult> {
   const key = process.env.RENDER_API_KEY;
   if (!key) throw new Error("RENDER_API_KEY is not configured on the server.");
   const ownerId = await getOwnerId(key);
+
+  const isDocker = input.runtime === "docker";
+  const envSpecificDetails = isDocker
+    ? {
+        dockerfilePath: input.dockerfilePath || "./Dockerfile",
+        dockerContext: input.dockerContext || ".",
+        dockerCommand: input.dockerCommand || "",
+      }
+    : {
+        buildCommand: input.buildCommand || "npm install",
+        startCommand: input.startCommand || "npm start",
+      };
 
   const body = {
     type: "web_service",
@@ -76,13 +107,10 @@ export async function createRenderService(input: CreateServiceInput): Promise<Re
     branch: input.branch,
     autoDeploy: "yes",
     serviceDetails: {
-      runtime: "node",
+      runtime: isDocker ? "docker" : "node",
       plan: input.plan || "free",
       region: input.region || "oregon",
-      envSpecificDetails: {
-        buildCommand: input.buildCommand,
-        startCommand: input.startCommand,
-      },
+      envSpecificDetails,
     },
     envVars: input.envVars,
   };

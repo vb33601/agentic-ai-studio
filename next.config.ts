@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
     "pdf-parse",
     "mammoth",
     "xlsx",
+    // Server-only (Fly GitHub-secret encryption). Its ESM dist has a broken
+    // ./libsodium.mjs ref that Turbopack can't resolve — keep it external so
+    // Next requires the CJS build at runtime (traced into standalone output).
+    "libsodium-wrappers",
   ],
   images: {
     remotePatterns: [

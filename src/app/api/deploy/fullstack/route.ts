@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createRepoAndPush } from "@/lib/deploy/github";
 import { createRenderService, type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
+import { prepareForContainer, findBackendRoot } from "@/lib/deploy/universal-prepare";
+import { detectStack } from "@/lib/deploy/dockerfile";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import { deployToVercel } from "@/lib/deploy/vercel";
@@ -43,48 +45,76 @@ export async function POST(req: NextRequest) {
     let backendNote: string | null = null;
 
     // ---- Backend → Render ----
+    // Node backends take the optimized native path. Non-Node backends (Django,
+    // Rails, Spring, Laravel, Go, .NET, …) — even when they sit in a backend/
+    // subdir next to a JS frontend — take the universal Docker path.
     const backendPrep = prepareBackendForRender(repoFiles);
-    // Only deploy a backend when there's actually a runnable server — a
-    // frontend-only app (or a monorepo whose backend/ was never generated)
-    // would just crash Render at startup with "Cannot find module".
-    const hasBackend = backendPrep.hasBackend;
+    let hasBackend = backendPrep.hasBackend;
+    let backendDir = backendPrep.backendDir;
+    let backendWarnings: string[] = backendPrep.hasBackend ? backendPrep.warnings : [];
+
+    // Non-Node container backend detection (only when no Node backend was found).
+    const containerRoot = !hasBackend ? findBackendRoot(repoFiles) : null;
+    const container = containerRoot && detectStack(containerRoot.files) !== "node"
+      ? { dir: containerRoot.dir, prep: prepareForContainer(containerRoot.files) }
+      : null;
+    if (container) { hasBackend = true; backendDir = container.dir; backendWarnings = container.prep.notes; }
+
     if (!hasBackend) {
       backendNote =
-        "No backend/server was detected in the selected files (no Express/Fastify/Prisma/etc. or server entry), so only the frontend was deployed. If this app should have a backend, ask the builder to generate it, then redeploy.";
+        "No backend/server was detected in the selected files (no Express/Fastify/Prisma/Django/Rails/Spring/etc. or server entry), so only the frontend was deployed. If this app should have a backend, ask the builder to generate it, then redeploy.";
     }
     if (hasBackend) {
       try {
         const token = process.env.GITHUB_TOKEN;
         if (!token) throw new Error("GITHUB_TOKEN is not configured on the server — set it in the platform host's environment to enable backend deploys.");
         if (!process.env.RENDER_API_KEY) throw new Error("RENDER_API_KEY is not configured on the server — set it in the platform host's environment to enable backend deploys.");
-        const repo = await createRepoAndPush(token, backendName, backendPrep.files, {
-          private: true,
-          description: "Backend deployed from agentic-ai-studio",
-        });
-        repoUrl = repo.htmlUrl;
-        // Pin Node 22 LTS. Render defaults to Node 24, which has no prebuilt
-        // binaries for common native deps (e.g. better-sqlite3) and fails to
-        // compile them; 22 has prebuilts and runs everything generated apps use.
-        const envVars: RenderEnvVar[] = [
-          { key: "NODE_ENV", value: "production" },
-          { key: "NODE_VERSION", value: "22" },
-          // CORS allow-list for the frontend (honored by the wired backend).
-          // FRONTEND_URL is exposed too for apps that read their own client URL.
-          { key: "CORS_ORIGIN", value: predictedFrontendUrl },
-          { key: "FRONTEND_URL", value: predictedFrontendUrl },
-        ];
         const dbUrl = process.env.DEFAULT_DATABASE_URL;
-        if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
-        const svc = await createRenderService({
-          name: backendName,
-          repo: repo.htmlUrl,
-          branch: repo.branch,
-          buildCommand: backendPrep.buildCommand,
-          startCommand: backendPrep.startCommand,
-          envVars,
-        });
-        backendUrl = svc.url;
-        backendDashboard = svc.dashboardUrl;
+
+        if (container) {
+          // ---- Universal Docker backend ----
+          const repo = await createRepoAndPush(token, backendName, container.prep.files, {
+            private: true,
+            description: `Container backend (${container.prep.plan.framework}) deployed from agentic-ai-studio`,
+          });
+          repoUrl = repo.htmlUrl;
+          const envVars: RenderEnvVar[] = [
+            { key: "CORS_ORIGIN", value: predictedFrontendUrl },
+            { key: "FRONTEND_URL", value: predictedFrontendUrl },
+          ];
+          if (container.prep.needsDatabase && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
+          const svc = await createRenderService({
+            name: backendName, repo: repo.htmlUrl, branch: repo.branch,
+            runtime: "docker", dockerfilePath: container.prep.dockerfilePath, envVars,
+          });
+          backendUrl = svc.url;
+          backendDashboard = svc.dashboardUrl;
+        } else {
+          // ---- Optimized Node backend ----
+          const repo = await createRepoAndPush(token, backendName, backendPrep.files, {
+            private: true,
+            description: "Backend deployed from agentic-ai-studio",
+          });
+          repoUrl = repo.htmlUrl;
+          // Pin Node 22 LTS. Render defaults to Node 24, which has no prebuilt
+          // binaries for common native deps (e.g. better-sqlite3) and fails to
+          // compile them; 22 has prebuilts and runs everything generated apps use.
+          const envVars: RenderEnvVar[] = [
+            { key: "NODE_ENV", value: "production" },
+            { key: "NODE_VERSION", value: "22" },
+            // CORS allow-list for the frontend (honored by the wired backend).
+            // FRONTEND_URL is exposed too for apps that read their own client URL.
+            { key: "CORS_ORIGIN", value: predictedFrontendUrl },
+            { key: "FRONTEND_URL", value: predictedFrontendUrl },
+          ];
+          if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
+          const svc = await createRenderService({
+            name: backendName, repo: repo.htmlUrl, branch: repo.branch,
+            runtime: "node", buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars,
+          });
+          backendUrl = svc.url;
+          backendDashboard = svc.dashboardUrl;
+        }
       } catch (e) {
         backendError = e instanceof Error ? e.message : String(e);
       }
@@ -125,14 +155,16 @@ export async function POST(req: NextRequest) {
       backendDashboard,
       repoUrl,
       dbWired,
-      backendDir: backendPrep.backendDir,
+      backendDir,
+      backendRuntime: container ? "docker" : "node",
+      backendFramework: container ? container.prep.plan.framework : "node",
       frontendDir: front.dir,
       hasBackend,
       backendError,
       backendNote,
       frontendId,
       frontendError,
-      warnings: hasBackend ? backendPrep.warnings : [],
+      warnings: hasBackend ? backendWarnings : [],
     });
   } catch (error) {
     console.error("[deploy/fullstack]", error);

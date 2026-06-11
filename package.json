@@ -56,6 +56,7 @@
     "ioredis": "^5.11.0",
     "jose": "^6.2.3",
     "jszip": "^3.10.1",
+    "libsodium-wrappers": "^0.7.16",
     "lucide-react": "^1.17.0",
     "mammoth": "^1.12.0",
     "nanoid": "^5.1.11",
@@ -84,6 +85,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
+    "@types/libsodium-wrappers": "^0.7.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

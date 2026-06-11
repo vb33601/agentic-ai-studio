@@ -30,7 +30,7 @@ function authHeaders(token: string) {
   };
 }
 
-async function gh<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+export async function gh<T>(token: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, { ...init, headers: { ...authHeaders(token), ...(init?.headers || {}) } });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
@@ -99,4 +99,40 @@ export async function createRepoAndPush(
     htmlUrl: `https://github.com/${owner}/${repo}`,
     cloneUrl: `https://github.com/${owner}/${repo}.git`,
   };
+}
+
+/**
+ * Add (or overwrite) a set of files in an existing repo as one additional commit
+ * on `branch`. Used by the Fly provider to drop a `fly.toml` + deploy workflow
+ * into a repo that was already pushed by {@link createRepoAndPush}, without
+ * re-pushing the whole project.
+ */
+export async function commitFilesToRepo(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  files: RepoFile[],
+  message = "Add Fly.io deploy config",
+): Promise<{ commitSha: string }> {
+  const ref = await gh<{ object: { sha: string } }>(token, `/repos/${owner}/${repo}/git/ref/heads/${branch}`);
+  const baseSha = ref.object.sha;
+  const baseCommit = await gh<{ tree: { sha: string } }>(token, `/repos/${owner}/${repo}/git/commits/${baseSha}`);
+
+  const tree = await gh<{ sha: string }>(token, `/repos/${owner}/${repo}/git/trees`, {
+    method: "POST",
+    body: JSON.stringify({
+      base_tree: baseCommit.tree.sha,
+      tree: files.map((f) => ({ path: f.path, mode: "100644", type: "blob", content: f.content })),
+    }),
+  });
+  const commit = await gh<{ sha: string }>(token, `/repos/${owner}/${repo}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({ message, tree: tree.sha, parents: [baseSha] }),
+  });
+  await gh(token, `/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+    method: "PATCH",
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  return { commitSha: commit.sha };
 }
