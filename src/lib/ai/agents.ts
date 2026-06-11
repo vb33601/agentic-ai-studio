@@ -13,9 +13,13 @@ export interface AgentConfig {
 // encode the failures that broke real deploys.
 const FULLSTACK_RULES = `
 
+Build ORDER (CRITICAL — generation can be cut short, so build so that whatever you've finished already RUNS):
+- Build the USER-FACING FRONTEND to a COMPLETE, runnable state FIRST: its entry (\`index.html\` + \`src/main.jsx\`), the root \`App\`, EVERY page/component \`App\` imports, and its stylesheet — BEFORE adding any backend depth or extra polish. A frontend left as only config files (package.json / vite.config / index.html with no \`src/App\` or components) deploys to a BLANK page — the single worst outcome. NEVER stop with the frontend config-only.
+- THEN build the backend: its server entry, then the routes/controllers it mounts. Keep the file set lean and prioritized — a smaller app where every referenced file EXISTS beats a larger one that's half-written. If you sense you're running low on steps, finish the files already imported before starting new features.
+
 Full-stack & deploy-readiness (CRITICAL — generated apps get deployed: frontend → Vercel, backend → Render + managed Postgres):
 - NEVER promise a part you don't build. If the root package.json references a backend (e.g. "start": "npm run start --prefix backend", or a concurrently/dev script that runs backend/), you MUST fully implement that backend/ folder. A script that points at a folder, --prefix target, or file you didn't create is a broken app.
-- Every backend MUST have a REAL server entry file that its package.json "main"/"start" points to, and that file MUST create the server AND listen — e.g. Express → \`src/index.js\`: \`const app = express(); app.use(cors()); app.use(express.json()); /* mount EVERY router here */ app.listen(process.env.PORT || 3000);\`. Build this entry FIRST, then the routes/controllers it mounts. If "start" points at a missing file the deploy crashes with MODULE_NOT_FOUND.
+- Every backend MUST have a REAL server entry file that its package.json "main"/"start" points to, and that file MUST create the server AND listen — e.g. Express → \`src/index.js\`: \`const app = express(); app.use(cors()); app.use(express.json()); /* mount EVERY router here */ app.listen(process.env.PORT || 3000);\`. Build this server entry before the routes/controllers it mounts. If "start" points at a missing file the deploy crashes with MODULE_NOT_FOUND.
 - Bind the server to \`process.env.PORT\` (the host injects it) with a local fallback — never a hard-coded port only. Read ALL config/secrets from \`process.env\` (DATABASE_URL, JWT_SECRET, PORT, API keys); never hard-code credentials.
 - Make the frontend↔backend API contract line up EXACTLY: the frontend calls \`/api/<resource>\` (e.g. /api/companies, /api/auth/login), so mount each router at the matching \`/api/...\` path on the backend. Every endpoint the frontend calls must exist.
 - The frontend MUST read its API base URL from an env var with a localhost fallback (Vite → \`import.meta.env.VITE_API_URL ?? 'http://localhost:<port>'\`; CRA → \`process.env.REACT_APP_API_URL\`) — never hard-code a backend URL; the platform injects the real one at deploy. Enable CORS on the backend (a permissive or env-driven allow-list) so the deployed frontend can reach it.
@@ -76,7 +80,7 @@ How to work:
 - Databases: default to SQLite so it runs in the preview (Prisma \`provider = "sqlite"\`, \`url = env("DATABASE_URL")\`, plus a \`.env\` with \`DATABASE_URL="file:./dev.db"\`). Read the URL from \`process.env.DATABASE_URL\` — never hardcode credentials — so a managed Postgres can be swapped in at deploy time. For any app whose data must PERSIST after deployment, use Prisma (not raw better-sqlite3/sqlite3): the platform swaps Prisma's sqlite→postgresql at deploy, whereas a raw SQLite file lives on ephemeral disk and is wiped on every restart/redeploy.
 - When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.${FULLSTACK_RULES}`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
-    maxSteps: 16,
+    maxSteps: 1000,
     temperature: 0.3,
   },
 
@@ -107,7 +111,7 @@ Design quality (very important — avoid cluttered output):
 - If you write Tailwind utility classes (\`bg-indigo-600\`, \`rounded-lg\`, \`flex\`, etc.) you MUST fully set Tailwind up or the app ships completely UNSTYLED: add \`tailwindcss\`, \`postcss\`, \`autoprefixer\` to devDependencies; include \`tailwind.config.js\` (with \`content\` globs covering \`./index.html\` and \`./src/**/*.{js,jsx,ts,tsx}\`) and \`postcss.config.js\`; create a CSS file with \`@tailwind base; @tailwind components; @tailwind utilities;\`; and IMPORT that CSS file from the entry (e.g. \`import './index.css'\` in \`src/main.jsx\`). A stylesheet that nothing imports is never bundled — Tailwind classes only take effect when the CSS is both compiled and imported.
 - When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.${FULLSTACK_RULES}`,
     tools: ["think", "codeExecution", "createFile", "webSearch"],
-    maxSteps: 18,
+    maxSteps: 1000,
     temperature: 0.3,
   },
 

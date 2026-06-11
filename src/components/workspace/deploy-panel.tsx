@@ -88,6 +88,23 @@ export function DeployPanel() {
   const update = (id: string, patch: Partial<Deployment>) =>
     setDeployments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
+  // Fetch the real Vercel build log for a failed deployment and print its tail
+  // (error lines) so the user sees the actual cause, not just "build failed".
+  const printBuildLogs = async (vercelId: string | undefined) => {
+    if (!vercelId) return;
+    try {
+      const r = await fetch(`/api/deploy?id=${vercelId}&logs=1`).then((res) => res.json()).catch(() => null);
+      const logs: string[] = Array.isArray(r?.logs) ? r.logs : [];
+      if (logs.length === 0) {
+        addBuildLog("  (no build log available — open the Vercel inspector for details)");
+        return;
+      }
+      for (const line of logs.slice(-20)) addBuildLog(`  ${line}`);
+    } catch {
+      addBuildLog("  (could not fetch the build log)");
+    }
+  };
+
   // Full-stack: backend → Render (Aiven), frontend → Vercel (wired to the
   // backend URL). Returns the frontend link as the primary URL.
   const deployFullStack = async () => {
@@ -142,7 +159,8 @@ export function DeployPanel() {
             update(deployId, { status: "deployed", url: s.url || data.frontendUrl, frontendUrl: s.url || data.frontendUrl });
             settled = true;
           } else if (s.readyState === "ERROR" || s.readyState === "CANCELED") {
-            addBuildLog(`✗ Frontend build ${s.readyState.toLowerCase()} on Vercel — check its build log.`);
+            addBuildLog(`✗ Frontend build ${s.readyState.toLowerCase()} on Vercel:`);
+            await printBuildLogs(data.frontendId);
             // Backend may still be live → keep the deploy as a partial success.
             update(deployId, {
               status: data.backendUrl ? "deployed" : "failed",
@@ -251,7 +269,8 @@ export function DeployPanel() {
           update(deployId, { status: "deployed", url: s.url || data.url });
           settled = true;
         } else if (s.readyState === "ERROR" || s.readyState === "CANCELED") {
-          addBuildLog(`✗ Build ${s.readyState.toLowerCase()} on Vercel.`);
+          addBuildLog(`✗ Build ${s.readyState.toLowerCase()} on Vercel:`);
+          await printBuildLogs(data.id);
           update(deployId, { status: "failed" });
           settled = true;
         } else {

@@ -170,7 +170,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
                       system: REPAIR_SYSTEM,
                       prompt: buildRepairPrompt(artifacts, flags),
                       tools: activeTools,
-                      stopWhen: stepCountIs(4),
+                      stopWhen: stepCountIs(1000),
                       temperature,
                       maxOutputTokens: MAX_OUTPUT_TOKENS,
                     });

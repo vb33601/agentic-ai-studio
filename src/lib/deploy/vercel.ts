@@ -112,3 +112,43 @@ export async function getDeploymentStatus(id: string): Promise<{ readyState: str
   if (!res.ok) throw new Error(data.error?.message || `Vercel API error (${res.status})`);
   return { readyState: data.readyState || data.status, url: data.url ? `https://${data.url}` : undefined };
 }
+
+/**
+ * Fetch the build log lines for a deployment, so a failed build shows the REAL
+ * cause (e.g. "Could not resolve …", an ETARGET install error) instead of a bare
+ * "build failed". Returns the tail of the build output, prioritizing the error
+ * lines. Best-effort: returns [] if the events can't be read.
+ */
+export async function getDeploymentBuildLogs(id: string, limit = 40): Promise<string[]> {
+  const token = process.env.VERCEL_TOKEN;
+  if (!token) return [];
+  try {
+    // Build/output events for the deployment (newest builds support v3).
+    const res = await fetch(`${VERCEL_API}/v3/deployments/${id}/events?builds=1&direction=backward&limit=200`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const events: Array<Record<string, unknown>> = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.events)
+        ? data.events
+        : [];
+    const lines: string[] = [];
+    for (const ev of events) {
+      const type = ev.type as string | undefined;
+      if (type !== "stdout" && type !== "stderr" && type !== "command" && type !== "error") continue;
+      const payload = ev.payload as { text?: string } | undefined;
+      const text = (payload?.text ?? "").replace(/\x1b\[[0-9;]*m/g, "").trimEnd(); // strip ANSI
+      if (text) lines.push(text);
+    }
+    // Events come back newest-first (direction=backward); restore chronological order.
+    lines.reverse();
+    // Prefer lines that look like real errors when there are many.
+    const errorLines = lines.filter((l) => /error|could not resolve|failed|ETARGET|ENOENT|cannot find|exited with/i.test(l));
+    const picked = (errorLines.length ? errorLines : lines).slice(-limit);
+    return picked;
+  } catch {
+    return [];
+  }
+}

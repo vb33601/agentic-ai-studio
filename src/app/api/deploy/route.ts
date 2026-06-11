@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deployToVercel, getDeploymentStatus } from "@/lib/deploy/vercel";
+import { deployToVercel, getDeploymentStatus, getDeploymentBuildLogs } from "@/lib/deploy/vercel";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import type { WorkspaceFile } from "@/store/workspace";
 
@@ -41,10 +41,15 @@ export async function POST(req: NextRequest) {
 }
 
 // Poll deployment status: /api/deploy?id=<deploymentId>
+// Fetch build logs:       /api/deploy?id=<deploymentId>&logs=1
 export async function GET(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   try {
+    if (req.nextUrl.searchParams.get("logs")) {
+      const logs = await getDeploymentBuildLogs(id);
+      return NextResponse.json({ logs });
+    }
     const status = await getDeploymentStatus(id);
     return NextResponse.json(status);
   } catch (error) {

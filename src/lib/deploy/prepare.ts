@@ -154,14 +154,32 @@ createRoot(document.getElementById("root")).render(
  * is none to mount) so the build succeeds.
  */
 function ensureViteEntry(files: SourceFile[]): SourceFile[] {
-  const index = files.find((f) => f.path === "index.html");
-  if (!index) return files;
-  const entry = (index.content.match(ENTRY_SCRIPT_RE)?.[1] ?? "/src/main.jsx").replace(/^\.?\//, "");
+  const indexIdx = files.findIndex((f) => f.path === "index.html");
+  if (indexIdx === -1) return files;
+  const index = files[indexIdx];
+  const scriptMatch = index.content.match(ENTRY_SCRIPT_RE);
+  const entry = (scriptMatch?.[1] ?? "/src/main.jsx").replace(/^\.?\//, "");
+  const out = [...files];
+
+  // When index.html has NO module <script> tag at all, the entry would never
+  // load even if it existed → a blank page. Inject the script (and a #root mount
+  // point if missing) pointing at the entry so the app actually boots.
+  if (!scriptMatch) {
+    let html = index.content;
+    if (!/id=["']root["']/.test(html)) {
+      html = /<\/body>/i.test(html)
+        ? html.replace(/<\/body>/i, `  <div id="root"></div>\n</body>`)
+        : `${html}\n<div id="root"></div>`;
+    }
+    const tag = `  <script type="module" src="/${entry}"></script>`;
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${tag}\n</body>`) : `${html}\n${tag}`;
+    out[indexIdx] = { ...index, content: html };
+  }
+
   // Already present (exact path or same path with a different JS/TS extension).
   const base = entry.replace(/\.(jsx?|tsx?)$/, "");
-  if (files.some((f) => f.path === entry || new RegExp(`^${base}\\.(jsx?|tsx?)$`).test(f.path))) return files;
+  if (out.some((f) => f.path === entry || new RegExp(`^${base}\\.(jsx?|tsx?)$`).test(f.path))) return out;
 
-  const out = [...files];
   const entryDir = dirOf(entry);
   // Find an existing App component anywhere to mount; otherwise create one.
   let appPath = out.find((f) => /(^|\/)App\.(jsx?|tsx?)$/.test(f.path))?.path;
