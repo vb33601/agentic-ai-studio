@@ -30,6 +30,7 @@ interface DeployResponse {
   backendDir?: string;
   backendUrl?: string;
   backendDashboard?: string;
+  backendProvider?: string;
   backendError?: string;
   backendNote?: string;
   hasBackend?: boolean;
@@ -93,6 +94,8 @@ export function DeployPanel() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [deploying, setDeploying] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("my-app");
+  // Backend target for the full-app deploy (frontend always → Vercel).
+  const [fullstackBackend, setFullstackBackend] = useState<"render" | "fly">("render");
 
   const update = (id: string, patch: Partial<Deployment>) =>
     setDeployments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
@@ -214,27 +217,28 @@ export function DeployPanel() {
 
   // Full-stack: backend → Render (Aiven), frontend → Vercel (wired to the
   // backend URL). Returns the frontend link as the primary URL.
-  const deployFullStack = async () => {
+  const deployFullStack = async (backend: "render" | "fly" | "railway" = "render") => {
     if (appFiles.length === 0) {
       alert("No files to deploy. Generate an app first.");
       return;
     }
+    const backendName = backend === "render" ? "Render" : backend === "fly" ? "Fly.io" : "Railway";
     const deployId = crypto.randomUUID().replace(/-/g, "");
     setDeploying("fullstack");
     clearBuildLog();
     setDeployments((prev) => [{ id: deployId, provider: "fullstack", status: "building", timestamp: new Date() }, ...prev]);
     try {
-      addBuildLog("Deploying full app — backend → Render, frontend → Vercel…");
+      addBuildLog(`Deploying full app — backend → ${backendName}, frontend → Vercel…`);
       const res = await fetch("/api/deploy/fullstack", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: appFiles, name: projectName }),
+        body: JSON.stringify({ files: appFiles, name: projectName, provider: backend }),
       });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Full-stack deploy failed");
       if (data.backendDir) addBuildLog(`Backend folder: ${data.backendDir}/`);
       if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
-      if (data.backendUrl) addBuildLog(`✓ BACKEND LIVE (Render) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
+      if (data.backendUrl) addBuildLog(`✓ BACKEND LIVE (${(data.backendProvider || backend) === "fly" ? "Fly.io" : (data.backendProvider || backend) === "railway" ? "Railway" : "Render"}) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
       if (data.backendDashboard) addBuildLog(`Backend dashboard → ${data.backendDashboard}`);
       if (data.backendError) addBuildLog(`⚠ Backend NOT deployed: ${data.backendError}`);
       // No server in the app at all — explain it instead of silently shipping FE-only.
@@ -390,16 +394,28 @@ export function DeployPanel() {
           </h2>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <AppSelector />
-            <Button
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              disabled={!!deploying || appFiles.length === 0}
-              onClick={deployFullStack}
-              title="Deploy frontend (Vercel) + backend (Render with Aiven DB), wired together — returns the frontend link"
-            >
-              {deploying === "fullstack" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-              Deploy full app
-            </Button>
+            <div className="flex items-center rounded-md border overflow-hidden">
+              <Button
+                size="sm"
+                className="h-7 gap-1.5 text-xs rounded-none border-0"
+                disabled={!!deploying || appFiles.length === 0}
+                onClick={() => deployFullStack(fullstackBackend)}
+                title={`Deploy frontend (Vercel) + backend (${fullstackBackend === "fly" ? "Fly.io" : "Render"} with Aiven DB), wired together — returns the frontend link`}
+              >
+                {deploying === "fullstack" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                Deploy full app
+              </Button>
+              <select
+                value={fullstackBackend}
+                onChange={(e) => setFullstackBackend(e.target.value as "render" | "fly")}
+                disabled={!!deploying}
+                title="Backend host for the full-app deploy (frontend always → Vercel)"
+                className="h-7 text-xs bg-transparent border-0 border-l px-1.5 outline-none cursor-pointer disabled:opacity-50"
+              >
+                <option value="render">be: Render</option>
+                <option value="fly">be: Fly.io</option>
+              </select>
+            </div>
             <Button
               variant="outline"
               size="sm"

@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRepoAndPush } from "@/lib/deploy/github";
-import { createRenderService, type RenderEnvVar } from "@/lib/deploy/render";
+import { type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareForContainer, findBackendRoot } from "@/lib/deploy/universal-prepare";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import { deployToVercel } from "@/lib/deploy/vercel";
+import { deployContainer } from "@/lib/deploy/providers/container-deploy";
+import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
 import type { WorkspaceFile } from "@/store/workspace";
 
@@ -20,7 +21,12 @@ export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
  */
 export async function POST(req: NextRequest) {
   try {
-    const { files, name } = (await req.json()) as { files: WorkspaceFile[]; name?: string };
+    const { files, name, provider } = (await req.json()) as {
+      files: WorkspaceFile[];
+      name?: string;
+      /** Backend container target: "render" (default) | "fly" | "railway". */
+      provider?: ProviderId;
+    };
     if (!Array.isArray(files) || files.length === 0) {
       return NextResponse.json({ error: "No files to deploy." }, { status: 400 });
     }
@@ -40,6 +46,7 @@ export async function POST(req: NextRequest) {
     let repoUrl: string | null = null;
     let dbWired = false;
     let backendError: string | null = null;
+    let backendProvider: ProviderId | null = null;
     // Why no backend service was created, when there isn't one (so the UI can
     // explain it instead of silently shipping only the frontend).
     let backendNote: string | null = null;
@@ -68,34 +75,31 @@ export async function POST(req: NextRequest) {
       try {
         const token = process.env.GITHUB_TOKEN;
         if (!token) throw new Error("GITHUB_TOKEN is not configured on the server — set it in the platform host's environment to enable backend deploys.");
-        if (!process.env.RENDER_API_KEY) throw new Error("RENDER_API_KEY is not configured on the server — set it in the platform host's environment to enable backend deploys.");
         const dbUrl = process.env.DEFAULT_DATABASE_URL;
 
         if (container) {
-          // ---- Universal Docker backend ----
-          const repo = await createRepoAndPush(token, backendName, container.prep.files, {
-            private: true,
-            description: `Container backend (${container.prep.plan.framework}) deployed from agentic-ai-studio`,
-          });
-          repoUrl = repo.htmlUrl;
+          // ---- Universal Docker backend (Render / Fly / Railway) ----
           const envVars: RenderEnvVar[] = [
             { key: "CORS_ORIGIN", value: predictedFrontendUrl },
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
           if (container.prep.needsDatabase && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
-          const svc = await createRenderService({
-            name: backendName, repo: repo.htmlUrl, branch: repo.branch,
-            runtime: "docker", dockerfilePath: container.prep.dockerfilePath, envVars,
+          // Django: allow the deploy domain (else 400 DisallowedHost). Harmless otherwise.
+          if (container.prep.plan.framework === "django") {
+            envVars.push(
+              { key: "DJANGO_ALLOWED_HOSTS", value: "*" },
+              { key: "ALLOWED_HOSTS", value: "*" },
+              { key: "CSRF_TRUSTED_ORIGINS", value: "https://*.fly.dev,https://*.onrender.com" },
+            );
+          }
+          const r = await deployContainer({
+            githubToken: token, name: backendName, files: container.prep.files, runtime: "docker",
+            dockerfilePath: container.prep.dockerfilePath, envVars, provider,
+            description: `Container backend (${container.prep.plan.framework}) from agentic-ai-studio`,
           });
-          backendUrl = svc.url;
-          backendDashboard = svc.dashboardUrl;
+          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider;
         } else {
-          // ---- Optimized Node backend ----
-          const repo = await createRepoAndPush(token, backendName, backendPrep.files, {
-            private: true,
-            description: "Backend deployed from agentic-ai-studio",
-          });
-          repoUrl = repo.htmlUrl;
+          // ---- Optimized Node backend (Render / Fly / Railway) ----
           // Pin Node 22 LTS. Render defaults to Node 24, which has no prebuilt
           // binaries for common native deps (e.g. better-sqlite3) and fails to
           // compile them; 22 has prebuilts and runs everything generated apps use.
@@ -108,12 +112,12 @@ export async function POST(req: NextRequest) {
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
           if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
-          const svc = await createRenderService({
-            name: backendName, repo: repo.htmlUrl, branch: repo.branch,
-            runtime: "node", buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars,
+          const r = await deployContainer({
+            githubToken: token, name: backendName, files: backendPrep.files, runtime: "node",
+            buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars, provider,
+            description: "Backend from agentic-ai-studio",
           });
-          backendUrl = svc.url;
-          backendDashboard = svc.dashboardUrl;
+          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider;
         }
       } catch (e) {
         backendError = e instanceof Error ? e.message : String(e);
@@ -153,6 +157,7 @@ export async function POST(req: NextRequest) {
       frontendUrl,
       backendUrl,
       backendDashboard,
+      backendProvider,
       repoUrl,
       dbWired,
       backendDir,
