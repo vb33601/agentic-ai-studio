@@ -23,7 +23,8 @@
 export type Stack =
   | "node" | "python" | "go" | "rust" | "php" | "java" | "dotnet" | "ruby" | "elixir" | "cpp" | "static"
   // JVM family (Kotlin/Scala/Groovy) is handled inside the "java" planner.
-  | "deno" | "bun" | "swift" | "dart" | "haskell" | "clojure" | "crystal" | "nim" | "perl" | "r" | "julia" | "ocaml" | "zig";
+  | "deno" | "bun" | "swift" | "dart" | "haskell" | "clojure" | "crystal" | "nim" | "perl" | "r" | "julia" | "ocaml" | "zig"
+  | "erlang" | "gleam" | "lua" | "d" | "vlang";
 
 /** What part of an app a project represents — drives provider routing. */
 export type AppRole = "frontend" | "backend" | "fullstack" | "static";
@@ -103,6 +104,7 @@ const FILE_LABELS: Record<Stack, string> = {
   java: "Java", dotnet: ".NET", ruby: "Ruby", elixir: "Elixir", cpp: "C/C++", static: "Static site",
   deno: "Deno", bun: "Bun", swift: "Swift", dart: "Dart", haskell: "Haskell", clojure: "Clojure",
   crystal: "Crystal", nim: "Nim", perl: "Perl", r: "R", julia: "Julia", ocaml: "OCaml", zig: "Zig",
+  erlang: "Erlang", gleam: "Gleam", lua: "Lua", d: "D", vlang: "V",
 };
 
 export function stackLabel(s: Stack): string {
@@ -174,6 +176,14 @@ export function detectStack(files: DockSourceFile[]): Stack {
   if (has(files, /(^|\/)build\.zig$/) || has(files, /\.zig$/)) return "zig";
   if (has(files, /(^|\/)Project\.toml$/) || has(files, /\.jl$/)) return "julia";
   if (has(files, /(^|\/)(plumber\.R|DESCRIPTION|renv\.lock)$/i) || has(files, /\.[rR]$/)) return "r";
+  // BEAM family: Gleam first (its build shipment also emits Erlang), then Erlang.
+  if (has(files, /(^|\/)gleam\.toml$/) || has(files, /\.gleam$/)) return "gleam";
+  if (has(files, /(^|\/)(rebar\.config|rebar\.lock|erlang\.mk)$/) || has(files, /\.app\.src$/) || has(files, /\.erl$/)) return "erlang";
+  if (has(files, /\.rockspec$/) || has(files, /\.lua$/)) return "lua";
+  // D: cpp is matched earlier, so a gcc `.d` depfile next to C/C++ never lands here.
+  if (has(files, /(^|\/)dub\.(json|sdl)$/) || has(files, /\.d$/)) return "d";
+  // V: `.v` is shared with Coq/Verilog, so require v.mod or a V-shaped source signal.
+  if (has(files, /(^|\/)v\.mod$/) || anyContent(files, /\.v$/, /\bfn\s+main\b|import\s+veb\b|import\s+vweb\b/)) return "vlang";
   // Deno: explicit config, or TS that uses the Deno runtime/URL imports (no package.json).
   if (has(files, /(^|\/)deno\.(json|jsonc|lock)$/) ||
       (!has(files, /(^|\/)package\.json$/) && anyContent(files, /\.(ts|tsx|js)$/, /Deno\.|from\s+["']https?:\/\/deno\.land|["']jsr:|["']npm:/))) return "deno";
@@ -905,6 +915,124 @@ CMD ["/app"]
     notes: ["Zig detected; the app must read the $PORT env and bind 0.0.0.0."] };
 }
 
+function planErlang(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)(rebar\.config|.*\.app\.src)$/);
+  const isCowboy = /cowboy/.test(blob);
+  const needsDatabase = /epgsql|postgres|emysql|mysql|eredis/.test(blob);
+  // rebar3 builds a self-contained prod release; the release name is unknown
+  // generically, so the entrypoint discovers it under _build/prod/rel at runtime.
+  const dockerfile = `# Erlang app${isCowboy ? " (Cowboy)" : ""}
+FROM erlang:27 AS build
+WORKDIR /src
+COPY . .
+RUN rebar3 as prod release
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 libncurses6 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /src/_build/prod/rel/ /app/rel/
+EXPOSE 8080
+# Boot the single generated release in the foreground; it must read os:getenv("PORT").
+CMD ["sh", "-c", "REL=$(ls /app/rel | head -n1); exec \\"/app/rel/$REL/bin/$REL\\" foreground"]
+`;
+  return { framework: isCowboy ? "cowboy" : "erlang", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Erlang detected; rebar3 prod release runs in the foreground. The listener must read os:getenv(\"PORT\") and bind 0.0.0.0."] };
+}
+
+function planGleam(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)gleam\.toml$/);
+  const isMist = /\bmist\b/.test(blob);
+  const isWisp = /\bwisp\b/.test(blob);
+  const needsDatabase = /\bpog\b|gleam_pgo|postgres|gleam_sqlite|storail/.test(blob);
+  // `gleam export erlang-shipment` produces a runnable bundle with entrypoint.sh.
+  const dockerfile = `# Gleam app${isWisp ? " (Wisp)" : isMist ? " (Mist)" : ""}
+FROM ghcr.io/gleam-lang/gleam:v1.6.1-erlang-alpine AS build
+COPY . /build/
+RUN cd /build && gleam export erlang-shipment
+FROM erlang:27-alpine
+RUN apk add --no-cache ca-certificates libstdc++ ncurses-libs openssl
+COPY --from=build /build/build/erlang-shipment /app
+WORKDIR /app
+EXPOSE 8080
+# The shipment's entrypoint runs the project's main; Mist must read PORT and bind 0.0.0.0.
+CMD ["./entrypoint.sh", "run"]
+`;
+  return { framework: isWisp ? "wisp" : isMist ? "mist" : "gleam", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Gleam detected; built via `gleam export erlang-shipment`. The HTTP server (Mist/Wisp) must read the PORT env and bind 0.0.0.0."] };
+}
+
+function planLua(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /\.rockspec$/);
+  const isLapis = /lapis/.test(blob) || has(files, /(^|\/)(config\.(lua|moon)|nginx\.conf\.etlua)$/) && anyContent(files, /\.(lua|moon)$/, /lapis/);
+  const needsDatabase = /pgmoon|luasql|lua-resty-postgres|postgres|mysql/.test(blob);
+  if (isLapis) {
+    // Lapis runs on OpenResty (nginx + LuaJIT); `lapis server production` reads the port from config.
+    const dockerfile = `# Lua app (Lapis / OpenResty)
+FROM openresty/openresty:alpine
+RUN apk add --no-cache gcc musl-dev openssl-dev luarocks \\
+ && luarocks install lapis
+WORKDIR /app
+COPY . .
+EXPOSE 8080
+# Lapis reads the port from config.lua/config.moon ("production" env); bind to 0.0.0.0:$PORT there.
+CMD ["sh", "-c", "lapis server production"]
+`;
+    return { framework: "lapis", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+      notes: ["Lapis detected; set the production port to $PORT and host 0.0.0.0 in config.lua/config.moon."] };
+  }
+  const entry = find(files, /(^|\/)(app|main|server|init)\.lua$/) || find(files, /\.lua$/);
+  const path = entry?.path || "app.lua";
+  const dockerfile = `# Lua app
+FROM alpine:3.20
+RUN apk add --no-cache lua5.4 lua5.4-dev luarocks5.4 build-base openssl-dev
+WORKDIR /app
+COPY . .
+# Install rockspec deps if present (e.g. lua-http, copas).
+RUN for r in *.rockspec; do [ -f "$r" ] && luarocks-5.4 install --only-deps "$r"; done 2>/dev/null || true
+EXPOSE 8080
+# The server must read os.getenv("PORT") and bind 0.0.0.0.
+CMD ["sh", "-c", "exec lua5.4 ${path}"]
+`;
+  return { framework: "lua", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: [`Lua detected (entry ${path}); the server must read os.getenv("PORT") and bind 0.0.0.0.`] };
+}
+
+function planD(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)dub\.(json|sdl)$/);
+  const isVibe = /vibe-d|vibe\.d|"vibe/.test(blob) || anyContent(files, /\.d$/, /import\s+vibe\./);
+  const needsDatabase = /vibe-d:postgresql|dpq|ddbc|postgres|mysql-native/.test(blob);
+  // Single stage on the ldc image so the Phobos/druntime shared libs are present at run time.
+  const dockerfile = `# D app${isVibe ? " (vibe.d)" : ""}
+FROM dlang2/ldc-ubuntu:latest
+WORKDIR /app
+COPY . .
+RUN dub build --build=release --compiler=ldc2
+EXPOSE 8080
+# Run the produced binary (named after the dub package); vibe.d must listen on 0.0.0.0:$PORT.
+CMD ["sh", "-c", "exec \\"$(find . -maxdepth 1 -type f -executable ! -name '*.*' | head -n1)\\""]
+`;
+  return { framework: isVibe ? "vibe.d" : "d", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["D detected; the server must read the PORT env and bind 0.0.0.0 (vibe.d: settings.bindAddresses/port)."] };
+}
+
+function planVlang(files: DockSourceFile[]): Partial {
+  const isVeb = anyContent(files, /\.v$/, /import\s+veb\b|import\s+vweb\b/);
+  const needsDatabase = anyContent(files, /\.v$/, /import\s+db\.(pg|mysql|sqlite)|\bpostgres\b/);
+  const dockerfile = `# V app${isVeb ? " (veb/vweb)" : ""}
+FROM thevlang/vlang:latest AS build
+WORKDIR /src
+COPY . .
+RUN v -prod -o /app .
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app /app
+EXPOSE 8080
+# veb/vweb must read os.getenv("PORT") and bind to 0.0.0.0.
+CMD ["/app"]
+`;
+  return { framework: isVeb ? "veb" : "v", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["V detected; the server must read os.getenv(\"PORT\") and bind 0.0.0.0."] };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -915,6 +1043,7 @@ const PLANNERS: Record<Stack, (f: DockSourceFile[]) => Partial> = {
   deno: planDeno, bun: planBun, swift: planSwift, dart: planDart, haskell: planHaskell,
   clojure: planClojure, crystal: planCrystal, nim: planNim, perl: planPerl, r: planR,
   julia: planJulia, ocaml: planOcaml, zig: planZig,
+  erlang: planErlang, gleam: planGleam, lua: planLua, d: planD, vlang: planVlang,
 };
 
 /** Detect language + framework and produce a full, $PORT-bound build plan. */
