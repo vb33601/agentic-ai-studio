@@ -1,16 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { diagForbidden } from "@/lib/deploy/diag-auth";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
-
-/** Fail-closed gate: disabled unless PREFLIGHT_DIAG_TOKEN is set AND the request
- *  presents it (header `x-diag-token` or `?token=`). Keeps table names private. */
-function authorized(req: NextRequest): boolean {
-  const expected = process.env.PREFLIGHT_DIAG_TOKEN;
-  if (!expected) return false;
-  const given = req.headers.get("x-diag-token") || req.nextUrl.searchParams.get("token");
-  return !!given && given === expected;
-}
 
 /** Studio-owned tables (Prisma models) — never migration candidates. */
 const STUDIO_TABLES = new Set([
@@ -25,7 +17,8 @@ const STUDIO_TABLES = new Set([
  * deployed app's tables into its own schema (the shared-`public` collision).
  */
 export async function GET(req: NextRequest) {
-  if (!authorized(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const forbidden = diagForbidden(req);
+  if (forbidden) return forbidden;
   try {
     const rows = await prisma.$queryRawUnsafe<{ name: string; rows: bigint }[]>(
       `SELECT c.relname AS name, c.reltuples::bigint AS rows
