@@ -7,9 +7,13 @@ import fs from "node:fs";
 const SERVICE = "srv-d8hffii8pkls73cd3bu0"; // agentic-ai-studio
 const ENV_PATH = new URL("../.env.local", import.meta.url);
 
+// NOTE: .env.local values may be wrapped in quotes. dotenv strips them at
+// runtime, so a naive parser must too — otherwise the literal quote chars
+// corrupt the value (e.g. a Fly token that then fails auth).
+const stripQuotes = (s) => s.replace(/^(['"])([\s\S]*)\1$/, "$2");
 for (const line of fs.readFileSync(ENV_PATH, "utf8").split("\n")) {
   const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-  if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].trim();
+  if (m && !(m[1] in process.env)) process.env[m[1]] = stripQuotes(m[2].trim());
 }
 
 const RK = process.env.RENDER_API_KEY;
