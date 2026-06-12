@@ -218,6 +218,32 @@ function depsBlob(files: DockSourceFile[], pathRe: RegExp): string {
   return files.filter((f) => pathRe.test(f.path)).map((f) => f.content).join("\n").toLowerCase();
 }
 
+/**
+ * Resolve a runtime version from a project's conventional version files so the base
+ * image MATCHES what the app targets. A hardcoded base image is the single biggest
+ * build-failure cause across stacks (the same class as ".NET net9 app on sdk:8.0":
+ * a Go 1.22 `go.mod` on golang:1.23 is fine, but a Java 17 app on JDK21, a Python
+ * 3.11-only app on 3.12, or a Node-20-pinned native dep on node:22 all break). Returns
+ * the first capture of the first matching source, or `fallback`. `allow`, when given,
+ * restricts the result to known-good image tags (else `fallback`) — used where a
+ * language's official images only exist for specific (LTS) versions.
+ */
+function pickVersion(
+  files: DockSourceFile[],
+  sources: Array<[path: RegExp, version: RegExp]>,
+  fallback: string,
+  allow?: string[],
+): string {
+  for (const [pathRe, verRe] of sources) {
+    for (const f of files) {
+      if (!pathRe.test(f.path)) continue;
+      const m = verRe.exec(f.content);
+      if (m?.[1]) return allow && !allow.includes(m[1]) ? fallback : m[1];
+    }
+  }
+  return fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Per-language framework planners. Each returns a partial StackPlan.
 // ---------------------------------------------------------------------------
@@ -226,7 +252,11 @@ type Partial = Omit<StackPlan, "stack" | "label" | "dockerignore">;
 
 function planPython(files: DockSourceFile[]): Partial {
   const reqs = depsBlob(files, /(^|\/)(requirements[^/]*\.txt|pyproject\.toml|Pipfile|setup\.py)$/);
-  const pyVersion = "3.12";
+  const pyVersion = pickVersion(files, [
+    [/(^|\/)runtime\.txt$/, /python-(\d+\.\d+)/i],
+    [/(^|\/)\.python-version$/, /(\d+\.\d+)/],
+    [/(^|\/)(pyproject\.toml|setup\.cfg)$/, /requires[-_]python\s*=?\s*["']?[>=~ ]*(\d+\.\d+)/i],
+  ], "3.12");
   const pip = "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || (pip install --no-cache-dir . 2>/dev/null || true)";
   const needsDatabase = /psycopg|asyncpg|dj-database-url|databases\[|sqlalchemy|django|tortoise/.test(reqs);
   // The managed database we wire in is Postgres, but generated requirements often
@@ -319,11 +349,15 @@ CMD ["sh", "-c", "python ${entryPath}"]
 function planRuby(files: DockSourceFile[]): Partial {
   const gems = depsBlob(files, /(^|\/)Gemfile$/);
   const needsDatabase = /\bpg\b|postgres|activerecord|sequel|mysql2/.test(gems);
+  const rb = pickVersion(files, [
+    [/(^|\/)\.ruby-version$/, /(\d+\.\d+)/],
+    [/(^|\/)Gemfile$/, /ruby\s+["'](\d+\.\d+)/],
+  ], "3.3");
 
   // Rails — config/application.rb or the rails gem.
   if (has(files, /(^|\/)config\/application\.rb$/) || /['"]rails['"]/.test(gems)) {
     const dockerfile = `# Rails app
-FROM ruby:3.3-slim
+FROM ruby:${rb}-slim
 ENV RAILS_ENV=production RAILS_LOG_TO_STDOUT=1 RAILS_SERVE_STATIC_FILES=1 BUNDLE_WITHOUT=development:test
 WORKDIR /app
 RUN apt-get update -qq && apt-get install -y --no-install-recommends build-essential libpq-dev nodejs git && rm -rf /var/lib/apt/lists/*
@@ -342,7 +376,7 @@ CMD ["sh", "-c", "bundle exec rails db:prepare 2>/dev/null || true; bundle exec 
   // Sinatra / Rack.
   if (has(files, /(^|\/)config\.ru$/) || /sinatra/.test(gems)) {
     const dockerfile = `# Rack/Sinatra app
-FROM ruby:3.3-slim
+FROM ruby:${rb}-slim
 WORKDIR /app
 RUN apt-get update -qq && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY Gemfile* ./
@@ -356,7 +390,7 @@ CMD ["sh", "-c", "bundle exec rackup -o 0.0.0.0 -p \${PORT:-9292}"]
 
   const entry = find(files, /(^|\/)(app|main|server)\.rb$/) || find(files, /\.rb$/);
   const dockerfile = `# Ruby app
-FROM ruby:3.3-slim
+FROM ruby:${rb}-slim
 WORKDIR /app
 COPY Gemfile* ./
 RUN bundle install || true
@@ -369,11 +403,12 @@ CMD ["sh", "-c", "ruby ${entry?.path || "app.rb"}"]
 function planPhp(files: DockSourceFile[]): Partial {
   const composer = depsBlob(files, /(^|\/)composer\.json$/);
   const needsDatabase = /pdo|postgres|pgsql|mysql|doctrine|eloquent|laravel/.test(composer);
+  const php = pickVersion(files, [[/(^|\/)composer\.json$/, /"php"\s*:\s*"[^"]*?(\d+\.\d+)/]], "8.3");
 
   // Laravel — artisan present.
   if (has(files, /(^|\/)artisan$/) || /laravel\/framework/.test(composer)) {
     const dockerfile = `# Laravel app
-FROM php:8.3-cli
+FROM php:${php}-cli
 RUN apt-get update && apt-get install -y --no-install-recommends git unzip libpq-dev libzip-dev \\
  && docker-php-ext-install pdo pdo_pgsql pdo_mysql zip bcmath \\
  && rm -rf /var/lib/apt/lists/*
@@ -392,7 +427,7 @@ CMD ["sh", "-c", "php artisan migrate --force 2>/dev/null || true; php artisan c
   // Symfony.
   if (/symfony\//.test(composer) || has(files, /(^|\/)bin\/console$/)) {
     const dockerfile = `# Symfony app
-FROM php:8.3-cli
+FROM php:${php}-cli
 RUN apt-get update && apt-get install -y --no-install-recommends git unzip libpq-dev \\
  && docker-php-ext-install pdo pdo_pgsql && rm -rf /var/lib/apt/lists/*
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -407,7 +442,7 @@ CMD ["sh", "-c", "php -S 0.0.0.0:\${PORT:-8000} -t public public/index.php"]
 
   // Plain PHP — Apache serving the tree.
   const dockerfile = `# PHP app
-FROM php:8.3-apache
+FROM php:${php}-apache
 RUN a2enmod rewrite
 # Apache must listen on $PORT (Render/Railway inject it).
 RUN sed -ri 's/^Listen 80$/Listen \${PORT:-80}/' /etc/apache2/ports.conf || true
@@ -447,13 +482,21 @@ CMD ["sh", "-c", "java -jar /app/app.jar"]
   const gradle = depsBlob(files, /(^|\/)build\.gradle(\.kts)?$/);
   const isSpring = /spring-boot/.test(pom + gradle);
   const needsDatabase = /postgresql|mysql|spring-data|jdbc|hibernate/.test(pom + gradle);
+  // Build+run on the JDK the project targets. Clamp to LTS tags that exist across the
+  // gradle/maven/temurin image families (a non-LTS like 22 has no gradle:8-jdk22).
+  const javaVersion = pickVersion(files, [
+    [/(^|\/)pom\.xml$/, /<(?:java\.version|maven\.compiler\.release|maven\.compiler\.target)>\s*(\d+)/],
+    [/(^|\/)build\.gradle(\.kts)?$/, /JavaLanguageVersion\.of\((\d+)\)/],
+    [/(^|\/)build\.gradle(\.kts)?$/, /VERSION_(\d+)/],
+    [/(^|\/)build\.gradle(\.kts)?$/, /(?:source|target)Compatibility\s*=?\s*["']?(\d+)/],
+  ], "21", ["11", "17", "21"]);
 
   const buildStage = isGradle
-    ? `FROM gradle:8-jdk21 AS build
+    ? `FROM gradle:8-jdk${javaVersion} AS build
 WORKDIR /src
 COPY . .
 RUN gradle bootJar -x test --no-daemon 2>/dev/null || gradle build -x test --no-daemon || true`
-    : `FROM maven:3.9-eclipse-temurin-21 AS build
+    : `FROM maven:3.9-eclipse-temurin-${javaVersion} AS build
 WORKDIR /src
 COPY . .
 RUN mvn -q -DskipTests package`;
@@ -471,7 +514,7 @@ ${buildStage}
 RUN jar="$(ls ${jarGlob} 2>/dev/null | grep -E -- '-(all|assembly|fat|shadow)\\.jar$' | head -n1)"; \\
     [ -n "$jar" ] || jar="$(ls ${jarGlob} 2>/dev/null | grep -vE -- '-(plain|sources|javadoc)\\.jar$' | head -n1)"; \\
     cp "$jar" /build-app.jar
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:${javaVersion}-jre
 WORKDIR /app
 COPY --from=build /build-app.jar /app/app.jar
 EXPOSE 8080
@@ -485,8 +528,11 @@ function planGo(files: DockSourceFile[]): Partial {
   const mod = depsBlob(files, /(^|\/)go\.(mod|sum)$/);
   const fw = /gin-gonic/.test(mod) ? "gin" : /labstack\/echo/.test(mod) ? "echo" : /gofiber/.test(mod) ? "fiber" : "go";
   const needsDatabase = /pgx|lib\/pq|gorm|database\/sql|sqlx/.test(mod);
+  // Build with the toolchain the module declares (`go 1.22`); newer modules won't
+  // compile on an older SDK ("go.mod requires go >= 1.x").
+  const goVersion = pickVersion(files, [[/(^|\/)go\.mod$/, /^go\s+(\d+\.\d+)/m]], "1.23");
   const dockerfile = `# Go app
-FROM golang:1.23-alpine AS build
+FROM golang:${goVersion}-alpine AS build
 WORKDIR /src
 COPY go.* ./
 RUN go mod download 2>/dev/null || true
@@ -510,8 +556,10 @@ CMD ["/server"]
 function planRust(files: DockSourceFile[]): Partial {
   const cargo = files.find((f) => /(^|\/)Cargo\.toml$/.test(f.path));
   const needsDatabase = /sqlx|diesel|tokio-postgres|sea-orm/.test(cargo?.content?.toLowerCase() || "");
+  // Honor a pinned toolchain (rust-toolchain.toml); default to the latest stable line.
+  const rustVersion = pickVersion(files, [[/(^|\/)rust-toolchain(\.toml)?$/, /(?:channel\s*=\s*)?["']?(\d+\.\d+)/]], "1");
   const dockerfile = `# Rust app
-FROM rust:1-slim AS build
+FROM rust:${rustVersion}-slim AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release
@@ -592,8 +640,12 @@ function planElixir(files: DockSourceFile[]): Partial {
   const mix = depsBlob(files, /(^|\/)mix\.exs$/);
   const isPhoenix = /phoenix/.test(mix);
   const needsDatabase = /postgrex|ecto/.test(mix);
+  const elixirVersion = pickVersion(files, [
+    [/(^|\/)\.tool-versions$/, /elixir\s+(\d+\.\d+)/],
+    [/(^|\/)mix\.exs$/, /elixir:\s*["']\s*~?>?=?\s*(\d+\.\d+)/],
+  ], "1.17");
   const dockerfile = `# Elixir${isPhoenix ? " (Phoenix)" : ""} app
-FROM elixir:1.17-slim
+FROM elixir:${elixirVersion}-slim
 ENV MIX_ENV=prod
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
@@ -656,9 +708,16 @@ function planNode(files: DockSourceFile[]): Partial {
 
   const role: AppRole = isNext ? "fullstack" : isServer ? "backend" : isFrontendFw ? "frontend" : "backend";
   const start = scripts.start ? "npm start" : isNext ? "npm start" : "node index.js";
+  // Match the Node major to .nvmrc/.node-version/engines.node (a native dep pinned to
+  // an older line can fail to build on a newer default, and vice-versa).
+  const nodeVersion = pickVersion(files, [
+    [/(^|\/)\.nvmrc$/, /v?(\d{2})/],
+    [/(^|\/)\.node-version$/, /v?(\d{2})/],
+    [/(^|\/)package\.json$/, /"node"\s*:\s*"[^"]*?(\d{2})/],
+  ], "22");
 
   const dockerfile = `# Node.js app
-FROM node:22-slim
+FROM node:${nodeVersion}-slim
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
