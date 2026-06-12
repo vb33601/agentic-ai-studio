@@ -100,7 +100,58 @@ function guardArrayIteration(content: string): string {
   return content.replace(ARRAY_ITER, (_full, chain, method) => `(${chain} ?? []).${method}(`);
 }
 
+// A success-path `return [await] <ident>.json()` inside a fetch wrapper (the api
+// client). Anchored to end-of-statement so it doesn't match `…json().catch()` or
+// `…json().then()`.
+const JSON_RETURN = /\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\.json\(\)\s*(?=;|\n|$)/g;
+
+const ENSURE_DATA_HELPER = `function __ensureData(__b) {
+  // A fetch client returns the parsed body, but generated consumers very often
+  // read it axios-style as \`response.data.x\`. Expose the body ALSO as a
+  // non-enumerable \`.data\` (so spreads/JSON.stringify ignore it) when it isn't
+  // already there — making both \`res.x\` and \`res.data.x\` resolve. Skips arrays
+  // and bodies that already carry a \`data\` field.
+  if (__b && typeof __b === "object" && !Array.isArray(__b) && !("data" in __b)) {
+    try { Object.defineProperty(__b, "data", { value: { ...__b }, enumerable: false, configurable: true }); } catch (__e) {}
+  }
+  return __b;
+}
+`;
+
+/**
+ * Reconcile the #1 generated full-stack bug: a fetch-based API client that does
+ * `return response.json()` (returns the raw body), consumed by code that reads it
+ * axios-style — `const { token } = response.data` / `response.data.user`. `.data`
+ * is then always undefined, so login silently stores nothing and the app never
+ * authenticates (or, before the destructure guard, hard-crashed). We make the
+ * client's return value ALSO readable as `.data` via a non-enumerable self-copy,
+ * so BOTH conventions work without touching any consumer. Only fires in files
+ * that look like an api client (contain `fetch(`), and is idempotent.
+ */
+function apiResponseDataCompat(content: string): string {
+  if (!/\bfetch\s*\(/.test(content)) return content;
+  if (content.includes("__ensureData")) return content;
+  if (!JSON_RETURN.test(content)) return content;
+  JSON_RETURN.lastIndex = 0;
+  // `.then(__ensureData)` (not `await`) so it works whether or not the wrapper is
+  // declared `async` — it just returns a promise resolving to the (augmented) body.
+  const out = content.replace(JSON_RETURN, (_m, id: string) => `return ${id}.json().then(__ensureData)`);
+  if (out === content) return content;
+  // Inject the helper just after the file's import block (or at the very top).
+  const importRe = /^\s*import\b[^\n]*$/gm;
+  let end = 0;
+  let m: RegExpExecArray | null;
+  while ((m = importRe.exec(out))) end = m.index + m[0].length;
+  return end > 0 ? `${out.slice(0, end)}\n\n${ENSURE_DATA_HELPER}${out.slice(end)}` : `${ENSURE_DATA_HELPER}\n${out}`;
+}
+
 export const HARDEN_RULES: HardenRule[] = [
+  {
+    id: "api-response-data-compat",
+    description: "Make a fetch API client's parsed body also readable as `.data` so axios-style `response.data.x` consumers work (the silent-login bug).",
+    test: (p) => /\.(jsx?|tsx?|mjs|cjs)$/.test(p),
+    apply: apiResponseDataCompat,
+  },
   {
     id: "safe-destructure",
     description: "Default object/array destructuring of a nullable RHS to {} / [] so a failed API response can't crash the render.",
