@@ -24,7 +24,8 @@ export type Stack =
   | "node" | "python" | "go" | "rust" | "php" | "java" | "dotnet" | "ruby" | "elixir" | "cpp" | "static"
   // JVM family (Kotlin/Scala/Groovy) is handled inside the "java" planner.
   | "deno" | "bun" | "swift" | "dart" | "haskell" | "clojure" | "crystal" | "nim" | "perl" | "r" | "julia" | "ocaml" | "zig"
-  | "erlang" | "gleam" | "lua" | "d" | "vlang";
+  | "erlang" | "gleam" | "lua" | "d" | "vlang"
+  | "raku" | "lisp" | "racket" | "pascal" | "tcl" | "ballerina" | "prolog" | "powershell" | "hack" | "ada" | "haxe";
 
 /** What part of an app a project represents — drives provider routing. */
 export type AppRole = "frontend" | "backend" | "fullstack" | "static";
@@ -105,6 +106,8 @@ const FILE_LABELS: Record<Stack, string> = {
   deno: "Deno", bun: "Bun", swift: "Swift", dart: "Dart", haskell: "Haskell", clojure: "Clojure",
   crystal: "Crystal", nim: "Nim", perl: "Perl", r: "R", julia: "Julia", ocaml: "OCaml", zig: "Zig",
   erlang: "Erlang", gleam: "Gleam", lua: "Lua", d: "D", vlang: "V",
+  raku: "Raku", lisp: "Common Lisp", racket: "Racket", pascal: "Pascal", tcl: "Tcl",
+  ballerina: "Ballerina", prolog: "Prolog", powershell: "PowerShell", hack: "Hack", ada: "Ada", haxe: "Haxe",
 };
 
 export function stackLabel(s: Stack): string {
@@ -156,6 +159,8 @@ export function detectStack(files: DockSourceFile[]): Stack {
   if (has(files, /(^|\/)mix\.exs$/) || has(files, /\.exs?$/)) return "elixir";
   if (has(files, /(^|\/)go\.mod$/) || has(files, /\.go$/)) return "go";
   if (has(files, /(^|\/)Cargo\.toml$/) || has(files, /\.rs$/)) return "rust";
+  // Hack/HHVM before PHP: .hack/.hh sources, an .hhconfig, or PHP-syntax files with a <?hh header.
+  if (has(files, /(^|\/)\.hhconfig$/) || has(files, /\.(hack|hh)$/) || anyContent(files, /\.php$/, /^\s*<\?hh\b/m)) return "hack";
   if (has(files, /(^|\/)composer\.json$/) || has(files, /\.php$/)) return "php";
   // JVM family: Java, Kotlin, Scala, Groovy.
   if (has(files, /(^|\/)pom\.xml$/) || has(files, /(^|\/)build\.(gradle(\.kts)?|sbt)$/) || has(files, /\.(java|kt|kts|scala|groovy)$/)) return "java";
@@ -171,6 +176,10 @@ export function detectStack(files: DockSourceFile[]): Stack {
   if (has(files, /(^|\/)(project\.clj|deps\.edn|build\.boot)$/) || has(files, /\.cljs?$/)) return "clojure";
   if (has(files, /(^|\/)shard\.(yml|yaml)$/) || has(files, /\.cr$/)) return "crystal";
   if (has(files, /\.nimble$/) || has(files, /\.nim$/)) return "nim";
+  // Raku (Perl 6): distinct extensions/manifest — checked before Perl (which owns .pl/.pm).
+  if (has(files, /(^|\/)META6\.json$/) || has(files, /\.(raku|rakumod|rakudoc|p6|pm6|pl6)$/)) return "raku";
+  // Prolog: .pro/.plt, or .pl/.P carrying Prolog directives (guarded so Perl .pl scripts don't match).
+  if (has(files, /\.(pro|plt)$/) || anyContent(files, /\.(pl|P)$/, /:-\s*(module|initialization|use_module|dynamic|discontiguous)\b|(^|\n)\s*:-\s/)) return "prolog";
   if (has(files, /(^|\/)(cpanfile|Makefile\.PL|cpanfile\.snapshot)$/) || has(files, /\.p[lm]$/) || has(files, /\.psgi$/)) return "perl";
   if (has(files, /(^|\/)(dune-project)$/) || has(files, /\.opam$/) || has(files, /\.mli?$/)) return "ocaml";
   if (has(files, /(^|\/)build\.zig$/) || has(files, /\.zig$/)) return "zig";
@@ -184,6 +193,16 @@ export function detectStack(files: DockSourceFile[]): Stack {
   if (has(files, /(^|\/)dub\.(json|sdl)$/) || has(files, /\.d$/)) return "d";
   // V: `.v` is shared with Coq/Verilog, so require v.mod or a V-shaped source signal.
   if (has(files, /(^|\/)v\.mod$/) || anyContent(files, /\.v$/, /\bfn\s+main\b|import\s+veb\b|import\s+vweb\b/)) return "vlang";
+  if (has(files, /(^|\/)Ballerina\.toml$/) || has(files, /\.bal$/)) return "ballerina";
+  if (has(files, /(^|\/)info\.rkt$/) || has(files, /\.rkt$/)) return "racket";
+  // Common Lisp: ASDF system defs / .lisp sources (Clojure's .clj* is matched earlier).
+  if (has(files, /\.asd$/) || has(files, /\.lisp$/) || anyContent(files, /\.cl$/, /\(defpackage|\(defun|\(in-package/)) return "lisp";
+  if (has(files, /(^|\/)alire\.toml$/) || has(files, /\.(gpr|adb|ads)$/)) return "ada";
+  if (has(files, /\.(hx|hxml)$/) || has(files, /(^|\/)haxelib\.json$/)) return "haxe";
+  if (has(files, /\.(ps1|psm1|psd1)$/)) return "powershell";
+  if (has(files, /(^|\/)pkgIndex\.tcl$/) || has(files, /\.tcl$/)) return "tcl";
+  // Free Pascal / Delphi (Object Pascal). `.pp` is also Puppet, but Puppet isn't a deploy stack.
+  if (has(files, /\.(pas|pp|lpr|lpi|dpr|dproj)$/)) return "pascal";
   // Deno: explicit config, or TS that uses the Deno runtime/URL imports (no package.json).
   if (has(files, /(^|\/)deno\.(json|jsonc|lock)$/) ||
       (!has(files, /(^|\/)package\.json$/) && anyContent(files, /\.(ts|tsx|js)$/, /Deno\.|from\s+["']https?:\/\/deno\.land|["']jsr:|["']npm:/))) return "deno";
@@ -1033,6 +1052,213 @@ CMD ["/app"]
     notes: ["V detected; the server must read os.getenv(\"PORT\") and bind 0.0.0.0."] };
 }
 
+function planRaku(files: DockSourceFile[]): Partial {
+  const meta = depsBlob(files, /(^|\/)META6\.json$/);
+  const isCro = /\bcro\b/.test(meta) || anyContent(files, /\.raku(mod)?$/, /use\s+Cro/);
+  const needsDatabase = /db::pg|db-pg|postgres|db::mysql|red\b/.test(meta);
+  const entry = find(files, /(^|\/)(service|server|app|main)\.raku$/) || find(files, /(^|\/)bin\/.*\.raku$/) || find(files, /\.raku$/);
+  const path = entry?.path || "service.raku";
+  const dockerfile = `# Raku app${isCro ? " (Cro)" : ""}
+FROM rakudo-star:latest
+WORKDIR /app
+COPY . .
+# Install declared deps from META6.json (zef ships in rakudo-star).
+RUN zef install --deps-only . 2>/dev/null || true
+EXPOSE 10000
+# Cro reads host/port from %*ENV; bind 0.0.0.0 and honor the platform's PORT.
+CMD ["sh", "-c", "exec raku ${path}"]
+`;
+  return { framework: isCro ? "cro" : "raku", role: "backend", dockerfile, port: 10000, needsDatabase, runsMigrations: false,
+    notes: ["Raku detected; the Cro service must read its port from the env (e.g. %*ENV<PORT>) and bind 0.0.0.0."] };
+}
+
+function planLisp(files: DockSourceFile[]): Partial {
+  const asd = depsBlob(files, /\.asd$/);
+  const isClack = /clack|woo|hunchentoot|caveman|ningle/.test(asd) || anyContent(files, /\.lisp$/, /clack|hunchentoot/i);
+  const needsDatabase = /postmodern|cl-dbi|mito|postgres|cl-postgres/.test(asd);
+  const entry = find(files, /(^|\/)(run|start|server|main|app)\.lisp$/) || find(files, /\.lisp$/);
+  const path = entry?.path || "run.lisp";
+  const dockerfile = `# Common Lisp app${isClack ? " (Clack/Hunchentoot)" : ""}
+FROM clfoundation/sbcl:latest
+ENV QUICKLISP_ADD_TO_INIT_FILE=true
+WORKDIR /app
+COPY . .
+# Quicklisp so the app's systems (Clack/Hunchentoot/Woo…) resolve at load time.
+RUN install-quicklisp 2>/dev/null || true
+EXPOSE 8080
+# The entry script must start the server and read the PORT env (uiop:getenv "PORT"), bind 0.0.0.0.
+CMD ["sh", "-c", "exec sbcl --non-interactive --load ${path}"]
+`;
+  return { framework: isClack ? "clack" : "lisp", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Common Lisp detected; the entry .lisp must start the web server, read (uiop:getenv \"PORT\"), and bind 0.0.0.0."] };
+}
+
+function planRacket(files: DockSourceFile[]): Partial {
+  const isWebServer = anyContent(files, /\.rkt$/, /web-server|serve\/servlet|net\/http/);
+  const needsDatabase = anyContent(files, /\.rkt$/, /\bdb\b|postgresql|require db/);
+  const entry = find(files, /(^|\/)(main|server|app)\.rkt$/) || find(files, /\.rkt$/);
+  const path = entry?.path || "main.rkt";
+  const dockerfile = `# Racket app
+FROM racket/racket:latest
+WORKDIR /app
+COPY . .
+# Pull package deps if the project declares an info.rkt.
+RUN if [ -f info.rkt ]; then raco pkg install --auto --batch --no-docs 2>/dev/null || true; fi
+EXPOSE 8000
+# The servlet must serve with #:listen-ip "0.0.0.0" and #:port (PORT).
+CMD ["sh", "-c", "exec racket ${path}"]
+`;
+  return { framework: isWebServer ? "web-server" : "racket", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
+    notes: [`Racket detected (entry ${path}); serve with #:listen-ip "0.0.0.0" and #:port from the PORT env.`] };
+}
+
+function planPascal(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /\.(pas|pp|lpr|dpr)$/);
+  const isBrook = /brook/i.test(blob);
+  const needsDatabase = /sqldb|pqconnection|postgres|tpqconnection|zeos/i.test(blob);
+  // Prefer a Lazarus/FPC program file (.lpr/.dpr), else a .pas/.pp containing `program`.
+  const entry = find(files, /\.(lpr|dpr)$/) || files.find((f) => /\.(pas|pp)$/.test(f.path) && /\bprogram\b/i.test(f.content)) || find(files, /\.(pas|pp)$/);
+  const path = entry?.path || "project.lpr";
+  const dockerfile = `# Object Pascal app${isBrook ? " (Brook)" : " (fcl-web/fphttpserver)"}
+FROM freepascal/fpc:latest AS build
+WORKDIR /src
+COPY . .
+RUN fpc -O2 -o/app ${path}
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app /app
+EXPOSE 8080
+CMD ["/app"]
+`;
+  return { framework: isBrook ? "brook" : "fcl-web", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Pascal detected; the fphttpserver/Brook app must read the PORT env and bind 0.0.0.0."] };
+}
+
+function planTcl(files: DockSourceFile[]): Partial {
+  const isWapp = has(files, /(^|\/)wapp\.tcl$/) || anyContent(files, /\.tcl$/, /\bwapp[- ]|package require wapp/);
+  const needsDatabase = anyContent(files, /\.tcl$/, /package require (pgtcl|tdbc::postgres|mysqltcl)/i);
+  const entry = find(files, /(^|\/)(app|server|main|web|start)\.tcl$/) || find(files, /\.tcl$/);
+  const path = entry?.path || "app.tcl";
+  const dockerfile = `# Tcl app${isWapp ? " (Wapp)" : " (tcllib httpd)"}
+FROM tcl:latest
+WORKDIR /app
+COPY . .
+EXPOSE 8080
+# The server must read the PORT env (e.g. $env(PORT)) and bind 0.0.0.0.
+CMD ["sh", "-c", "exec tclsh ${path}"]
+`;
+  return { framework: isWapp ? "wapp" : "tcl", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Tcl detected; the server must read the PORT env and bind 0.0.0.0."] };
+}
+
+function planBallerina(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)(Ballerina|Dependencies)\.toml$/);
+  const needsDatabase = /postgresql|mysql|jdbc|ballerinax\/(postgresql|mysql)/i.test(blob) || anyContent(files, /\.bal$/, /ballerinax\/(postgresql|mysql|java\.jdbc)/);
+  const dockerfile = `# Ballerina app
+FROM ballerina/ballerina:latest
+WORKDIR /home/ballerina
+COPY --chown=ballerina:ballerina . .
+RUN bal build
+EXPOSE 9090
+# The http:Listener port comes from the service (default 9090) / Config.toml; expose $PORT there.
+CMD ["sh", "-c", "exec bal run"]
+`;
+  return { framework: "ballerina", role: "backend", dockerfile, port: 9090, needsDatabase, runsMigrations: false,
+    notes: ["Ballerina detected; set the http:Listener port to the platform's PORT (via Config.toml or a configurable) and bind 0.0.0.0."] };
+}
+
+function planProlog(files: DockSourceFile[]): Partial {
+  const needsDatabase = anyContent(files, /\.(pl|pro|P)$/, /odbc|postgres|prosqlite|library\(persistency\)/i);
+  const entry = find(files, /(^|\/)(server|app|main|run|http)\.(pl|pro|P)$/) || find(files, /\.(pl|pro|P)$/);
+  const path = entry?.path || "server.pl";
+  const dockerfile = `# SWI-Prolog app
+FROM swipl:latest
+WORKDIR /app
+COPY . .
+EXPOSE 8080
+# The app must start http_server and bind the PORT env, e.g.
+#   :- initialization(main). main :- getenv('PORT',P), ... http_server(http_dispatch,[port(P)]).
+CMD ["sh", "-c", "exec swipl ${path}"]
+`;
+  return { framework: "swi-prolog", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Prolog detected; start http_server on the PORT env (getenv('PORT',P)) and keep the process alive (e.g. :- initialization(main))."] };
+}
+
+function planPowershell(files: DockSourceFile[]): Partial {
+  const isPode = anyContent(files, /\.ps1$/, /Start-PodeServer|Add-PodeEndpoint|Import-Module Pode/i);
+  const needsDatabase = anyContent(files, /\.ps1$/, /Npgsql|SimplySql|Invoke-SqlCmd|System\.Data/i);
+  const entry = find(files, /(^|\/)(server|app|start|main)\.ps1$/) || find(files, /\.ps1$/);
+  const path = entry?.path || "server.ps1";
+  const dockerfile = `# PowerShell app${isPode ? " (Pode)" : ""}
+FROM mcr.microsoft.com/powershell:latest
+RUN pwsh -c "Install-Module Pode -Force -Scope AllUsers"
+WORKDIR /app
+COPY . .
+EXPOSE 8080
+# Pode: Add-PodeEndpoint -Address 0.0.0.0 -Port ($env:PORT ?? 8080) -Protocol Http
+CMD ["pwsh", "-c", "./${path}"]
+`;
+  return { framework: isPode ? "pode" : "powershell", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["PowerShell detected; the Pode endpoint must bind 0.0.0.0 and the PORT env ($env:PORT)."] };
+}
+
+function planHack(files: DockSourceFile[]): Partial {
+  const hasPublic = has(files, /(^|\/)public\/index\.php$/) || has(files, /(^|\/)public\/index\.hack$/);
+  const root = hasPublic ? "/var/www/public" : "/var/www";
+  const needsDatabase = anyContent(files, /\.(hack|hh|php)$/, /AsyncMysql|postgres|\bPDO\b/i);
+  const dockerfile = `# Hack / HHVM app (Proxygen)
+FROM hhvm/hhvm:latest
+WORKDIR /var/www
+COPY . /var/www
+EXPOSE 8080
+# HHVM's built-in Proxygen server, bound to the platform PORT.
+CMD ["sh", "-c", "exec hhvm -m server -d hhvm.server.type=proxygen -d hhvm.server.ip=0.0.0.0 -d hhvm.server.port=\${PORT:-8080} -d hhvm.server.source_root=${root} -d hhvm.server.default_document=index.php"]
+`;
+  return { framework: "hhvm", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: [`Hack detected; HHVM Proxygen serves ${root} on $PORT. Put web-facing files (index.php + assets) under that root.`] };
+}
+
+function planAda(files: DockSourceFile[]): Partial {
+  const isAws = anyContent(files, /\.(adb|ads)$/, /\bAWS\.|with AWS/i) || /\baws\b/.test(depsBlob(files, /(^|\/)alire\.toml$/));
+  const needsDatabase = /gnatcoll_postgres|postgres|gnade/i.test(depsBlob(files, /(^|\/)alire\.toml$/));
+  const gpr = find(files, /\.gpr$/);
+  const entry = find(files, /(^|\/)(main|server|app)\.adb$/) || find(files, /\.adb$/);
+  const buildCmd = gpr ? `gprbuild -p -P "${gpr.path}"` : `gnatmake ${entry?.path || "main.adb"}`;
+  const dockerfile = `# Ada app${isAws ? " (AWS — Ada Web Server)" : ""}
+FROM debian:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends gnat gprbuild libaws-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY . .
+RUN ${buildCmd}
+EXPOSE 8080
+# Run the built executable; the AWS server must read $PORT and listen on 0.0.0.0.
+CMD ["sh", "-c", "exec \\"$(find . -maxdepth 3 -type f -executable ! -name '*.*' | head -n1)\\""]
+`;
+  return { framework: isAws ? "aws" : "ada", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Ada detected; the AWS server must read the PORT env and bind 0.0.0.0 (AWS.Server.Start with the configured port)."] };
+}
+
+function planHaxe(files: DockSourceFile[]): Partial {
+  const hxml = depsBlob(files, /\.hxml$/);
+  const isHashlink = /-hl\b/.test(hxml);
+  const needsDatabase = anyContent(files, /\.hx$/, /sys\.db|postgres|Mysql/i);
+  // Compile to Neko (bundled in the haxe image) unless the project's hxml drives the build.
+  const buildCmd = has(files, /\.hxml$/)
+    ? `haxe $(ls *.hxml | head -n1)`
+    : `haxe -cp src -main Main -neko /app/app.n`;
+  const dockerfile = `# Haxe app${isHashlink ? " (HashLink)" : " (Neko target)"}
+FROM haxe:latest
+WORKDIR /app
+COPY . .
+RUN ${buildCmd}
+EXPOSE 8080
+# Run the compiled output (Neko bytecode); the server must read the PORT env and bind 0.0.0.0.
+CMD ["sh", "-c", "N=$(ls *.n 2>/dev/null | head -n1); exec neko \\"\${N:-app.n}\\""]
+`;
+  return { framework: isHashlink ? "hashlink" : "haxe", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Haxe detected; build targets Neko (bundled). The server must read the PORT env and bind 0.0.0.0; for a Node target, switch the base image + run command."] };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1044,6 +1270,9 @@ const PLANNERS: Record<Stack, (f: DockSourceFile[]) => Partial> = {
   clojure: planClojure, crystal: planCrystal, nim: planNim, perl: planPerl, r: planR,
   julia: planJulia, ocaml: planOcaml, zig: planZig,
   erlang: planErlang, gleam: planGleam, lua: planLua, d: planD, vlang: planVlang,
+  raku: planRaku, lisp: planLisp, racket: planRacket, pascal: planPascal, tcl: planTcl,
+  ballerina: planBallerina, prolog: planProlog, powershell: planPowershell, hack: planHack,
+  ada: planAda, haxe: planHaxe,
 };
 
 /** Detect language + framework and produce a full, $PORT-bound build plan. */
