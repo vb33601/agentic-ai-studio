@@ -131,6 +131,13 @@ function planPython(files: DockSourceFile[]): Partial {
   const pyVersion = "3.12";
   const pip = "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || (pip install --no-cache-dir . 2>/dev/null || true)";
   const needsDatabase = /psycopg|asyncpg|dj-database-url|databases\[|sqlalchemy|django|tortoise/.test(reqs);
+  // The managed database we wire in is Postgres, but generated requirements often
+  // omit the driver — so a Postgres DATABASE_URL crashes the app at boot (e.g.
+  // SQLAlchemy's psycopg2 dialect → ModuleNotFoundError). Install psycopg2-binary
+  // when a DB is used and no Postgres driver is already declared. (asyncpg apps
+  // declare their own driver, so we skip those.)
+  const pgDriver = needsDatabase && !/psycopg|asyncpg|pg8000/.test(reqs)
+    ? "\nRUN pip install --no-cache-dir psycopg2-binary" : "";
 
   // Django — the project package is the dir containing wsgi.py / settings.py.
   if (has(files, /(^|\/)manage\.py$/) || /django/.test(reqs)) {
@@ -141,7 +148,7 @@ FROM python:${pyVersion}-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY requirements*.txt ./
-${pip}
+${pip}${pgDriver}
 RUN pip install --no-cache-dir gunicorn whitenoise
 COPY . .
 # collectstatic needs no DB; migrate runs at start once DATABASE_URL is reachable.
@@ -162,7 +169,7 @@ FROM python:${pyVersion}-slim
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements*.txt ./
-${pip}
+${pip}${pgDriver}
 RUN pip install --no-cache-dir "uvicorn[standard]" gunicorn
 COPY . .
 EXPOSE 8000
@@ -182,7 +189,7 @@ FROM python:${pyVersion}-slim
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements*.txt ./
-${pip}
+${pip}${pgDriver}
 RUN pip install --no-cache-dir gunicorn
 COPY . .
 EXPOSE 8000
@@ -200,7 +207,7 @@ FROM python:${pyVersion}-slim
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements*.txt ./
-${pip}
+${pip}${pgDriver}
 COPY . .
 EXPOSE 8000
 CMD ["sh", "-c", "python ${entryPath}"]

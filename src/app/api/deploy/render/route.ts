@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type RenderEnvVar } from "@/lib/deploy/render";
-import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
+import { prepareBackendForRender, appDatabaseUrl, containerDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareForContainer } from "@/lib/deploy/universal-prepare";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { deployContainer } from "@/lib/deploy/providers/container-deploy";
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
     const prep = prepareForContainer(repoFiles);
     const envVars: RenderEnvVar[] = [];
     const dbWired = prep.needsDatabase && !!dbUrl;
-    if (dbWired) envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl!, projectName) });
+    if (dbWired) envVars.push({ key: "DATABASE_URL", value: containerDatabaseUrl(dbUrl!) });
 
     // Django rejects requests whose Host isn't in ALLOWED_HOSTS (→ 400 DisallowedHost),
     // which is host-specific and a common reason an app that runs on Render fails on

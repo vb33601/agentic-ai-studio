@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type RenderEnvVar } from "@/lib/deploy/render";
-import { prepareBackendForRender, appDatabaseUrl } from "@/lib/deploy/render-prepare";
+import { prepareBackendForRender, appDatabaseUrl, containerDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareForContainer, findBackendRoot } from "@/lib/deploy/universal-prepare";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
             { key: "CORS_ORIGIN", value: predictedFrontendUrl },
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
-          if (container.prep.needsDatabase && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
+          if (container.prep.needsDatabase && dbUrl) { envVars.push({ key: "DATABASE_URL", value: containerDatabaseUrl(dbUrl) }); dbWired = true; }
           // Django: allow the deploy domain (else 400 DisallowedHost). Harmless otherwise.
           if (container.prep.plan.framework === "django") {
             envVars.push(

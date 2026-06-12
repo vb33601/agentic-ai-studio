@@ -155,6 +155,21 @@ export function appDatabaseUrl(baseUrl: string, appName: string): string {
 }
 
 /**
+ * DATABASE_URL for a NON-Prisma container app (Flask/Django/FastAPI, Rails, …)
+ * that reads the URL directly. Unlike the Prisma path we must NOT append the
+ * Prisma-only `schema=` param (libpq/psycopg2/ActiveRecord reject it — it crashes
+ * the app at boot), and we normalize the scheme to `postgresql://` because
+ * SQLAlchemy 2.x rejects the bare `postgres://` Aiven hands out. These apps use
+ * the shared database's default `public` schema.
+ */
+export function containerDatabaseUrl(baseUrl: string): string {
+  let url = baseUrl.replace(/^postgres:\/\//, "postgresql://");
+  // Defensively drop a Prisma-style schema param if the base ever carries one.
+  url = url.replace(/([?&])schema=[^&]*/g, "$1").replace(/[?&]$/, "").replace(/\?&/, "?").replace(/&&/g, "&");
+  return url;
+}
+
+/**
  * Make the backend honor the frontend's (dynamic) origin for cross-origin calls.
  * The browser on the Vercel domain calls the Render backend directly whenever the
  * frontend uses an absolute API URL (VITE_API_URL/etc.), so the server must send
