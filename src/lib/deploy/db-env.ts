@@ -14,9 +14,36 @@
  * adapter here. Verified shapes per the official docs (Npgsql, Spring Boot).
  */
 
+import { prisma } from "@/lib/prisma";
+
 export interface DbEnvVar {
   key: string;
   value: string;
+}
+
+/**
+ * A safe Postgres schema identifier derived from an app name. Container backends
+ * share ONE managed database, so without isolation every app's tables land in
+ * `public` and collide (App A's `users` overwrites App B's). Each app gets its
+ * own schema named from its unique deploy name. Sanitized to [a-z0-9_], starts
+ * with a letter, ≤63 chars (Postgres identifier limit).
+ */
+export function appSchemaName(appName: string): string {
+  const s = appName.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "app";
+  return (/^[a-z]/.test(s) ? s : `a_${s}`).slice(0, 63);
+}
+
+/** Create the app's schema if absent (best-effort; the URL still works if it fails
+ *  because the app's ORM CREATEs tables and `public` is a fallback). Sanitized
+ *  identifier, so the interpolation is injection-safe. */
+export async function ensureAppSchema(schema: string): Promise<boolean> {
+  if (!/^[a-z][a-z0-9_]*$/.test(schema)) return false;
+  try {
+    await prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface ParsedPg {
@@ -79,11 +106,12 @@ export function npgsqlConnectionString(postgresUrl: string): string {
 }
 
 /** Spring Boot reads SPRING_DATASOURCE_* with a JDBC URL (no userinfo inline). */
-function springDatasource(postgresUrl: string): DbEnvVar[] {
+function springDatasource(postgresUrl: string, schema?: string): DbEnvVar[] {
   const p = parsePostgresUrl(postgresUrl);
   if (!p) return [];
+  const url = `jdbc:postgresql://${p.host}:${p.port}/${p.database}` + (schema ? `?currentSchema=${schema}` : "");
   return [
-    { key: "SPRING_DATASOURCE_URL", value: `jdbc:postgresql://${p.host}:${p.port}/${p.database}` },
+    { key: "SPRING_DATASOURCE_URL", value: url },
     { key: "SPRING_DATASOURCE_USERNAME", value: p.user },
     { key: "SPRING_DATASOURCE_PASSWORD", value: p.password },
   ];
@@ -91,12 +119,15 @@ function springDatasource(postgresUrl: string): DbEnvVar[] {
 
 /**
  * Extra DB env vars for a detected backend framework. `DATABASE_URL` is always
- * set by the caller; this adds the framework-specific keys/shapes on top.
+ * set by the caller; this adds the framework-specific keys/shapes on top — and,
+ * when `schema` is given, pins the connection to that schema (so the app is
+ * isolated from others sharing the database).
  */
-export function databaseEnvForFramework(framework: string, postgresUrl: string): DbEnvVar[] {
+export function databaseEnvForFramework(framework: string, postgresUrl: string, schema?: string): DbEnvVar[] {
   switch (framework) {
     case "aspnet": {
-      const cs = npgsqlConnectionString(postgresUrl);
+      let cs = npgsqlConnectionString(postgresUrl);
+      if (cs && schema) cs += `Search Path=${schema};`; // Npgsql honors "Search Path"
       // DefaultConnection is the .NET convention; also expose a couple of common
       // aliases so the generated app finds it regardless of the name it picked.
       return cs
@@ -108,8 +139,8 @@ export function databaseEnvForFramework(framework: string, postgresUrl: string):
         : [];
     }
     case "spring":
-      return springDatasource(postgresUrl);
+      return springDatasource(postgresUrl, schema);
     default:
-      return []; // Node/Python/Go/Rails/PHP read DATABASE_URL directly.
+      return []; // Node/Python/Go/Rails/PHP read DATABASE_URL (with search_path) directly.
   }
 }

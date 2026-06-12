@@ -160,13 +160,22 @@ export function appDatabaseUrl(baseUrl: string, appName: string): string {
  * that reads the URL directly. Unlike the Prisma path we must NOT append the
  * Prisma-only `schema=` param (libpq/psycopg2/ActiveRecord reject it — it crashes
  * the app at boot), and we normalize the scheme to `postgresql://` because
- * SQLAlchemy 2.x rejects the bare `postgres://` Aiven hands out. These apps use
- * the shared database's default `public` schema.
+ * SQLAlchemy 2.x rejects the bare `postgres://` Aiven hands out.
+ *
+ * When `schema` is given, the app is ISOLATED to its own schema via the libpq
+ * `options=-c search_path=<schema>,public` connection param (honored by
+ * psycopg2 / libpq / lib-pq-based drivers — Python, Ruby, PHP, Go). Without it,
+ * every container app shares `public` and their tables collide. (Npgsql/JDBC use
+ * their own schema params via `databaseEnvForFramework`, not the URL.)
  */
-export function containerDatabaseUrl(baseUrl: string): string {
+export function containerDatabaseUrl(baseUrl: string, schema?: string): string {
   let url = baseUrl.replace(/^postgres:\/\//, "postgresql://");
   // Defensively drop a Prisma-style schema param if the base ever carries one.
   url = url.replace(/([?&])schema=[^&]*/g, "$1").replace(/[?&]$/, "").replace(/\?&/, "?").replace(/&&/g, "&");
+  if (schema && /^[a-z][a-z0-9_]*$/.test(schema)) {
+    const sep = url.includes("?") ? "&" : "?";
+    url += `${sep}options=${encodeURIComponent(`-c search_path=${schema},public`)}`;
+  }
   return url;
 }
 

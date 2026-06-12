@@ -10,7 +10,7 @@ import { deployContainer } from "@/lib/deploy/providers/container-deploy";
 import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
 import { serverToken } from "@/lib/deploy/env";
-import { databaseEnvForFramework } from "@/lib/deploy/db-env";
+import { databaseEnvForFramework, appSchemaName, ensureAppSchema } from "@/lib/deploy/db-env";
 import { preflightForFramework, seedRulesFor, applyStoredFixes, promoteFixes, techTagsFor, type PreflightRule } from "@/lib/deploy/preflight";
 import { distillAndStore } from "@/lib/deploy/distill";
 import type { WorkspaceFile } from "@/store/workspace";
@@ -88,11 +88,15 @@ export async function POST(req: NextRequest) {
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
           if (container.prep.needsDatabase && dbUrl) {
-            const pgUrl = containerDatabaseUrl(dbUrl);
-            envVars.push({ key: "DATABASE_URL", value: pgUrl });
+            // Isolate this app in its OWN schema so container apps sharing the
+            // managed DB can't collide (App A's `users` ≠ App B's `users`).
+            const schema = appSchemaName(backendName);
+            await ensureAppSchema(schema);
+            const cleanUrl = containerDatabaseUrl(dbUrl); // for parsing (Npgsql/JDBC)
+            envVars.push({ key: "DATABASE_URL", value: containerDatabaseUrl(dbUrl, schema) });
             // Translate into the framework's expected key/shape (.NET/Npgsql, Spring,
-            // …) so a stack that can't read a postgres:// URL still connects.
-            envVars.push(...databaseEnvForFramework(container.prep.plan.framework, pgUrl));
+            // …), schema-pinned, so a stack that can't read a postgres:// URL still connects.
+            envVars.push(...databaseEnvForFramework(container.prep.plan.framework, cleanUrl, schema));
             dbWired = true;
           }
           // Django: allow the deploy domain (else 400 DisallowedHost). Harmless otherwise.
