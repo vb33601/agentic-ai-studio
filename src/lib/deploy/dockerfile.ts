@@ -565,7 +565,7 @@ CMD ["sh", "-c", "${isPhoenix ? "mix ecto.migrate 2>/dev/null || true; PORT=\\${
   return { framework: isPhoenix ? "phoenix" : "elixir", role: "backend", dockerfile, port: 4000, needsDatabase, runsMigrations: isPhoenix, notes: [isPhoenix ? "Phoenix detected; PORT honored." : "Elixir detected."] };
 }
 
-function planCpp(files: DockSourceFile[]): Partial {
+function planCpp(): Partial {
   const dockerfile = `# C/C++ app
 FROM gcc:14 AS build
 WORKDIR /src
@@ -1265,7 +1265,7 @@ CMD ["sh", "-c", "N=$(ls *.n 2>/dev/null | head -n1); exec neko \\"\${N:-app.n}\
 
 const PLANNERS: Record<Stack, (f: DockSourceFile[]) => Partial> = {
   python: planPython, ruby: planRuby, php: planPhp, java: planJava, go: planGo,
-  rust: planRust, dotnet: planDotnet, elixir: planElixir, cpp: planCpp, node: planNode, static: () => planStatic(),
+  rust: planRust, dotnet: planDotnet, elixir: planElixir, cpp: () => planCpp(), node: planNode, static: () => planStatic(),
   deno: planDeno, bun: planBun, swift: planSwift, dart: planDart, haskell: planHaskell,
   clojure: planClojure, crystal: planCrystal, nim: planNim, perl: planPerl, r: planR,
   julia: planJulia, ocaml: planOcaml, zig: planZig,
