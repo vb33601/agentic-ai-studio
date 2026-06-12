@@ -21,7 +21,9 @@
  */
 
 export type Stack =
-  | "node" | "python" | "go" | "rust" | "php" | "java" | "dotnet" | "ruby" | "elixir" | "cpp" | "static";
+  | "node" | "python" | "go" | "rust" | "php" | "java" | "dotnet" | "ruby" | "elixir" | "cpp" | "static"
+  // JVM family (Kotlin/Scala/Groovy) is handled inside the "java" planner.
+  | "deno" | "bun" | "swift" | "dart" | "haskell" | "clojure" | "crystal" | "nim" | "perl" | "r" | "julia" | "ocaml" | "zig";
 
 /** What part of an app a project represents — drives provider routing. */
 export type AppRole = "frontend" | "backend" | "fullstack" | "static";
@@ -99,6 +101,8 @@ except Exception:
 const FILE_LABELS: Record<Stack, string> = {
   node: "Node.js", python: "Python", go: "Go", rust: "Rust", php: "PHP",
   java: "Java", dotnet: ".NET", ruby: "Ruby", elixir: "Elixir", cpp: "C/C++", static: "Static site",
+  deno: "Deno", bun: "Bun", swift: "Swift", dart: "Dart", haskell: "Haskell", clojure: "Clojure",
+  crystal: "Crystal", nim: "Nim", perl: "Perl", r: "R", julia: "Julia", ocaml: "OCaml", zig: "Zig",
 };
 
 export function stackLabel(s: Stack): string {
@@ -156,6 +160,26 @@ export function detectStack(files: DockSourceFile[]): Stack {
   if (has(files, /(^|\/)Gemfile$/) || has(files, /\.rb$/)) return "ruby";
   if (has(files, /(^|\/)requirements\.txt$/) || has(files, /(^|\/)pyproject\.toml$/) || has(files, /(^|\/)Pipfile$/) || has(files, /(^|\/)manage\.py$/) || has(files, /\.py$/)) return "python";
   if (has(files, /(^|\/)CMakeLists\.txt$/) || has(files, /\.(c|cc|cpp|cxx)$/)) return "cpp";
+
+  // --- Additional languages (config-file signals first; checked before the
+  // generic package.json→node fallback so Deno/Bun aren't mis-detected as Node). ---
+  if (has(files, /(^|\/)Package\.swift$/) || has(files, /\.swift$/)) return "swift";
+  if (has(files, /(^|\/)pubspec\.(yaml|yml)$/) && (has(files, /(^|\/)bin\/.*\.dart$/) || has(files, /(^|\/)routes\//) || /dart_frog|shelf/.test(depsBlob(files, /(^|\/)pubspec\.(yaml|yml)$/)))) return "dart";
+  if (has(files, /(\.cabal|(^|\/)(stack\.yaml|package\.yaml))$/) || has(files, /\.hs$/)) return "haskell";
+  if (has(files, /(^|\/)(project\.clj|deps\.edn|build\.boot)$/) || has(files, /\.cljs?$/)) return "clojure";
+  if (has(files, /(^|\/)shard\.(yml|yaml)$/) || has(files, /\.cr$/)) return "crystal";
+  if (has(files, /\.nimble$/) || has(files, /\.nim$/)) return "nim";
+  if (has(files, /(^|\/)(cpanfile|Makefile\.PL|cpanfile\.snapshot)$/) || has(files, /\.p[lm]$/) || has(files, /\.psgi$/)) return "perl";
+  if (has(files, /(^|\/)(dune-project)$/) || has(files, /\.opam$/) || has(files, /\.mli?$/)) return "ocaml";
+  if (has(files, /(^|\/)build\.zig$/) || has(files, /\.zig$/)) return "zig";
+  if (has(files, /(^|\/)Project\.toml$/) || has(files, /\.jl$/)) return "julia";
+  if (has(files, /(^|\/)(plumber\.R|DESCRIPTION|renv\.lock)$/i) || has(files, /\.[rR]$/)) return "r";
+  // Deno: explicit config, or TS that uses the Deno runtime/URL imports (no package.json).
+  if (has(files, /(^|\/)deno\.(json|jsonc|lock)$/) ||
+      (!has(files, /(^|\/)package\.json$/) && anyContent(files, /\.(ts|tsx|js)$/, /Deno\.|from\s+["']https?:\/\/deno\.land|["']jsr:|["']npm:/))) return "deno";
+  // Bun: its lockfile/config sits next to a package.json — check before "node".
+  if (has(files, /(^|\/)(bun\.lockb?|bunfig\.toml)$/)) return "bun";
+
   if (has(files, /(^|\/)package\.json$/)) return "node";
   return "static";
 }
@@ -367,6 +391,28 @@ CMD ["sh", "-c", "sed -ri \\"s/Listen 80/Listen \${PORT:-80}/\\" /etc/apache2/po
 }
 
 function planJava(files: DockSourceFile[]): Partial {
+  // Scala via sbt: different build tool (sbt, not gradle/maven) and a fat jar.
+  if (has(files, /(^|\/)build\.sbt$/)) {
+    const sbtBlob = depsBlob(files, /(^|\/)(build\.sbt|project\/.+\.(sbt|scala|properties))$/);
+    const needsDatabase = /postgres|slick|doobie|quill|jdbc|skunk/.test(sbtBlob);
+    const dockerfile = `# Scala (sbt) app
+FROM sbtscala/scala-sbt:eclipse-temurin-21.0.2_13_1.10.1_3.5.0 AS build
+WORKDIR /src
+COPY . .
+# Prefer a fat jar (sbt-assembly); fall back to a packaged jar if assembly isn't set up.
+RUN sbt -batch assembly 2>/dev/null || sbt -batch package
+RUN cp "$(find target -name '*assembly*.jar' | head -n1)" /app.jar 2>/dev/null \\
+ || cp "$(find target -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -n1)" /app.jar
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app.jar /app/app.jar
+EXPOSE 8080
+CMD ["sh", "-c", "java -jar /app/app.jar"]
+`;
+    return { framework: "scala", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+      notes: ["Scala/sbt detected; a fat jar (sbt-assembly) is preferred so deps are on the classpath. The app must read $PORT."] };
+  }
+
   const isGradle = has(files, /(^|\/)build\.gradle(\.kts)?$/);
   const pom = depsBlob(files, /(^|\/)pom\.xml$/);
   const gradle = depsBlob(files, /(^|\/)build\.gradle(\.kts)?$/);
@@ -389,9 +435,14 @@ RUN mvn -q -DskipTests package`;
   const startArg = isSpring ? " --server.port=${PORT:-8080}" : "";
   const dockerfile = `# Java${isSpring ? " (Spring Boot)" : ""} app
 ${buildStage}
+# Select the runnable jar. Prefer a fat/shadow jar (Kotlin/Ktor -all.jar, assembly);
+# else the first jar that isn't Gradle's non-runnable <name>-plain.jar or sources/javadoc.
+RUN jar="$(ls ${jarGlob} 2>/dev/null | grep -E -- '-(all|assembly|fat|shadow)\\.jar$' | head -n1)"; \\
+    [ -n "$jar" ] || jar="$(ls ${jarGlob} 2>/dev/null | grep -vE -- '-(plain|sources|javadoc)\\.jar$' | head -n1)"; \\
+    cp "$jar" /build-app.jar
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-COPY --from=build /src/${jarGlob} /app/app.jar
+COPY --from=build /build-app.jar /app/app.jar
 EXPOSE 8080
 CMD ["sh", "-c", "java -jar /app/app.jar${startArg}"]
 `;
@@ -409,7 +460,12 @@ WORKDIR /src
 COPY go.* ./
 RUN go mod download 2>/dev/null || true
 COPY . .
-RUN CGO_ENABLED=0 go build -o /app/server ./... 2>/dev/null || CGO_ENABLED=0 go build -o /app/server .
+# Build the main package wherever it lives: root first (the common case), then the
+# first main package go-list finds (handles cmd/<app> layouts), then a last-resort
+# whole-module build.
+RUN CGO_ENABLED=0 go build -o /app/server . 2>/dev/null \\
+ || CGO_ENABLED=0 go build -o /app/server "$(go list -f '{{if eq .Name "main"}}{{.Dir}}{{end}}' ./... 2>/dev/null | head -n1)" 2>/dev/null \\
+ || CGO_ENABLED=0 go build -o /app/server ./...
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 COPY --from=build /app/server /server
@@ -422,19 +478,20 @@ CMD ["/server"]
 
 function planRust(files: DockSourceFile[]): Partial {
   const cargo = files.find((f) => /(^|\/)Cargo\.toml$/.test(f.path));
-  const name = cargo && /name\s*=\s*"([^"]+)"/.exec(cargo.content)?.[1];
   const needsDatabase = /sqlx|diesel|tokio-postgres|sea-orm/.test(cargo?.content?.toLowerCase() || "");
-  const runBin = name ? `/usr/local/bin/${name}` : "sh -c 'exec $(ls /usr/local/bin/* | head -n1)'";
   const dockerfile = `# Rust app
 FROM rust:1-slim AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release
+# Pick the compiled binary by inspecting the build output rather than guessing its
+# name from Cargo.toml (handles renamed bins, [[bin]] targets, and workspaces).
+RUN cp "$(find target/release -maxdepth 1 -type f -executable ! -name '*.d' | head -n1)" /build-bin
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/${name || ""} /usr/local/bin/${name || "app"}
+COPY --from=build /build-bin /usr/local/bin/app
 EXPOSE 8080
-CMD ["${name ? runBin : "/usr/local/bin/app"}"]
+CMD ["/usr/local/bin/app"]
 `;
   return { framework: "rust", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
     notes: ["Rust release binary built. Ensure the app reads $PORT."] };
@@ -454,7 +511,9 @@ COPY --from=build /app .
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 # ASP.NET reads ASPNETCORE_URLS; rebind to $PORT when the host injects one.
-CMD ["sh", "-c", "export ASPNETCORE_URLS=http://+:\${PORT:-8080}; dotnet $(ls *.dll | head -n1)"]
+# The entry assembly is the one with a <name>.runtimeconfig.json (publish also emits
+# many dependency DLLs, so picking the first *.dll alphabetically runs the wrong one).
+CMD ["sh", "-c", "export ASPNETCORE_URLS=http://+:\${PORT:-8080}; dll=$(ls *.runtimeconfig.json | head -n1); exec dotnet \\"\${dll%.runtimeconfig.json}.dll\\""]
 `;
   return { framework: "aspnet", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false, notes: [".NET detected; bound to $PORT via ASPNETCORE_URLS."] };
 }
@@ -481,10 +540,20 @@ function planCpp(files: DockSourceFile[]): Partial {
   const dockerfile = `# C/C++ app
 FROM gcc:14 AS build
 WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN (test -f CMakeLists.txt && cmake -B build && cmake --build build && cp $(find build -maxdepth 2 -type f -executable | head -n1) /app) \\
- || g++ -O2 -o /app *.cpp *.cc 2>/dev/null || gcc -O2 -o /app *.c
+# Prefer CMake; else compile the sources found via find (a bare *.cc/*.c glob would
+# be passed literally to the compiler when nothing matches and break the build).
+RUN if [ -f CMakeLists.txt ]; then \\
+      cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && \\
+      cp "$(find build -maxdepth 3 -type f -executable ! -path '*/CMakeFiles/*' | head -n1)" /app; \\
+    else \\
+      src="$(find . -type f \\( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \\))"; \\
+      if [ -n "$src" ]; then g++ -O2 -o /app $src; \\
+      else gcc -O2 -o /app $(find . -type f -name '*.c'); fi; \\
+    fi
 FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app /app
 CMD ["/app"]
 `;
@@ -548,12 +617,304 @@ EXPOSE 80
 }
 
 // ---------------------------------------------------------------------------
+// Additional languages — researched canonical container setups. Each binds the
+// host's $PORT (defaulting for local runs) and runs the framework's server.
+// ---------------------------------------------------------------------------
+
+function planDeno(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)(deno\.jsonc?|import_map\.json)$/) + depsBlob(files, /\.ts$/);
+  const needsDatabase = /postgres|deno-postgres|npm:pg|npm:postgres|neon|mysql|mongo/.test(blob);
+  const entry = find(files, /(^|\/)(main|server|app|mod|index)\.(ts|tsx|js|mjs)$/) || find(files, /\.ts$/);
+  const path = entry?.path || "main.ts";
+  const dockerfile = `# Deno app
+FROM denoland/deno:alpine
+WORKDIR /app
+COPY . .
+RUN deno cache ${path} 2>/dev/null || true
+EXPOSE 8000
+# denoland/deno's ENTRYPOINT is \`deno\`, so CMD carries the subcommand. -A grants all
+# perms (generated apps rarely ship a tight perm set); the app reads $PORT.
+CMD ["run", "-A", "${path}"]
+`;
+  return { framework: "deno", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
+    notes: [`Deno detected (entry ${path}). The server must read Deno.env.get("PORT") (Deno.serve defaults to 8000).`] };
+}
+
+function planBun(files: DockSourceFile[]): Partial {
+  const { deps, scripts } = readPkg(files);
+  const needsDatabase = ["pg", "postgres", "mysql2", "@prisma/client", "drizzle-orm", "mongoose"].some((n) => n in deps);
+  const entry = find(files, /(^|\/)(index|server|app|main)\.(ts|tsx|js)$/);
+  const cmd = scripts.start ? `["bun", "run", "start"]` : `["bun", "${entry?.path || "index.ts"}"]`;
+  const dockerfile = `# Bun app
+FROM oven/bun:1
+WORKDIR /app
+COPY package.json bun.lock* bun.lockb* ./
+RUN bun install || true
+COPY . .
+${scripts.build ? "RUN bun run build || true\n" : ""}EXPOSE 3000
+CMD ${cmd}
+`;
+  return { framework: "bun", role: "backend", dockerfile, port: 3000, needsDatabase, runsMigrations: false,
+    notes: ["Bun detected. The server must read process.env.PORT (Bun.serve defaults to 3000)."] };
+}
+
+function planSwift(files: DockSourceFile[]): Partial {
+  const pkg = depsBlob(files, /(^|\/)Package\.(swift|resolved)$/);
+  const isVapor = /vapor/.test(pkg);
+  const needsDatabase = /postgres|fluent|mysql|mongo/.test(pkg);
+  const run = isVapor
+    ? `exec /app/app serve --env production --hostname 0.0.0.0 --port \${PORT:-8080}`
+    : `exec /app/app`;
+  const dockerfile = `# Swift app${isVapor ? " (Vapor)" : ""}
+FROM swift:5.10 AS build
+WORKDIR /src
+COPY . .
+RUN swift build -c release
+# The product binary is the lone executable in .build/release (the rest are .swiftmodule,
+# .build dirs, …), so select it by inspecting the output, not a hardcoded target name.
+RUN cp "$(find .build/release -maxdepth 1 -type f -executable ! -name '*.*' | head -n1)" /build-bin
+FROM swift:5.10-slim
+WORKDIR /app
+COPY --from=build /build-bin /app/app
+EXPOSE 8080
+CMD ["sh", "-c", "${run}"]
+`;
+  return { framework: isVapor ? "vapor" : "swift", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: [isVapor ? "Vapor detected; serving on 0.0.0.0:$PORT." : "Server-side Swift detected; ensure the app reads $PORT."] };
+}
+
+function planDart(files: DockSourceFile[]): Partial {
+  const pub = depsBlob(files, /(^|\/)pubspec\.(yaml|yml)$/);
+  const isDartFrog = /dart_frog/.test(pub) || has(files, /(^|\/)routes\//);
+  const needsDatabase = /postgres|mysql_client|mysql1|drift|mongo_dart/.test(pub);
+  const build = isDartFrog
+    ? `RUN dart pub global activate dart_frog_cli && dart pub get && dart_frog build && dart compile exe build/bin/server.dart -o /server`
+    : `RUN dart pub get && dart compile exe bin/server.dart -o /server`;
+  const dockerfile = `# Dart app${isDartFrog ? " (Dart Frog)" : ""}
+FROM dart:stable AS build
+WORKDIR /app
+COPY . .
+${build}
+FROM scratch
+COPY --from=build /runtime/ /
+COPY --from=build /server /app/server
+EXPOSE 8080
+CMD ["/app/server"]
+`;
+  return { framework: isDartFrog ? "dart_frog" : "dart", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: [isDartFrog ? "Dart Frog detected; reads PORT (default 8080)." : "Dart server detected (entry bin/server.dart); it must bind 0.0.0.0:$PORT."] };
+}
+
+function planHaskell(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(\.cabal|(^|\/)(package\.yaml|stack\.yaml))$/);
+  const needsDatabase = /postgresql-simple|persistent|hasql|postgresql|beam-postgres|mysql/.test(blob);
+  const build = has(files, /(^|\/)stack\.yaml$/)
+    ? `RUN stack build --copy-bins --local-bin-path /out`
+    : `RUN cabal update && cabal install --installdir=/out --install-method=copy`;
+  const dockerfile = `# Haskell app
+FROM haskell:9.6 AS build
+WORKDIR /src
+COPY . .
+${build}
+RUN cp "$(find /out -maxdepth 1 -type f -executable | head -n1)" /app-bin
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgmp10 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app-bin /usr/local/bin/app
+EXPOSE 8080
+CMD ["/usr/local/bin/app"]
+`;
+  return { framework: "haskell", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: ["Haskell detected; the app must read the PORT env (e.g. Warp's getEnv \"PORT\")."] };
+}
+
+function planClojure(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(^|\/)(project\.clj|deps\.edn|build\.boot)$/);
+  const needsDatabase = /postgres|next\.jdbc|org\.clojure\/java\.jdbc|hikari|honeysql|mysql/.test(blob);
+  const build = has(files, /(^|\/)project\.clj$/)
+    ? `RUN lein uberjar`
+    : `RUN clojure -T:build uber 2>/dev/null || clojure -M:uberjar 2>/dev/null || clojure -X:uberjar`;
+  const dockerfile = `# Clojure app
+FROM clojure:temurin-21-tools-deps AS build
+WORKDIR /src
+COPY . .
+${build}
+# Prefer the standalone/uber jar (Leiningen also emits a non-runnable thin jar).
+RUN cp "$(find . -name '*-standalone.jar' -o -name '*uber*.jar' | head -n1)" /app.jar 2>/dev/null \\
+ || cp "$(find . -name '*.jar' ! -name '*sources*' | head -n1)" /app.jar
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app.jar /app/app.jar
+EXPOSE 3000
+CMD ["java", "-jar", "/app/app.jar"]
+`;
+  return { framework: "clojure", role: "backend", dockerfile, port: 3000, needsDatabase, runsMigrations: false,
+    notes: ["Clojure detected; -main must read (System/getenv \"PORT\") and bind Jetty to host 0.0.0.0."] };
+}
+
+function planCrystal(files: DockSourceFile[]): Partial {
+  const shard = depsBlob(files, /(^|\/)shard\.(yml|yaml)$/);
+  const isKemal = /kemal/.test(shard);
+  const needsDatabase = /crystal-pg|\bpg\b|postgres|mysql|granite|jennifer/.test(shard);
+  const dockerfile = `# Crystal app${isKemal ? " (Kemal)" : ""}
+FROM crystallang/crystal:latest-alpine AS build
+WORKDIR /src
+COPY . .
+RUN shards install --production 2>/dev/null || true
+# shards build emits to bin/; else compile the first src entrypoint statically.
+RUN shards build --release --static 2>/dev/null || crystal build --release --static -o bin/app "$(ls src/*.cr | head -n1)"
+RUN cp "$(find bin -maxdepth 1 -type f -perm -u+x | head -n1)" /app
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /app /app
+EXPOSE 3000
+CMD ["/app"]
+`;
+  return { framework: isKemal ? "kemal" : "crystal", role: "backend", dockerfile, port: 3000, needsDatabase, runsMigrations: false,
+    notes: [isKemal ? "Kemal detected; set Kemal.config.host_binding=\"0.0.0.0\" and port from ENV[\"PORT\"]." : "Crystal detected; bind 0.0.0.0:$PORT."] };
+}
+
+function planNim(files: DockSourceFile[]): Partial {
+  const nimble = depsBlob(files, /\.nimble$/);
+  const isJester = /jester/.test(nimble);
+  const needsDatabase = /db_postgres|postgres|allographer|norm|db_mysql/.test(nimble);
+  const entry = find(files, /(^|\/)src\/[^/]+\.nim$/) || find(files, /[^/]+\.nim$/);
+  const path = entry?.path || "src/main.nim";
+  const dockerfile = `# Nim app${isJester ? " (Jester)" : ""}
+FROM nimlang/nim:alpine AS build
+WORKDIR /src
+COPY . .
+RUN nimble install -y --depsOnly 2>/dev/null || true
+RUN nim c -d:release --opt:speed -o:/app ${path}
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates pcre
+COPY --from=build /app /app
+EXPOSE 5000
+CMD ["/app"]
+`;
+  return { framework: isJester ? "jester" : "nim", role: "backend", dockerfile, port: 5000, needsDatabase, runsMigrations: false,
+    notes: [isJester ? "Jester detected; read PORT via getEnv and set bindAddr=\"0.0.0.0\"." : "Nim detected; bind 0.0.0.0:$PORT."] };
+}
+
+function planPerl(files: DockSourceFile[]): Partial {
+  const cpanfile = depsBlob(files, /(^|\/)cpanfile$/);
+  const isMojo = /mojolicious/i.test(cpanfile) || anyContent(files, /\.p[lm]$/, /Mojolicious/);
+  const isDancer = /dancer2?/i.test(cpanfile) || has(files, /\.psgi$/);
+  const psgi = find(files, /\.psgi$/);
+  const entry = find(files, /(^|\/)(app|script\/[^/]+|bin\/[^/]+)\.pl$/) || find(files, /\.pl$/);
+  const path = entry?.path || "app.pl";
+  const needsDatabase = /dbd::pg|dbix|postgres|mysql/i.test(cpanfile);
+  const run = isMojo
+    ? `exec perl ${path} daemon -l http://*:\${PORT:-3000}`
+    : psgi
+      ? `exec plackup -o 0.0.0.0 -p \${PORT:-3000} ${psgi.path}`
+      : `exec perl ${path}`;
+  const dockerfile = `# Perl app${isMojo ? " (Mojolicious)" : isDancer ? " (Dancer/PSGI)" : ""}
+FROM perl:5.40
+WORKDIR /app
+COPY cpanfile* ./
+RUN cpanm --installdeps --notest . 2>/dev/null || true
+${psgi ? "RUN cpanm --notest Plack Starman 2>/dev/null || true\n" : ""}COPY . .
+EXPOSE 3000
+CMD ["sh", "-c", "${run}"]
+`;
+  return { framework: isMojo ? "mojolicious" : isDancer ? "dancer" : "perl", role: "backend", dockerfile, port: 3000, needsDatabase, runsMigrations: false,
+    notes: ["Perl detected; the server binds 0.0.0.0:$PORT (Mojo: `daemon -l http://*:$PORT`)."] };
+}
+
+function planR(files: DockSourceFile[]): Partial {
+  const entry = find(files, /(^|\/)(plumber|api|server|app)\.R$/i) || find(files, /\.R$/i);
+  const path = entry?.path || "plumber.R";
+  const needsDatabase = anyContent(files, /\.R$/i, /RPostgres|DBI|RMariaDB|pool/);
+  const dockerfile = `# R (Plumber) app
+FROM r-base:4.4.1
+RUN R -e "install.packages('plumber', repos='https://cloud.r-project.org')"
+# Install any extra packages the project pins via install.R.
+RUN if [ -f install.R ]; then Rscript install.R; fi 2>/dev/null || true
+WORKDIR /app
+COPY . /app
+EXPOSE 8000
+# Bind to the host's $PORT (the stock rstudio/plumber image hardcodes 8000).
+CMD ["sh", "-c", "R -e \\"plumber::pr_run(plumber::plumb('${path}'), host='0.0.0.0', port=as.integer(Sys.getenv('PORT','8000')))\\""]
+`;
+  return { framework: "plumber", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
+    notes: [`R/Plumber detected (entry ${path}); served on 0.0.0.0:$PORT.`] };
+}
+
+function planJulia(files: DockSourceFile[]): Partial {
+  const proj = depsBlob(files, /(^|\/)Project\.toml$/);
+  const isGenie = /genie/i.test(proj);
+  const needsDatabase = /libpq|postgres|mysql|sqlite|dbinterface/i.test(proj);
+  const entry = find(files, /(^|\/)(app|main|server|bootstrap|routes)\.jl$/i) || find(files, /\.jl$/);
+  const path = entry?.path || "app.jl";
+  const dockerfile = `# Julia app${isGenie ? " (Genie)" : ""}
+FROM julia:1.10
+WORKDIR /app
+COPY Project.toml Manifest.tom* ./
+RUN julia -e "using Pkg; Pkg.activate(\\".\\"); Pkg.instantiate(); Pkg.precompile()"
+COPY . .
+ENV JULIA_PROJECT=@.
+EXPOSE 8000
+# Genie reads ENV["PORT"] and binds 0.0.0.0; generic Julia servers must do the same.
+CMD ["sh", "-c", "julia --project=. ${path}"]
+`;
+  return { framework: isGenie ? "genie" : "julia", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
+    notes: [`Julia detected (entry ${path}); the server must read ENV["PORT"] and host "0.0.0.0".`] };
+}
+
+function planOcaml(files: DockSourceFile[]): Partial {
+  const blob = depsBlob(files, /(\.opam|(^|\/)dune-project)$/);
+  const isDream = /dream/.test(blob);
+  const needsDatabase = /caqti|postgres|pgx/.test(blob);
+  const dockerfile = `# OCaml app${isDream ? " (Dream)" : ""}
+FROM ocaml/opam:debian-ocaml-5.1 AS build
+WORKDIR /src
+COPY --chown=opam:opam . .
+RUN opam install -y --deps-only . 2>/dev/null || true
+RUN opam exec -- dune build --profile release
+RUN cp "$(find _build/default -maxdepth 3 -type f -executable -name '*.exe' | head -n1)" /app 2>/dev/null \\
+ || cp "$(find _build/default -maxdepth 3 -type f -executable ! -name '*.*' | head -n1)" /app
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libev4 libgmp10 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app /app
+EXPOSE 8080
+CMD ["/app"]
+`;
+  return { framework: isDream ? "dream" : "ocaml", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: [isDream ? "Dream detected; pass ~port:(int_of_string (Sys.getenv \"PORT\"))." : "OCaml detected; the app must read $PORT."] };
+}
+
+function planZig(files: DockSourceFile[]): Partial {
+  const needsDatabase = anyContent(files, /\.zig$/, /\bpg\b|postgres|pq/i);
+  const dockerfile = `# Zig app
+FROM debian:bookworm-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install a recent Zig toolchain (arch matches uname -m: x86_64 / aarch64).
+RUN curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-$(uname -m)-0.13.0.tar.xz | tar -xJ -C /opt \\
+ && ln -s /opt/zig-linux-*/zig /usr/local/bin/zig
+WORKDIR /src
+COPY . .
+RUN zig build -Doptimize=ReleaseFast
+RUN cp "$(find zig-out/bin -maxdepth 1 -type f -executable | head -n1)" /app
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app /app
+EXPOSE 8080
+CMD ["/app"]
+`;
+  return { framework: "zig", role: "backend", dockerfile, port: 8080, needsDatabase: needsDatabase, runsMigrations: false,
+    notes: ["Zig detected; the app must read the $PORT env and bind 0.0.0.0."] };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 const PLANNERS: Record<Stack, (f: DockSourceFile[]) => Partial> = {
   python: planPython, ruby: planRuby, php: planPhp, java: planJava, go: planGo,
   rust: planRust, dotnet: planDotnet, elixir: planElixir, cpp: planCpp, node: planNode, static: () => planStatic(),
+  deno: planDeno, bun: planBun, swift: planSwift, dart: planDart, haskell: planHaskell,
+  clojure: planClojure, crystal: planCrystal, nim: planNim, perl: planPerl, r: planR,
+  julia: planJulia, ocaml: planOcaml, zig: planZig,
 };
 
 /** Detect language + framework and produce a full, $PORT-bound build plan. */
