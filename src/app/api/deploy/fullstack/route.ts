@@ -10,6 +10,8 @@ import { deployContainer } from "@/lib/deploy/providers/container-deploy";
 import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
 import { serverToken } from "@/lib/deploy/env";
+import { databaseEnvForFramework } from "@/lib/deploy/db-env";
+import { preflightForFramework, seedRulesFor, type PreflightRule } from "@/lib/deploy/preflight";
 import type { WorkspaceFile } from "@/store/workspace";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
@@ -84,7 +86,14 @@ export async function POST(req: NextRequest) {
             { key: "CORS_ORIGIN", value: predictedFrontendUrl },
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
-          if (container.prep.needsDatabase && dbUrl) { envVars.push({ key: "DATABASE_URL", value: containerDatabaseUrl(dbUrl) }); dbWired = true; }
+          if (container.prep.needsDatabase && dbUrl) {
+            const pgUrl = containerDatabaseUrl(dbUrl);
+            envVars.push({ key: "DATABASE_URL", value: pgUrl });
+            // Translate into the framework's expected key/shape (.NET/Npgsql, Spring,
+            // …) so a stack that can't read a postgres:// URL still connects.
+            envVars.push(...databaseEnvForFramework(container.prep.plan.framework, pgUrl));
+            dbWired = true;
+          }
           // Django: allow the deploy domain (else 400 DisallowedHost). Harmless otherwise.
           if (container.prep.plan.framework === "django") {
             envVars.push(
@@ -160,6 +169,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No frontend or backend found in the selected files." }, { status: 400 });
     }
 
+    // Preflight: research + grow the technology-tagged rule registry for this
+    // stack (cache-first, so only an UNSEEN tech triggers a web search), and
+    // surface the basic-correctness rules. Bounded + best-effort: never blocks or
+    // fails the deploy.
+    const backendFramework = container ? container.prep.plan.framework : hasBackend ? "node" : "static";
+    const preflightFrameworks = [backendFramework, front.found ? "frontend" : null].filter(Boolean) as string[];
+    const preflightRules = (
+      await Promise.all(
+        preflightFrameworks.map((fw) =>
+          Promise.race([
+            preflightForFramework(fw),
+            new Promise<PreflightRule[]>((res) => setTimeout(() => res(seedRulesFor(fw)), 8000)),
+          ]).catch(() => seedRulesFor(fw)),
+        ),
+      )
+    ).flat();
+
     return NextResponse.json({
       frontendUrl,
       backendUrl,
@@ -177,6 +203,8 @@ export async function POST(req: NextRequest) {
       frontendId,
       frontendError,
       frontendUnwired,
+      preflightRuleCount: preflightRules.length,
+      preflightRules: preflightRules.map((rule) => ({ tech: rule.tech, title: rule.title, source: rule.source })),
       warnings: [
         ...(hasBackend ? backendWarnings : []),
         ...(frontendUnwired

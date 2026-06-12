@@ -309,3 +309,21 @@ enum DeploymentStatus {
   DEPLOYED
   FAILED
 }
+
+/// Technology-tagged preflight rules: the basics each stack needs to run, plus
+/// common break-classes. Seeded in code (src/lib/deploy/preflight.ts) and GROWN
+/// at deploy time by web research — `source` distinguishes curated vs researched.
+model PreflightRule {
+  id        String   @id @default(cuid())
+  tech      String   // stack tag: "dotnet", "flask", "spring", "node", ...
+  ruleId    String   // stable id, unique within a tech
+  title     String
+  detail    String   @db.Text
+  source    String   @default("web") // "seed" | "web"
+  sourceUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tech, ruleId])
+  @@index([tech])
+}

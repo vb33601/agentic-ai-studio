@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl, containerDatabaseUrl } from "@/lib/deploy/render-prepare";
+import { databaseEnvForFramework } from "@/lib/deploy/db-env";
 import { prepareForContainer } from "@/lib/deploy/universal-prepare";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { deployContainer } from "@/lib/deploy/providers/container-deploy";
@@ -79,7 +80,13 @@ export async function POST(req: NextRequest) {
     const prep = prepareForContainer(repoFiles);
     const envVars: RenderEnvVar[] = [];
     const dbWired = prep.needsDatabase && !!dbUrl;
-    if (dbWired) envVars.push({ key: "DATABASE_URL", value: containerDatabaseUrl(dbUrl!) });
+    if (dbWired) {
+      const pgUrl = containerDatabaseUrl(dbUrl!);
+      envVars.push({ key: "DATABASE_URL", value: pgUrl });
+      // Some stacks (e.g. .NET/Npgsql, Spring) can't read a postgres:// URL — give
+      // them the connection in the shape/key they expect (no-op for the rest).
+      envVars.push(...databaseEnvForFramework(prep.plan.framework, pgUrl));
+    }
 
     // Django rejects requests whose Host isn't in ALLOWED_HOSTS (→ 400 DisallowedHost),
     // which is host-specific and a common reason an app that runs on Render fails on
