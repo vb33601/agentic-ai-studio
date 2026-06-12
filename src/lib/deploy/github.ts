@@ -41,6 +41,43 @@ export async function gh<T>(token: string, path: string, init?: RequestInit): Pr
   return data as T;
 }
 
+/** Parse "https://github.com/owner/repo(.git)" → { owner, repo }. */
+export function parseRepoUrl(url: string): { owner: string; repo: string } | null {
+  const m = url.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+
+/**
+ * Read the current text files of a repo (the source of truth for what's actually
+ * deployed). Used by backend auto-repair so the fix engine operates on exactly
+ * the code the container is running, and edits commit straight back. Skips
+ * oversized/binary blobs (>200KB) and common non-source dirs.
+ */
+export async function fetchRepoFiles(
+  token: string,
+  owner: string,
+  repo: string,
+  ref?: string,
+): Promise<{ files: RepoFile[]; branch: string }> {
+  const info = await gh<{ default_branch: string }>(token, `/repos/${owner}/${repo}`);
+  const branch = ref || info.default_branch;
+  const tree = await gh<{ tree: Array<{ path: string; type: string; size?: number; sha: string }> }>(
+    token,
+    `/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+  );
+  const skip = /(^|\/)(node_modules|\.git|dist|build|\.next|target|vendor|__pycache__)\//;
+  const blobs = tree.tree.filter(
+    (t) => t.type === "blob" && !skip.test(t.path) && (t.size ?? 0) < 200_000 && !/\.(png|jpe?g|gif|webp|ico|pdf|woff2?|ttf|zip|lock)$/i.test(t.path),
+  );
+  const files: RepoFile[] = [];
+  for (const b of blobs) {
+    const blob = await gh<{ content: string; encoding: string }>(token, `/repos/${owner}/${repo}/git/blobs/${b.sha}`);
+    if (blob.encoding !== "base64") continue;
+    files.push({ path: b.path, content: Buffer.from(blob.content, "base64").toString("utf8") });
+  }
+  return { files, branch };
+}
+
 /** Create a repo (or reuse if it exists) and push all files as one commit on `main`. */
 export async function createRepoAndPush(
   token: string,

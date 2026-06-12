@@ -16,6 +16,12 @@ const nextConfig: NextConfig = {
     // ./libsodium.mjs ref that Turbopack can't resolve — keep it external so
     // Next requires the CJS build at runtime (traced into standalone output).
     "libsodium-wrappers",
+    // Native/heavy browser automation used by the post-deploy frontend smoke
+    // test — never bundle it; it's dynamically required only when a smoke run
+    // happens, and skips gracefully where the Chromium binary is absent.
+    "playwright-chromium",
+    "playwright-core",
+    "playwright",
   ],
   images: {
     remotePatterns: [

@@ -81,6 +81,10 @@ interface Deployment {
   frontendError?: string;
   backendUrl?: string;
   backendDashboard?: string;
+  /** Verified backend liveness: true=serving, false=built-but-crashing, null=unknown. */
+  backendHealthy?: boolean | null;
+  /** Frontend smoke verdict (renders + no console/API/CORS errors). */
+  frontendSmoke?: { ok: boolean; issues: string[] } | null;
   timestamp: Date;
 }
 
@@ -157,6 +161,139 @@ export function DeployPanel() {
       addBuildLog(`Status: ${s.readyState}…`);
     }
     return { state: "TIMEOUT" };
+  };
+
+  // Verify a deployed backend actually serves requests. Container providers
+  // build asynchronously (minutes) and a generated app can build cleanly yet
+  // crash on boot (missing driver, bad bind) — surfacing as a 5xx. Poll the
+  // health endpoint until the app is up, or the budget runs out (≈6 min), so
+  // we report verified liveness instead of an optimistic "live".
+  const pollBackendHealth = async (
+    url: string,
+  ): Promise<{ healthy: boolean; status: number | null; bodySnippet?: string }> => {
+    let last: { status: number | null; bodySnippet?: string } = { status: null };
+    for (let i = 0; i < 45; i++) {
+      const h = await fetch(`/api/deploy/health?url=${encodeURIComponent(url)}`)
+        .then((r) => r.json())
+        .catch(() => null);
+      if (h?.healthy) return { healthy: true, status: h.status };
+      last = { status: h?.status ?? null, bodySnippet: h?.bodySnippet };
+      // Log progress occasionally so a slow build doesn't look stuck.
+      if (i % 4 === 0) {
+        addBuildLog(`  Verifying backend… ${last.status ? `HTTP ${last.status}` : "no response yet"} (building/starting)`);
+      }
+      await new Promise((r) => setTimeout(r, 8000));
+    }
+    return { healthy: false, status: last.status, bodySnippet: last.bodySnippet };
+  };
+
+  // A backend that built but won't serve (health gate failed): read the deployed
+  // repo + crash signal, web-search the fix, and commit it back so the SAME
+  // service rebuilds at the SAME URL (frontend stays wired). Returns true if a
+  // fix was committed (caller then re-polls health). Best-effort writes the
+  // patched files back into the workspace so future deploys carry the fix.
+  const autoRepairBackend = async (args: {
+    repoUrl: string;
+    deployProvider?: string;
+    dashboardUrl?: string;
+    framework?: string;
+    httpStatus: number | null;
+    bodySnippet?: string;
+    attempt: number;
+  }): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/deploy/repair-backend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.changed) {
+        addBuildLog(`  No reliable backend fix found${data?.report?.note ? `: ${data.report.note}` : "."}`);
+        return false;
+      }
+      if (data.report?.rootCause) addBuildLog(`  Root cause: ${data.report.rootCause}`);
+      if (Array.isArray(data.editedPaths) && data.editedPaths.length) addBuildLog(`  Patched: ${data.editedPaths.join(", ")} (committed → rebuilding)`);
+      if (Array.isArray(data.report?.sources) && data.report.sources[0]) addBuildLog(`  Per: ${data.report.sources[0].url}`);
+      // Best-effort: mirror the repo edits into the workspace by path suffix.
+      if (Array.isArray(data.files)) {
+        for (const ef of data.files as { path: string; content: string }[]) {
+          const match = files.find((f) => f.path === ef.path || f.path.endsWith(`/${ef.path}`));
+          if (match) updateFile(match.id, { content: ef.content });
+        }
+      }
+      return true;
+    } catch (e) {
+      addBuildLog(`  Backend auto-repair error: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+
+  // Smoke-test a live frontend the way a user hits it: renders, no runtime
+  // console errors, no failed API calls, and the backend's CORS actually allows
+  // the frontend origin (the "Failed to fetch" class). A tooling failure never
+  // fails the deploy — only a real broken page does.
+  const runFrontendSmoke = async (
+    url: string,
+    backendUrl?: string | null,
+  ): Promise<{ ok: boolean; issues: string[] }> => {
+    addBuildLog("Smoke-testing the live frontend (render · console · API · CORS)…");
+    try {
+      const r = await fetch("/api/deploy/smoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, backendUrl: backendUrl ?? null }),
+      })
+        .then((res) => res.json())
+        .catch(() => null);
+      if (!r || r.error) {
+        addBuildLog(`  Smoke test unavailable${r?.error ? `: ${r.error}` : ""}`);
+        return { ok: true, issues: [] };
+      }
+      if (r.ok) {
+        addBuildLog(`✓ FRONTEND SMOKE PASSED${r.browser ? " (real browser)" : " (HTTP+CORS; no browser on host)"}`);
+      } else {
+        addBuildLog("⚠ FRONTEND SMOKE FAILED:");
+        for (const iss of (r.issues || []).slice(0, 5)) addBuildLog(`  · ${iss}`);
+      }
+      return { ok: !!r.ok, issues: r.issues || [] };
+    } catch (e) {
+      addBuildLog(`  Smoke test error: ${e instanceof Error ? e.message : String(e)}`);
+      return { ok: true, issues: [] };
+    }
+  };
+
+  // Verify backend liveness; if it built but won't serve, run the backend
+  // auto-repair loop (in-place rebuild on the same URL) up to MAX_AUTO_REPAIRS,
+  // re-verifying after each. Returns the final health.
+  const verifyAndHealBackend = async (opts: {
+    backendUrl: string;
+    repoUrl?: string;
+    deployProvider?: string;
+    dashboardUrl?: string;
+    framework?: string;
+  }): Promise<{ healthy: boolean; status: number | null }> => {
+    let bh = await pollBackendHealth(opts.backendUrl);
+    if (bh.healthy) return { healthy: true, status: bh.status };
+    if (opts.repoUrl) {
+      for (let attempt = 0; attempt < MAX_AUTO_REPAIRS; attempt++) {
+        addBuildLog(`✗ Backend not responding (${bh.status ? `HTTP ${bh.status}` : "no response"}) — backend auto-repair ${attempt + 1}/${MAX_AUTO_REPAIRS}…`);
+        const fixed = await autoRepairBackend({
+          repoUrl: opts.repoUrl,
+          deployProvider: opts.deployProvider,
+          dashboardUrl: opts.dashboardUrl,
+          framework: opts.framework,
+          httpStatus: bh.status,
+          bodySnippet: bh.bodySnippet,
+          attempt,
+        });
+        if (!fixed) break;
+        addBuildLog("  Re-verifying backend after rebuild…");
+        bh = await pollBackendHealth(opts.backendUrl);
+        if (bh.healthy) return { healthy: true, status: bh.status };
+      }
+    }
+    return { healthy: false, status: bh.status };
   };
 
   // On a failed build: fetch the real log, web-search the known fix for this
@@ -238,7 +375,7 @@ export function DeployPanel() {
       if (!res.ok) throw new Error(data.error || "Full-stack deploy failed");
       if (data.backendDir) addBuildLog(`Backend folder: ${data.backendDir}/`);
       if (data.repoUrl) addBuildLog(`Backend repo → ${data.repoUrl}`);
-      if (data.backendUrl) addBuildLog(`✓ BACKEND LIVE (${(data.backendProvider || backend) === "fly" ? "Fly.io" : (data.backendProvider || backend) === "railway" ? "Railway" : "Render"}) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""}`);
+      if (data.backendUrl) addBuildLog(`Backend deploying (${(data.backendProvider || backend) === "fly" ? "Fly.io" : (data.backendProvider || backend) === "railway" ? "Railway" : "Render"}) → ${data.backendUrl}${data.dbWired ? "  (DATABASE_URL → Aiven)" : ""} — building & verifying…`);
       if (data.backendDashboard) addBuildLog(`Backend dashboard → ${data.backendDashboard}`);
       if (data.backendError) addBuildLog(`⚠ Backend NOT deployed: ${data.backendError}`);
       // No server in the app at all — explain it instead of silently shipping FE-only.
@@ -258,12 +395,27 @@ export function DeployPanel() {
         backendDashboard: data.backendDashboard,
       });
 
+      // Verify the backend actually serves requests (build success ≠ runtime
+      // success). Run it concurrently with the frontend build poll below so the
+      // two slow async steps overlap instead of adding up.
+      const backendCheck: Promise<{ healthy: boolean; status: number | null } | null> = data.backendUrl
+        ? verifyAndHealBackend({
+            backendUrl: data.backendUrl,
+            repoUrl: data.repoUrl,
+            deployProvider: data.backendProvider || backend,
+            dashboardUrl: data.backendDashboard,
+            framework: data.backendFramework,
+          })
+        : Promise.resolve(null);
+
       // Poll the Vercel frontend build to readiness so the result is honest —
       // and on a build failure, auto-repair (web-search the fix) and redeploy.
+      let liveFrontendUrl: string | undefined;
       if (data.frontendId) {
         const outcome = await deployWithAutoRepair(data.frontendId, { backendUrl: data.backendUrl ?? null });
         if (outcome.status === "live") {
           const url = outcome.url || data.frontendUrl;
+          liveFrontendUrl = url;
           addBuildLog(`✓ FRONTEND LIVE → ${url}`);
           update(deployId, { status: "deployed", url, frontendUrl: url });
         } else if (outcome.status === "building") {
@@ -281,6 +433,27 @@ export function DeployPanel() {
       } else {
         // No frontend deployment to poll (backend-only or frontend errored upfront).
         update(deployId, { status: data.backendUrl || data.frontendUrl ? "deployed" : "failed" });
+      }
+
+      // Report the verified backend liveness (the gate that catches runtime
+      // crashes the build-status check misses).
+      const bh = await backendCheck;
+      if (bh) {
+        if (bh.healthy) {
+          addBuildLog(`✓ BACKEND HEALTHY (HTTP ${bh.status}) → ${data.backendUrl}`);
+          update(deployId, { backendHealthy: true });
+        } else {
+          addBuildLog(`✗ BACKEND STILL NOT RESPONDING (${bh.status ? `HTTP ${bh.status}` : "no response"}) → ${data.backendUrl}`);
+          addBuildLog(`  Auto-repair couldn't get it serving. Check logs: ${data.backendDashboard || "the provider dashboard"}`);
+          update(deployId, { backendHealthy: false });
+        }
+      }
+
+      // Final layer: smoke-test the live frontend (now that the backend is
+      // settled, so the CORS/API check is meaningful).
+      if (liveFrontendUrl) {
+        const smoke = await runFrontendSmoke(liveFrontendUrl, data.backendUrl ?? null);
+        update(deployId, { frontendSmoke: smoke });
       }
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -318,8 +491,30 @@ export function DeployPanel() {
       if (data.dbWired) addBuildLog("DATABASE_URL wired to managed Postgres (Aiven).");
       else if (data.usesPrisma) addBuildLog("⚠ DB app, but DEFAULT_DATABASE_URL isn't set — add it in Render env.");
       for (const w of data.warnings ?? []) addBuildLog(`⚠ ${w}`);
-      addBuildLog(`Deployed via ${data.provider || "render"} → ${data.url} (building, ~few min)`);
-      update(deployId, { status: "deployed", url: data.url, inspectorUrl: data.dashboardUrl });
+      addBuildLog(`Deployed via ${data.provider || "render"} → ${data.url} (building & verifying, ~few min)`);
+      update(deployId, { status: "building", url: data.url, inspectorUrl: data.dashboardUrl, backendUrl: data.url });
+
+      // Verify the backend actually serves requests (and auto-repair if it
+      // built but won't boot) before calling it done.
+      if (data.url) {
+        const bh = await verifyAndHealBackend({
+          backendUrl: data.url,
+          repoUrl: data.repoUrl,
+          deployProvider: data.provider || provider,
+          dashboardUrl: data.dashboardUrl,
+          framework: data.framework,
+        });
+        if (bh.healthy) {
+          addBuildLog(`✓ BACKEND HEALTHY (HTTP ${bh.status}) → ${data.url}`);
+          update(deployId, { status: "deployed", backendHealthy: true });
+        } else {
+          addBuildLog(`✗ BACKEND NOT RESPONDING (${bh.status ? `HTTP ${bh.status}` : "no response"}) — auto-repair couldn't get it serving.`);
+          addBuildLog(`  Check logs: ${data.dashboardUrl || "the provider dashboard"}`);
+          update(deployId, { status: "failed", backendHealthy: false });
+        }
+      } else {
+        update(deployId, { status: "deployed" });
+      }
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
       update(deployId, { status: "failed" });
@@ -367,8 +562,13 @@ export function DeployPanel() {
       // redeploy, up to MAX_AUTO_REPAIRS, so we end on working code when possible.
       const outcome = await deployWithAutoRepair(data.id);
       if (outcome.status === "live") {
+        const liveUrl = outcome.url || data.url;
         addBuildLog("✓ Deployment is live!");
-        update(deployId, { status: "deployed", url: outcome.url || data.url });
+        update(deployId, { status: "deployed", url: liveUrl });
+        if (liveUrl) {
+          const smoke = await runFrontendSmoke(liveUrl);
+          update(deployId, { frontendSmoke: smoke });
+        }
       } else if (outcome.status === "building") {
         addBuildLog("Still building — opening the URL will show progress.");
         update(deployId, { status: "deployed", url: data.url });
@@ -510,9 +710,14 @@ export function DeployPanel() {
                           </p>
                         )}
                         {d.backendUrl && (
-                          <a href={d.backendUrl} target="_blank" rel="noreferrer" className="text-[10px] text-primary hover:underline truncate block">
-                            Backend: {d.backendUrl}
-                          </a>
+                          <span className="text-[10px] truncate block">
+                            <a href={d.backendUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                              Backend: {d.backendUrl}
+                            </a>
+                            {d.backendHealthy === true && <span className="text-green-500"> · healthy ✓</span>}
+                            {d.backendHealthy === false && <span className="text-red-500"> · not responding ✗</span>}
+                            {d.backendHealthy == null && <span className="text-muted-foreground"> · verifying…</span>}
+                          </span>
                         )}
                         {d.backendDashboard && (
                           <a href={d.backendDashboard} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground hover:underline truncate block">
@@ -526,6 +731,15 @@ export function DeployPanel() {
                       </a>
                     ) : (
                       <p className="text-[10px] text-muted-foreground">{d.timestamp.toLocaleTimeString()}</p>
+                    )}
+                    {d.frontendSmoke && (
+                      d.frontendSmoke.ok ? (
+                        <p className="text-[10px] text-green-500">Smoke: passed ✓</p>
+                      ) : (
+                        <p className="text-[10px] text-amber-500 truncate" title={d.frontendSmoke.issues.join("; ")}>
+                          Smoke: {d.frontendSmoke.issues[0] || "issues found"} ⚠
+                        </p>
+                      )
                     )}
                   </div>
                 </div>
