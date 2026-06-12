@@ -3,6 +3,7 @@ import { autoFixBuildError } from "@/lib/ai/auto-fix";
 import { resolveModel } from "@/lib/ai/providers";
 import { fetchRepoFiles, commitFilesToRepo, parseRepoUrl, type RepoFile } from "@/lib/deploy/github";
 import { getBackendErrorSignal } from "@/lib/deploy/backend-logs";
+import { serverToken } from "@/lib/deploy/env";
 
 const DEFAULT_REPAIR_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_REPAIR_PROVIDER = "kilocode";
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (!repoUrl) return NextResponse.json({ error: "repoUrl is required." }, { status: 400 });
-    const token = process.env.GITHUB_TOKEN;
+    const token = serverToken("GITHUB_TOKEN");
     if (!token) return NextResponse.json({ error: "GITHUB_TOKEN is not configured on the server." }, { status: 400 });
     const parsed = parseRepoUrl(repoUrl);
     if (!parsed) return NextResponse.json({ error: `Could not parse a GitHub repo from "${repoUrl}".` }, { status: 400 });

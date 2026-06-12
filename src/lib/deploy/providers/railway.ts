@@ -1,4 +1,5 @@
 import type { RenderEnvVar } from "../render";
+import { requireServerToken } from "../env";
 
 /**
  * Railway provider client (GraphQL Public API).
@@ -34,8 +35,7 @@ export interface RailwayDeployResult {
 }
 
 async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const token = process.env.RAILWAY_API_TOKEN;
-  if (!token) throw new Error("RAILWAY_API_TOKEN is not configured on the server.");
+  const token = requireServerToken("RAILWAY_API_TOKEN");
   const res = await fetch(API, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

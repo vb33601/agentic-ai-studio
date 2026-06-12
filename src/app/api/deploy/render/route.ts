@@ -7,6 +7,7 @@ import { deployContainer } from "@/lib/deploy/providers/container-deploy";
 import { configuredProviders } from "@/lib/deploy/providers/registry";
 import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
+import { serverToken } from "@/lib/deploy/env";
 import type { WorkspaceFile } from "@/store/workspace";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
       provider?: ProviderId;
     };
 
-    const githubToken = process.env.GITHUB_TOKEN;
+    const githubToken = serverToken("GITHUB_TOKEN");
     if (!githubToken) return NextResponse.json({ error: "GITHUB_TOKEN is not configured on the server." }, { status: 400 });
     // At least one container provider (Render, Railway, or Fly) must have credentials.
     if (!configuredProviders().some((p) => p === "render" || p === "railway" || p === "fly")) {
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
     const base = (slugify(name || "ai-backend") || "ai-backend").slice(0, 70);
     const projectName = `${base}-${Math.random().toString(36).slice(2, 7)}`;
     const repoFiles = files.map((f) => ({ path: f.path, content: f.content }));
-    const dbUrl = process.env.DEFAULT_DATABASE_URL;
+    const dbUrl = serverToken("DEFAULT_DATABASE_URL");
     const stack = detectStack(repoFiles);
 
     // ---------- Node backends: optimized native runtime ----------

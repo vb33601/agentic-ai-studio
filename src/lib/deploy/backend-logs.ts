@@ -11,9 +11,11 @@
  * Server-only: uses RENDER_API_KEY.
  */
 
+import { serverToken } from "./env";
+
 /** Pull recent app (runtime) logs for a Render service. Returns "" on failure. */
 export async function getRenderRuntimeLogs(serviceId: string, limit = 100): Promise<string> {
-  const key = process.env.RENDER_API_KEY;
+  const key = serverToken("RENDER_API_KEY");
   if (!key) return "";
   const auth = { Authorization: `Bearer ${key}` };
   try {

@@ -5,6 +5,8 @@
  * Server-only: requires RENDER_API_KEY.
  */
 
+import { requireServerToken } from "./env";
+
 const API = "https://api.render.com/v1";
 
 export interface RenderEnvVar {
@@ -83,8 +85,7 @@ async function getOwnerId(key: string): Promise<string> {
  * `envSpecificDetails`, selected by `runtime`.
  */
 export async function createRenderService(input: CreateServiceInput): Promise<RenderServiceResult> {
-  const key = process.env.RENDER_API_KEY;
-  if (!key) throw new Error("RENDER_API_KEY is not configured on the server.");
+  const key = requireServerToken("RENDER_API_KEY");
   const ownerId = await getOwnerId(key);
 
   const isDocker = input.runtime === "docker";

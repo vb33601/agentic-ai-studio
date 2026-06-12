@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import type _SodiumType from "libsodium-wrappers";
 import { gh, commitFilesToRepo, type RepoFile } from "../github";
 import type { RenderEnvVar } from "../render";
+import { requireServerToken } from "../env";
 
 // libsodium-wrappers ships a broken ESM build (its dist/modules-esm dir is
 // missing libsodium.mjs), so the default `import` resolves to a module Turbopack
@@ -43,9 +44,7 @@ const GQL = "https://api.fly.io/graphql";
 const MACHINES = "https://api.machines.dev/v1";
 
 function flyToken(): string {
-  const t = process.env.FLY_API_TOKEN?.trim();
-  if (!t) throw new Error("FLY_API_TOKEN is not configured on the server.");
-  return t;
+  return requireServerToken("FLY_API_TOKEN");
 }
 
 /**

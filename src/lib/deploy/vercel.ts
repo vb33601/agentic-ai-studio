@@ -1,5 +1,6 @@
 import type { WorkspaceFile } from "@/store/workspace";
 import { slugify } from "@/lib/utils";
+import { requireServerToken, serverToken } from "./env";
 
 const VERCEL_API = "https://api.vercel.com";
 
@@ -42,8 +43,7 @@ export async function deployToVercel(
   files: WorkspaceFile[],
   opts: { name?: string; framework?: string | null; buildCommand?: string; outputDirectory?: string; rootDirectory?: string } = {}
 ): Promise<DeployResult> {
-  const token = process.env.VERCEL_TOKEN;
-  if (!token) throw new Error("VERCEL_TOKEN is not configured on the server.");
+  const token = requireServerToken("VERCEL_TOKEN");
   if (files.length === 0) throw new Error("No files to deploy.");
 
   const name = projectName(opts.name);
@@ -103,8 +103,7 @@ async function setProjectPublic(nameOrId: string, token: string): Promise<void> 
 
 /** Poll the readiness of an existing deployment. */
 export async function getDeploymentStatus(id: string): Promise<{ readyState: string; url?: string }> {
-  const token = process.env.VERCEL_TOKEN;
-  if (!token) throw new Error("VERCEL_TOKEN is not configured on the server.");
+  const token = requireServerToken("VERCEL_TOKEN");
   const res = await fetch(`${VERCEL_API}/v13/deployments/${id}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -120,7 +119,7 @@ export async function getDeploymentStatus(id: string): Promise<{ readyState: str
  * lines. Best-effort: returns [] if the events can't be read.
  */
 export async function getDeploymentBuildLogs(id: string, limit = 40): Promise<string[]> {
-  const token = process.env.VERCEL_TOKEN;
+  const token = serverToken("VERCEL_TOKEN");
   if (!token) return [];
   try {
     // Build/output events for the deployment (newest builds support v3).

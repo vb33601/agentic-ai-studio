@@ -1,4 +1,5 @@
 import { augmentPackageJson, type SourceFile } from "@/lib/ai/deps";
+import { hardenFiles } from "./harden";
 
 /**
  * Normalize a generated project so it deploys reliably on Vercel across a wide
@@ -530,6 +531,10 @@ export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   files = reconcileNamedImports(files);
   files = stubMissingImports(files);
   files = pinTailwindV3(files);
+  // Runtime-hardening: neutralize common crash classes (unsafe destructuring of
+  // API responses, .map over undefined) that survive the build and only throw in
+  // the browser. See harden.ts.
+  files = hardenFiles(files).files;
   let idx = pickAppPackageJson(files);
 
   // No package.json: a JS site generator by file signature, else pure static

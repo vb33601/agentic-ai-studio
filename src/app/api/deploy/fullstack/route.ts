@@ -9,6 +9,7 @@ import { deployToVercel } from "@/lib/deploy/vercel";
 import { deployContainer } from "@/lib/deploy/providers/container-deploy";
 import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
+import { serverToken } from "@/lib/deploy/env";
 import type { WorkspaceFile } from "@/store/workspace";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
@@ -73,9 +74,9 @@ export async function POST(req: NextRequest) {
     }
     if (hasBackend) {
       try {
-        const token = process.env.GITHUB_TOKEN;
+        const token = serverToken("GITHUB_TOKEN");
         if (!token) throw new Error("GITHUB_TOKEN is not configured on the server — set it in the platform host's environment to enable backend deploys.");
-        const dbUrl = process.env.DEFAULT_DATABASE_URL;
+        const dbUrl = serverToken("DEFAULT_DATABASE_URL");
 
         if (container) {
           // ---- Universal Docker backend (Render / Fly / Railway) ----
@@ -125,13 +126,19 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- Frontend → Vercel (wired to the backend URL) ----
+    // If the app HAS a backend but it failed to deploy (backendUrl null), shipping
+    // the frontend anyway points its API calls at nothing: the login/auth request
+    // returns no body and the app crashes on the client (e.g. "Cannot destructure
+    // property 'token' of res.data as it is undefined"). Make that explicit rather
+    // than letting the broken frontend look like a success.
+    const frontendUnwired = hasBackend && !backendUrl;
     let frontendUrl: string | null = null;
     let frontendId: string | null = null;
     let frontendError: string | null = null;
     const front = prepareFrontendForVercel(repoFiles, backendUrl);
     if (front.found) {
       try {
-        if (!process.env.VERCEL_TOKEN) throw new Error("VERCEL_TOKEN is not configured.");
+        if (!serverToken("VERCEL_TOKEN")) throw new Error("VERCEL_TOKEN is not configured.");
         const prep = prepareForDeploy(front.files);
         const result = await deployToVercel(prep.files as WorkspaceFile[], {
           name: slug,
@@ -169,7 +176,13 @@ export async function POST(req: NextRequest) {
       backendNote,
       frontendId,
       frontendError,
-      warnings: hasBackend ? backendWarnings : [],
+      frontendUnwired,
+      warnings: [
+        ...(hasBackend ? backendWarnings : []),
+        ...(frontendUnwired
+          ? ["The backend failed to deploy, so the frontend was shipped without a working API URL — its login/data calls will fail in the browser. Fix the backend error above and redeploy."]
+          : []),
+      ],
     });
   } catch (error) {
     console.error("[deploy/fullstack]", error);

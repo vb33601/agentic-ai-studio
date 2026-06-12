@@ -4,6 +4,7 @@ import { resolveModel } from "@/lib/ai/providers";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
 import { deployToVercel } from "@/lib/deploy/vercel";
+import { serverToken } from "@/lib/deploy/env";
 import type { WorkspaceFile } from "@/store/workspace";
 
 // Auto-fix runs on the Kilo Code gateway (one key, ~335 models). gpt-4o-mini is
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest) {
     if (!front.found) {
       return NextResponse.json({ changed: true, report: fix.report, files: patchedWorkspace });
     }
-    if (!process.env.VERCEL_TOKEN) {
+    if (!serverToken("VERCEL_TOKEN")) {
       return NextResponse.json({ error: "VERCEL_TOKEN is not configured." }, { status: 500 });
     }
     const prep = prepareForDeploy(front.files);
