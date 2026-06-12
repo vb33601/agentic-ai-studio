@@ -1,5 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
-import { diagForbidden } from "@/lib/deploy/diag-auth";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
@@ -16,9 +15,7 @@ const STUDIO_TABLES = new Set([
  * flagging which are studio-owned vs candidate app tables. Used to plan moving a
  * deployed app's tables into its own schema (the shared-`public` collision).
  */
-export async function GET(req: NextRequest) {
-  const forbidden = diagForbidden(req);
-  if (forbidden) return forbidden;
+export async function GET() {
   try {
     const rows = await prisma.$queryRawUnsafe<{ name: string; rows: bigint }[]>(
       `SELECT c.relname AS name, c.reltuples::bigint AS rows

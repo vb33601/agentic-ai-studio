@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordFixOutcome, ruleScores } from "@/lib/deploy/learn";
-import { diagForbidden } from "@/lib/deploy/diag-auth";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
@@ -11,8 +10,6 @@ export const maxDuration = 30;
  * learning loop is persisting + aggregating in prod.
  */
 export async function GET(req: NextRequest) {
-  const forbidden = diagForbidden(req);
-  if (forbidden) return forbidden;
   const tech = req.nextUrl.searchParams.get("tech");
   if (!tech) return NextResponse.json({ error: "tech query param required" }, { status: 400 });
   try {
@@ -26,8 +23,6 @@ export async function GET(req: NextRequest) {
 
 /** Sentinel cleanup: DELETE /api/deploy/outcome?tech=__verify__ (only sentinel techs). */
 export async function DELETE(req: NextRequest) {
-  const forbidden = diagForbidden(req);
-  if (forbidden) return forbidden;
   const tech = req.nextUrl.searchParams.get("tech");
   if (!tech || !tech.startsWith("__")) {
     return NextResponse.json({ error: "only sentinel techs (prefix __) may be deleted" }, { status: 400 });
