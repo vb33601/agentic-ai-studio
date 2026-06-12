@@ -86,14 +86,26 @@ function hasRootDockerfile(files: RepoFile[]): boolean {
  * bound only to 0.0.0.0 (IPv4) is unreachable there — the edge completes TLS but
  * returns an empty reply (the symptom: works on Render, "won't deploy" on Fly).
  * `[::]` listens on IPv6 AND, with Linux's default `bindv6only=0`, accepts IPv4
- * too, so Render/Railway keep working unchanged. Covers gunicorn (`--bind/-b`),
- * uvicorn/hypercorn/daphne (`--host`), and Django's `runserver`.
+ * too, so Render/Railway keep working unchanged. Covers every bind WE control in a
+ * generated (or author-provided) Dockerfile across the configured stacks:
+ *  - gunicorn/puma `-b|--bind 0.0.0.0:PORT` and the bare `-b 0.0.0.0` (Rails, port via -p),
+ *  - uvicorn/hypercorn/daphne `--host 0.0.0.0`,
+ *  - rackup `-o 0.0.0.0` (Sinatra/Rack),
+ *  - PHP's built-in server `-S 0.0.0.0:PORT` (Laravel/Symfony),
+ *  - Django's `runserver 0.0.0.0:PORT`,
+ *  - URL hosts `http://+|*|0.0.0.0:PORT` (ASP.NET `ASPNETCORE_URLS`, Perl/Mojo `-l`).
+ * Binds that live in app SOURCE (Go `:PORT`, Node `listen(PORT)`) already default to
+ * dual-stack; ones the app hardcodes (Rust/Phoenix config) can't be rewritten here.
  */
 export function bindDualStack(dockerfile: string): string {
   return dockerfile
     .replace(/(-{1,2}b(?:ind)?[=\s]+)0\.0\.0\.0:/g, "$1[::]:")
+    .replace(/(-{1,2}b(?:ind)?[=\s]+)0\.0\.0\.0(?=\s|$|["'])/g, "$1[::]")
     .replace(/(--host[=\s]+)0\.0\.0\.0\b/g, "$1::")
-    .replace(/(runserver\s+)0\.0\.0\.0:/g, "$1[::]:");
+    .replace(/(-o[=\s]+)0\.0\.0\.0\b/g, "$1::")
+    .replace(/(-S[=\s]+)0\.0\.0\.0:/g, "$1[::]:")
+    .replace(/(runserver\s+)0\.0\.0\.0:/g, "$1[::]:")
+    .replace(/(\bhttps?:\/\/)(?:\+|\*|0\.0\.0\.0)(:)/g, "$1[::]$2");
 }
 
 export function prepareForContainer(input: RepoFile[]): UniversalPrep {

@@ -459,9 +459,11 @@ COPY . .
 RUN mvn -q -DskipTests package`;
 
   const jarGlob = isGradle ? "build/libs/*.jar" : "target/*.jar";
-  // Spring reads server.port; pass $PORT explicitly so it binds correctly.
+  // Spring reads server.port; pass $PORT explicitly so it binds correctly, and
+  // server.address=:: so Tomcat listens on IPv6 dual-stack (it defaults to IPv4
+  // 0.0.0.0, which Fly's IPv6 proxy can't reach — works on Render, empty reply on Fly).
   // (Plain string — ${PORT} is literal here and expanded by the shell at runtime.)
-  const startArg = isSpring ? " --server.port=${PORT:-8080}" : "";
+  const startArg = isSpring ? " --server.port=${PORT:-8080} --server.address=::" : "";
   const dockerfile = `# Java${isSpring ? " (Spring Boot)" : ""} app
 ${buildStage}
 # Select the runnable jar. Prefer a fat/shadow jar (Kotlin/Ktor -all.jar, assembly);
@@ -476,7 +478,7 @@ EXPOSE 8080
 CMD ["sh", "-c", "java -jar /app/app.jar${startArg}"]
 `;
   return { framework: isSpring ? "spring" : "java", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
-    notes: [isSpring ? "Spring Boot detected; server.port bound to $PORT." : "Java detected; ensure the app reads $PORT."] };
+    notes: [isSpring ? "Spring Boot detected; server.port=$PORT and server.address=:: (dual-stack for Fly)." : "Java detected; ensure the app reads $PORT."] };
 }
 
 function planGo(files: DockSourceFile[]): Partial {
@@ -529,22 +531,39 @@ CMD ["/usr/local/bin/app"]
 function planDotnet(files: DockSourceFile[]): Partial {
   const csproj = depsBlob(files, /\.csproj$/);
   const needsDatabase = /npgsql|entityframework|sqlclient|pomelo/.test(csproj);
-  const dockerfile = `# .NET app
+  // ASP.NET Core apps that bundle a JS SPA (SpaProxy/SpaServices: a ClientApp with a
+  // package.json that `dotnet publish` builds via npm) need Node in the build image —
+  // the dotnet SDK image ships none, so publish fails with "npm: command not found".
+  // This is the classic ".NET + React deploy failed" cause. Installing Node is a no-op
+  // for API-only projects (the publish just never invokes it).
+  const hasSpa = has(files, /(^|\/)package\.json$/);
+  const nodeSetup = hasSpa
+    ? `# Node for the integrated SPA (npm install/build runs during dotnet publish).
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \\
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \\
+ && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
+`
+    : "";
+  const dockerfile = `# .NET app${hasSpa ? " (+ integrated SPA)" : ""}
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /src
+${nodeSetup}WORKDIR /src
 COPY . .
 RUN dotnet publish -c Release -o /app
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=build /app .
-ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_URLS=http://[::]:8080
 EXPOSE 8080
-# ASP.NET reads ASPNETCORE_URLS; rebind to $PORT when the host injects one.
-# The entry assembly is the one with a <name>.runtimeconfig.json (publish also emits
-# many dependency DLLs, so picking the first *.dll alphabetically runs the wrong one).
-CMD ["sh", "-c", "export ASPNETCORE_URLS=http://+:\${PORT:-8080}; dll=$(ls *.runtimeconfig.json | head -n1); exec dotnet \\"\${dll%.runtimeconfig.json}.dll\\""]
+# ASP.NET reads ASPNETCORE_URLS; bind [::] (dual-stack — reachable on Fly's IPv6 proxy
+# AND on Render/Railway) and rebind to $PORT when the host injects one. The entry
+# assembly is the one with a <name>.runtimeconfig.json (publish also emits many
+# dependency DLLs, so picking the first *.dll alphabetically runs the wrong one).
+CMD ["sh", "-c", "export ASPNETCORE_URLS=http://[::]:\${PORT:-8080}; dll=$(ls *.runtimeconfig.json | head -n1); exec dotnet \\"\${dll%.runtimeconfig.json}.dll\\""]
 `;
-  return { framework: "aspnet", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false, notes: [".NET detected; bound to $PORT via ASPNETCORE_URLS."] };
+  return { framework: "aspnet", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
+    notes: hasSpa
+      ? [".NET detected with an integrated SPA; Node installed in the build stage for the publish-time npm build. ASPNETCORE_URLS binds [::] on $PORT (dual-stack for Fly)."]
+      : [".NET detected; ASPNETCORE_URLS binds [::] on $PORT (dual-stack for Fly)."] };
 }
 
 function planElixir(files: DockSourceFile[]): Partial {
