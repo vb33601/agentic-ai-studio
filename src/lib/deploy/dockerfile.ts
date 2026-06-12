@@ -219,6 +219,21 @@ function depsBlob(files: DockSourceFile[], pathRe: RegExp): string {
 }
 
 /**
+ * True when the app declares SQLite and NO server DB driver — it manages its own
+ * embedded file database and must NOT have a managed Postgres wired into it. Wiring
+ * one injects a Postgres connection string that an embedded-DB app feeds to its
+ * SQLite driver and CRASHES at startup — proven for .NET:
+ *   UseSqlite("Host=…;Port=5432;…") → ArgumentException: keyword 'host' not supported
+ * → the process exits, the Fly/Render health check fails, and the deploy "fails".
+ * The same trap hits Rails (sqlite3 gem, no pg) and any framework that consumes the
+ * injected DATABASE_URL/connection string. (blob must be lowercased — depsBlob is.)
+ */
+function embeddedSqlite(blob: string): boolean {
+  return /sqlite/.test(blob) &&
+    !/npgsql|psycopg|asyncpg|pg8000|postgres|pgsql|mysql|mariadb|sqlclient|pomelo|cockroach|mssql|mongo/.test(blob);
+}
+
+/**
  * Resolve a runtime version from a project's conventional version files so the base
  * image MATCHES what the app targets. A hardcoded base image is the single biggest
  * build-failure cause across stacks (the same class as ".NET net9 app on sdk:8.0":
@@ -258,7 +273,7 @@ function planPython(files: DockSourceFile[]): Partial {
     [/(^|\/)(pyproject\.toml|setup\.cfg)$/, /requires[-_]python\s*=?\s*["']?[>=~ ]*(\d+\.\d+)/i],
   ], "3.12");
   const pip = "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || (pip install --no-cache-dir . 2>/dev/null || true)";
-  const needsDatabase = /psycopg|asyncpg|dj-database-url|databases\[|sqlalchemy|django|tortoise/.test(reqs);
+  const needsDatabase = /psycopg|asyncpg|dj-database-url|databases\[|sqlalchemy|django|tortoise/.test(reqs) && !embeddedSqlite(reqs);
   // The managed database we wire in is Postgres, but generated requirements often
   // omit the driver — so a Postgres DATABASE_URL crashes the app at boot (e.g.
   // SQLAlchemy's psycopg2 dialect → ModuleNotFoundError). Install psycopg2-binary
@@ -348,7 +363,7 @@ CMD ["sh", "-c", "python ${entryPath}"]
 
 function planRuby(files: DockSourceFile[]): Partial {
   const gems = depsBlob(files, /(^|\/)Gemfile$/);
-  const needsDatabase = /\bpg\b|postgres|activerecord|sequel|mysql2/.test(gems);
+  const needsDatabase = /\bpg\b|postgres|activerecord|sequel|mysql2/.test(gems) && !embeddedSqlite(gems);
   const rb = pickVersion(files, [
     [/(^|\/)\.ruby-version$/, /(\d+\.\d+)/],
     [/(^|\/)Gemfile$/, /ruby\s+["'](\d+\.\d+)/],
@@ -402,7 +417,7 @@ CMD ["sh", "-c", "ruby ${entry?.path || "app.rb"}"]
 
 function planPhp(files: DockSourceFile[]): Partial {
   const composer = depsBlob(files, /(^|\/)composer\.json$/);
-  const needsDatabase = /pdo|postgres|pgsql|mysql|doctrine|eloquent|laravel/.test(composer);
+  const needsDatabase = /pdo|postgres|pgsql|mysql|doctrine|eloquent|laravel/.test(composer) && !embeddedSqlite(composer);
   const php = pickVersion(files, [[/(^|\/)composer\.json$/, /"php"\s*:\s*"[^"]*?(\d+\.\d+)/]], "8.3");
 
   // Laravel — artisan present.
@@ -458,7 +473,7 @@ function planJava(files: DockSourceFile[]): Partial {
   // Scala via sbt: different build tool (sbt, not gradle/maven) and a fat jar.
   if (has(files, /(^|\/)build\.sbt$/)) {
     const sbtBlob = depsBlob(files, /(^|\/)(build\.sbt|project\/.+\.(sbt|scala|properties))$/);
-    const needsDatabase = /postgres|slick|doobie|quill|jdbc|skunk/.test(sbtBlob);
+    const needsDatabase = /postgres|slick|doobie|quill|jdbc|skunk/.test(sbtBlob) && !embeddedSqlite(sbtBlob);
     const dockerfile = `# Scala (sbt) app
 FROM sbtscala/scala-sbt:eclipse-temurin-21.0.2_13_1.10.1_3.5.0 AS build
 WORKDIR /src
@@ -481,7 +496,7 @@ CMD ["sh", "-c", "java -jar /app/app.jar"]
   const pom = depsBlob(files, /(^|\/)pom\.xml$/);
   const gradle = depsBlob(files, /(^|\/)build\.gradle(\.kts)?$/);
   const isSpring = /spring-boot/.test(pom + gradle);
-  const needsDatabase = /postgresql|mysql|spring-data|jdbc|hibernate/.test(pom + gradle);
+  const needsDatabase = /postgresql|mysql|spring-data|jdbc|hibernate/.test(pom + gradle) && !embeddedSqlite(pom + gradle);
   // Build+run on the JDK the project targets. Clamp to LTS tags that exist across the
   // gradle/maven/temurin image families (a non-LTS like 22 has no gradle:8-jdk22).
   const javaVersion = pickVersion(files, [
@@ -527,7 +542,7 @@ CMD ["sh", "-c", "java -jar /app/app.jar${startArg}"]
 function planGo(files: DockSourceFile[]): Partial {
   const mod = depsBlob(files, /(^|\/)go\.(mod|sum)$/);
   const fw = /gin-gonic/.test(mod) ? "gin" : /labstack\/echo/.test(mod) ? "echo" : /gofiber/.test(mod) ? "fiber" : "go";
-  const needsDatabase = /pgx|lib\/pq|gorm|database\/sql|sqlx/.test(mod);
+  const needsDatabase = /pgx|lib\/pq|gorm|database\/sql|sqlx/.test(mod) && !embeddedSqlite(mod);
   // Build with the toolchain the module declares (`go 1.22`); newer modules won't
   // compile on an older SDK ("go.mod requires go >= 1.x").
   const goVersion = pickVersion(files, [[/(^|\/)go\.mod$/, /^go\s+(\d+\.\d+)/m]], "1.23");
@@ -555,7 +570,8 @@ CMD ["/server"]
 
 function planRust(files: DockSourceFile[]): Partial {
   const cargo = files.find((f) => /(^|\/)Cargo\.toml$/.test(f.path));
-  const needsDatabase = /sqlx|diesel|tokio-postgres|sea-orm/.test(cargo?.content?.toLowerCase() || "");
+  const cargoLc = cargo?.content?.toLowerCase() || "";
+  const needsDatabase = /sqlx|diesel|tokio-postgres|sea-orm/.test(cargoLc) && !embeddedSqlite(cargoLc);
   // Honor a pinned toolchain (rust-toolchain.toml); default to the latest stable line.
   const rustVersion = pickVersion(files, [[/(^|\/)rust-toolchain(\.toml)?$/, /(?:channel\s*=\s*)?["']?(\d+\.\d+)/]], "1");
   const dockerfile = `# Rust app
@@ -580,7 +596,9 @@ function planDotnet(files: DockSourceFile[]): Partial {
   const csprojFiles = files.filter((f) => /\.csproj$/.test(f.path));
   const csproj = csprojFiles.map((f) => f.content).join("\n");
   const lc = csproj.toLowerCase();
-  const needsDatabase = /npgsql|entityframework|sqlclient|pomelo/.test(lc);
+  // A real SERVER driver, not bare "entityframework" — EF Core + Sqlite is the common
+  // generated shape and must NOT get a managed Postgres wired (UseSqlite(<npgsql>) crash).
+  const needsDatabase = /npgsql|sqlclient|pomelo|entityframeworkcore\.(postgresql|sqlserver|mysql)/.test(lc) && !embeddedSqlite(lc);
 
   // Match the SDK/runtime image tag to the project's TARGET FRAMEWORK. A net9.0/net10.0
   // app on a hardcoded sdk:8.0 image fails immediately at restore with NETSDK1045
@@ -639,7 +657,7 @@ CMD ["sh", "-c", "export ASPNETCORE_URLS=http://[::]:\${PORT:-8080}; dll=$(ls *.
 function planElixir(files: DockSourceFile[]): Partial {
   const mix = depsBlob(files, /(^|\/)mix\.exs$/);
   const isPhoenix = /phoenix/.test(mix);
-  const needsDatabase = /postgrex|ecto/.test(mix);
+  const needsDatabase = /postgrex|ecto/.test(mix) && !embeddedSqlite(mix);
   const elixirVersion = pickVersion(files, [
     [/(^|\/)\.tool-versions$/, /elixir\s+(\d+\.\d+)/],
     [/(^|\/)mix\.exs$/, /elixir:\s*["']\s*~?>?=?\s*(\d+\.\d+)/],
@@ -972,7 +990,7 @@ CMD ["sh", "-c", "R -e \\"plumber::pr_run(plumber::plumb('${path}'), host='0.0.0
 function planJulia(files: DockSourceFile[]): Partial {
   const proj = depsBlob(files, /(^|\/)Project\.toml$/);
   const isGenie = /genie/i.test(proj);
-  const needsDatabase = /libpq|postgres|mysql|sqlite|dbinterface/i.test(proj);
+  const needsDatabase = /libpq|postgres|mysql|sqlite|dbinterface/i.test(proj) && !embeddedSqlite(proj);
   const entry = find(files, /(^|\/)(app|main|server|bootstrap|routes)\.jl$/i) || find(files, /\.jl$/);
   const path = entry?.path || "app.jl";
   const dockerfile = `# Julia app${isGenie ? " (Genie)" : ""}
@@ -1061,7 +1079,7 @@ function planGleam(files: DockSourceFile[]): Partial {
   const blob = depsBlob(files, /(^|\/)gleam\.toml$/);
   const isMist = /\bmist\b/.test(blob);
   const isWisp = /\bwisp\b/.test(blob);
-  const needsDatabase = /\bpog\b|gleam_pgo|postgres|gleam_sqlite|storail/.test(blob);
+  const needsDatabase = /\bpog\b|gleam_pgo|postgres|gleam_sqlite|storail/.test(blob) && !embeddedSqlite(blob);
   // `gleam export erlang-shipment` produces a runnable bundle with entrypoint.sh.
   const dockerfile = `# Gleam app${isWisp ? " (Wisp)" : isMist ? " (Mist)" : ""}
 FROM ghcr.io/gleam-lang/gleam:v1.6.1-erlang-alpine AS build
