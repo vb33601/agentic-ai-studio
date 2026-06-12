@@ -321,6 +321,13 @@ model PreflightRule {
   detail    String   @db.Text
   source    String   @default("web") // "seed" | "web"
   sourceUrl String?
+  // Optional deterministic fix distilled from the advisory; auto-applied ONLY when
+  // verified=true (promoted after a real success track record in FixOutcome).
+  verified   Boolean @default(false)
+  fixGlob    String?
+  fixFind    String? @db.Text
+  fixReplace String? @db.Text
+  fixFlags   String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

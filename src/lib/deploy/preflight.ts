@@ -150,7 +150,12 @@ function hash(s: string): string {
 async function storedRulesFor(tech: string): Promise<PreflightRule[]> {
   try {
     const rows = await prisma.preflightRule.findMany({ where: { tech } });
-    return rows.map((row) => ({ tech: row.tech, ruleId: row.ruleId, title: row.title, detail: row.detail, source: row.source as "seed" | "web", sourceUrl: row.sourceUrl ?? undefined }));
+    return rows.map((row) => ({
+      tech: row.tech, ruleId: row.ruleId, title: row.title, detail: row.detail,
+      source: row.source as "seed" | "web", sourceUrl: row.sourceUrl ?? undefined,
+      verified: row.verified,
+      fix: row.fixFind && row.fixGlob ? { glob: row.fixGlob, find: row.fixFind, replace: row.fixReplace ?? "", flags: row.fixFlags ?? "g" } : undefined,
+    }));
   } catch {
     return [];
   }
@@ -246,6 +251,66 @@ export function applyRegistryFixes<T extends { path: string; content: string }>(
     return content === f.content ? f : { ...f, content };
   });
   return { files: out, applied: [...applied] };
+}
+
+/** Apply one fix's regex to a file set (shared by seed + stored fixes). */
+function runFix<T extends { path: string; content: string }>(files: T[], ruleId: string, fix: RegistryFix, applied: Set<string>): T[] {
+  let glob: RegExp, find: RegExp;
+  try { glob = new RegExp(fix.glob); find = new RegExp(fix.find, fix.flags ?? "g"); } catch { return files; }
+  return files.map((f) => {
+    if (!glob.test(f.path)) return f;
+    const next = f.content.replace(find, fix.replace);
+    if (next === f.content) return f;
+    applied.add(ruleId);
+    return { ...f, content: next };
+  });
+}
+
+/**
+ * Async sibling of {@link applyRegistryFixes}: also pulls the DB's VERIFIED stored
+ * fixes (distilled-then-promoted) for the stack and applies them. Best-effort —
+ * falls back to just the seed fixes when there's no DB. Call this from the deploy
+ * route (async) on the repo files before the sync prepare pipeline runs.
+ */
+export async function applyStoredFixes<T extends { path: string; content: string }>(
+  files: T[],
+  framework: string,
+): Promise<{ files: T[]; applied: string[] }> {
+  const tags = new Set(techTagsFor(framework));
+  const seed = PREFLIGHT_SEED.filter((rule) => rule.verified && rule.fix && tags.has(rule.tech));
+  let stored: PreflightRule[] = [];
+  const primaryTech = techTagsFor(framework).slice(-1)[0];
+  try {
+    stored = (await storedRulesFor(primaryTech)).filter((rule) => rule.verified && rule.fix);
+  } catch {
+    /* no DB */
+  }
+  const applied = new Set<string>();
+  let out = files;
+  for (const rule of [...seed, ...stored]) out = runFix(out, rule.ruleId, rule.fix!, applied);
+  return { files: out, applied: [...applied] };
+}
+
+/**
+ * Promote stored, distilled fixes to `verified` once their outcome track record
+ * clears the bar — so a distilled regex only starts auto-applying after it has
+ * actually been succeeding. Best-effort; returns how many were promoted.
+ */
+export async function promoteFixes(tech: string): Promise<number> {
+  try {
+    const scores = await ruleScores(tech);
+    const pending = await prisma.preflightRule.findMany({ where: { tech, verified: false, NOT: { fixFind: null } } });
+    let promoted = 0;
+    for (const row of pending) {
+      if (shouldPromote(scores.get(row.ruleId))) {
+        await prisma.preflightRule.update({ where: { id: row.id }, data: { verified: true } });
+        promoted++;
+      }
+    }
+    return promoted;
+  } catch {
+    return 0;
+  }
 }
 
 /**

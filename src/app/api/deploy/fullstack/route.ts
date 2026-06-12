@@ -11,7 +11,8 @@ import type { ProviderId } from "@/lib/deploy/providers/types";
 import { slugify } from "@/lib/utils";
 import { serverToken } from "@/lib/deploy/env";
 import { databaseEnvForFramework } from "@/lib/deploy/db-env";
-import { preflightForFramework, seedRulesFor, type PreflightRule } from "@/lib/deploy/preflight";
+import { preflightForFramework, seedRulesFor, applyStoredFixes, promoteFixes, techTagsFor, type PreflightRule } from "@/lib/deploy/preflight";
+import { distillAndStore } from "@/lib/deploy/distill";
 import type { WorkspaceFile } from "@/store/workspace";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
@@ -102,8 +103,11 @@ export async function POST(req: NextRequest) {
               { key: "CSRF_TRUSTED_ORIGINS", value: "https://*.fly.dev,https://*.onrender.com" },
             );
           }
+          // Apply the registry's VERIFIED (incl. distilled-then-promoted) fixes for
+          // this stack before pushing the repo.
+          const backendFiles = (await applyStoredFixes(container.prep.files, container.prep.plan.framework)).files;
           const r = await deployContainer({
-            githubToken: token, name: backendName, files: container.prep.files, runtime: "docker",
+            githubToken: token, name: backendName, files: backendFiles, runtime: "docker",
             dockerfilePath: container.prep.dockerfilePath, envVars, provider,
             description: `Container backend (${container.prep.plan.framework}) from agentic-ai-studio`,
           });
@@ -122,8 +126,9 @@ export async function POST(req: NextRequest) {
             { key: "FRONTEND_URL", value: predictedFrontendUrl },
           ];
           if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
+          const nodeFiles = (await applyStoredFixes(backendPrep.files, "node")).files;
           const r = await deployContainer({
-            githubToken: token, name: backendName, files: backendPrep.files, runtime: "node",
+            githubToken: token, name: backendName, files: nodeFiles, runtime: "node",
             buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars, provider,
             description: "Backend from agentic-ai-studio",
           });
@@ -185,6 +190,15 @@ export async function POST(req: NextRequest) {
         ),
       )
     ).flat();
+
+    // Grow the engine for next time (best-effort, bounded, non-blocking): distill
+    // researched advisories for this stack into candidate fixes, and promote any
+    // whose outcome track record now clears the bar. Persisted for future deploys.
+    const primaryTech = techTagsFor(backendFramework).slice(-1)[0];
+    void Promise.race([
+      Promise.all([distillAndStore(primaryTech).catch(() => 0), promoteFixes(primaryTech).catch(() => 0)]),
+      new Promise((res) => setTimeout(res, 6000)),
+    ]).catch(() => {});
 
     return NextResponse.json({
       frontendUrl,
