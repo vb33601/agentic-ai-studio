@@ -1,6 +1,7 @@
 import type { SourceFile } from "@/lib/ai/deps";
 import { searchWeb } from "@/lib/ai/web-search";
 import { prisma } from "@/lib/prisma";
+import { ruleScores, weightOf } from "./learn";
 
 /**
  * Technology-tagged PREFLIGHT REGISTRY: the basic rules each stack needs to run
@@ -157,15 +158,23 @@ export async function preflightForFramework(framework: string): Promise<Prefligh
   const seed = seedRulesFor(framework);
   const primaryTech = techTagsFor(framework).slice(-1)[0]; // most specific tag
   const stored = await storedRulesFor(primaryTech);
+  let rules: PreflightRule[];
   if (stored.length === 0) {
     // Not researched yet → research, persist (best-effort), grow the registry.
     const researched = await researchStackRules(primaryTech).catch(() => []);
-    if (researched.length) {
-      await upsertRules(researched);
-      return dedupe([...seed, ...researched]);
-    }
+    if (researched.length) await upsertRules(researched);
+    rules = dedupe([...seed, ...researched]);
+  } else {
+    rules = dedupe([...seed, ...stored]);
   }
-  return dedupe([...seed, ...stored]);
+  // Learn: order by historical success so rules/fixes that have WORKED for this
+  // tech float to the top and ones that have failed are demoted (neutral 0.5 when
+  // there's no data yet). Curated seed rules tie-break above researched ones.
+  const scores = await ruleScores(primaryTech);
+  return rules
+    .map((rule) => ({ rule, w: weightOf(scores, rule.ruleId) + (rule.source === "seed" ? 0.001 : 0) }))
+    .sort((a, b) => b.w - a.w)
+    .map(({ rule }) => rule);
 }
 
 function dedupe(rules: PreflightRule[]): PreflightRule[] {
@@ -186,4 +195,20 @@ export async function ensureSeedPersisted(): Promise<void> {
 /** Short advisory lines for the deploy log (seed rules only — instant). */
 export function preflightAdvisories(_files: SourceFile[], framework: string): string[] {
   return seedRulesFor(framework).map((rule) => `${rule.title} — ${rule.detail}`);
+}
+
+/** Seed rules matching a detected technology list (for the auto-fix context). */
+export function rulesForTechnologies(technologies: string[]): PreflightRule[] {
+  const blob = technologies.join(" ").toLowerCase();
+  const tags = new Set<string>();
+  const kw: Array<[string, string[]]> = [
+    ["express", ["backend", "node"]], ["node", ["backend", "node"]],
+    ["flask", ["backend", "python", "flask"]], ["fastapi", ["backend", "python", "fastapi"]],
+    ["django", ["backend", "python", "django"]], ["python", ["backend", "python"]],
+    ["csproj", ["backend", "dotnet"]], ["dotnet", ["backend", "dotnet"]], ["aspnet", ["backend", "dotnet"]],
+    ["spring", ["backend", "spring"]], ["rails", ["backend", "rails"]],
+    ["react", ["frontend"]], ["vite", ["frontend"]], ["next", ["frontend"]], ["vue", ["frontend"]],
+  ];
+  for (const [k, ts] of kw) if (blob.includes(k)) ts.forEach((t) => tags.add(t));
+  return PREFLIGHT_SEED.filter((rule) => tags.has(rule.tech));
 }

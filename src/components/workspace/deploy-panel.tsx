@@ -150,6 +150,16 @@ export function DeployPanel() {
     }
   };
 
+  // Fire-and-forget: tell the engine whether a deploy/verify step passed, so it
+  // learns which rules/fixes actually work per technology. Best-effort.
+  const reportOutcome = (o: { tech: string; ruleId: string; action: string; success: boolean; phase: "build" | "deploy" | "health" | "smoke" }) => {
+    void fetch("/api/deploy/outcome", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(o),
+    }).catch(() => {});
+  };
+
   // Poll a Vercel deployment to a terminal state.
   const pollVercel = async (vercelId: string): Promise<{ state: "READY" | "ERROR" | "TIMEOUT"; url?: string }> => {
     for (let i = 0; i < 40; i++) {
@@ -452,6 +462,9 @@ export function DeployPanel() {
       // crashes the build-status check misses).
       const bh = await backendCheck;
       if (bh) {
+        // Learn: record whether THIS stack's deploy actually verified, so the
+        // engine weights its rules/fixes by real outcomes over time.
+        reportOutcome({ tech: data.backendFramework || "node", ruleId: "backend-deploy", action: "deploy", success: !!bh.healthy, phase: "health" });
         if (bh.healthy) {
           addBuildLog(`✓ BACKEND HEALTHY (HTTP ${bh.status}) → ${data.backendUrl}`);
           update(deployId, { backendHealthy: true });
@@ -473,6 +486,7 @@ export function DeployPanel() {
       if (liveFrontendUrl) {
         const smoke = await runFrontendSmoke(liveFrontendUrl, data.backendUrl ?? null);
         update(deployId, { frontendSmoke: smoke });
+        reportOutcome({ tech: "frontend", ruleId: "frontend-smoke", action: "smoke", success: !!smoke.ok, phase: "smoke" });
       }
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);

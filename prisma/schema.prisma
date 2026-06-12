@@ -327,3 +327,22 @@ model PreflightRule {
   @@unique([tech, ruleId])
   @@index([tech])
 }
+
+/// Outcome ledger for the self-improving deploy engine: every fix/rule the engine
+/// applies, and whether the deploy+verification that followed SUCCEEDED. Aggregated
+/// into per-rule success rates so future selection prefers what has worked and
+/// demotes what hasn't (outcome-weighted / contextual-bandit-style learning).
+model FixOutcome {
+  id             String   @id @default(cuid())
+  tech           String   // stack tag
+  ruleId         String   // preflight rule or fix identifier this outcome is about
+  errorSignature String?  // normalized error this addressed (for matching)
+  action         String   // what was done (rule id / transform / "ai-fix")
+  success        Boolean  // did the subsequent deploy/verify pass?
+  phase          String   @default("deploy") // "build" | "deploy" | "health" | "smoke"
+  details        String?  @db.Text
+  createdAt      DateTime @default(now())
+
+  @@index([tech, ruleId])
+  @@index([tech, success])
+}

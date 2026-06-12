@@ -23,6 +23,7 @@ import { z } from "zod";
 import { getModel } from "./providers";
 import { searchWeb, fetchPageText, type WebResult } from "./web-search";
 import type { SourceFile } from "./deps";
+import { rulesForTechnologies } from "@/lib/deploy/preflight";
 
 export interface AutoFixSource {
   title: string;
@@ -384,6 +385,7 @@ export async function autoFixBuildError(input: {
 }): Promise<AutoFixResult> {
   const { files, errorLog, attempt = 0, maxDepth = 3, modelId = DEFAULT_FIX_MODEL, apiKey, model } = input;
   const technologies = detectTechnologies(files);
+  const registryRules = rulesForTechnologies(technologies);
   const sig = buildErrorSignature(errorLog);
   const depth = Math.min(maxDepth, 1 + attempt);
 
@@ -424,6 +426,9 @@ export async function autoFixBuildError(input: {
         "edits (or none if you truly cannot tell).",
       prompt:
         `TECHNOLOGIES: ${technologies.join(", ") || "unknown"}\n\n` +
+        (registryRules.length
+          ? `REGISTRY RULES (curated correctness rules for this stack — honor these in your fix):\n${registryRules.map((rule) => `- ${rule.title}: ${rule.detail}`).join("\n")}\n\n`
+          : "") +
         `BUILD ERROR:\n${[sig.message, ...sig.context].join("\n")}\n\n` +
         `SEARCH FINDINGS (depth ${findings.depthReached}, queries: ${findings.queries.map((q) => `"${q}"`).join(" | ")}):\n${findingsBlock(findings)}\n\n` +
         `RELEVANT PROJECT FILES:\n${context.map((f) => `===== ${f.path} =====\n${f.content}`).join("\n\n")}`,
