@@ -49,6 +49,51 @@ export interface StackPlan {
   runsMigrations: boolean;
   /** Non-fatal advisories to surface in the deploy log. */
   notes: string[];
+  /**
+   * Source files to REPLACE in the repo before deploy (path must match an input
+   * file). Used to inject a guaranteed `/health` liveness route so post-deploy
+   * verification is deterministic instead of inferring "up" from a tolerated 404.
+   */
+  sourcePatches?: DockSourceFile[];
+}
+
+/**
+ * A guarded, idempotent `/health` -> 200 route appended to a Flask/FastAPI entry
+ * module. Wrapped in try/except so it can NEVER break the app: if the app object
+ * isn't named as detected, or registration fails for any reason, the original app
+ * runs exactly as before (back to the tolerated-404 behavior). Skipped when the
+ * marker is already present so re-preparing the same source doesn't stack blocks.
+ */
+const HEALTH_MARKER = "deploy liveness probe (auto-added";
+
+function withFlaskHealth(entry: DockSourceFile, appVar: string): DockSourceFile {
+  if (entry.content.includes(HEALTH_MARKER)) return entry;
+  const snippet = `
+
+# --- ${HEALTH_MARKER}; safe no-op if it can't register) ---
+try:
+    if "/health" not in {str(_r.rule) for _r in ${appVar}.url_map.iter_rules()}:
+        @${appVar}.route("/health")
+        def _deploy_health():
+            return {"status": "ok"}, 200
+except Exception:
+    pass
+`;
+  return { path: entry.path, content: entry.content.replace(/\s*$/, "\n") + snippet };
+}
+
+function withFastapiHealth(entry: DockSourceFile, appVar: string): DockSourceFile {
+  if (entry.content.includes(HEALTH_MARKER)) return entry;
+  const snippet = `
+
+# --- ${HEALTH_MARKER}; safe no-op if it can't register) ---
+try:
+    if not any(getattr(_r, "path", None) == "/health" for _r in ${appVar}.routes):
+        ${appVar}.add_api_route("/health", lambda: {"status": "ok"}, methods=["GET"])
+except Exception:
+    pass
+`;
+  return { path: entry.path, content: entry.content.replace(/\s*$/, "\n") + snippet };
 }
 
 const FILE_LABELS: Record<Stack, string> = {
@@ -176,7 +221,8 @@ EXPOSE 8000
 CMD ["sh", "-c", "uvicorn ${mod}:app --host 0.0.0.0 --port \${PORT:-8000}"]
 `;
     return { framework: "fastapi", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
-      notes: [`FastAPI detected (ASGI app at ${mod}:app). If your app object isn't named "app", adjust the start command.`] };
+      notes: [`FastAPI detected (ASGI app at ${mod}:app). If your app object isn't named "app", adjust the start command.`],
+      sourcePatches: entry ? [withFastapiHealth(entry, "app")] : undefined };
   }
 
   // Flask — gunicorn on module:app.
@@ -196,7 +242,8 @@ EXPOSE 8000
 CMD ["sh", "-c", "gunicorn ${mod}:${varName} --bind 0.0.0.0:\${PORT:-8000} --workers 3"]
 `;
     return { framework: "flask", role: "backend", dockerfile, port: 8000, needsDatabase, runsMigrations: false,
-      notes: [`Flask detected (${mod}:${varName}).`] };
+      notes: [`Flask detected (${mod}:${varName}).`],
+      sourcePatches: entry ? [withFlaskHealth(entry, varName)] : undefined };
   }
 
   // Generic Python — run the obvious entrypoint.
