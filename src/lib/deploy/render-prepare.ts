@@ -1,4 +1,5 @@
 import type { RepoFile } from "./github";
+import { applyRegistryFixes } from "./preflight";
 
 /**
  * Prepare a generated backend for Render + a managed Postgres (Aiven).
@@ -610,6 +611,10 @@ export function prepareBackendForRender(input: RepoFile[]): BackendPrep {
   // server boots instead of crash-looping with MODULE_NOT_FOUND — which would
   // take the backend down and leave the frontend stuck on a loading screen.
   files = stubMissingBackendImports(files);
+
+  // Apply the registry's verified deterministic fixes for Node backends
+  // (e.g. hardcoded app.listen(port) → process.env.PORT fallback).
+  files = applyRegistryFixes(files, "node").files;
 
   const deps = depKeys(parsed);
   const hasBackendDeps = BACKEND_DEPS.some((d) => deps.has(d));

@@ -20,6 +20,20 @@ import { ruleScores, weightOf } from "./learn";
  * offline search never blocks a deploy — the seed rules always apply.
  */
 
+/**
+ * A deterministic, auto-applicable fix attached to a rule. Researched advisories
+ * start WITHOUT one (they only inform the AI fixer); a fix is added either by
+ * curation (seed) or by distilling a researched advisory, and is auto-applied
+ * ONLY once `verified` is true — promoted after it has actually succeeded on real
+ * deploys (the outcome ledger), so an unproven regex never touches user code.
+ */
+export interface RegistryFix {
+  glob: string;   // RegExp source tested against the file path
+  find: string;   // RegExp source
+  replace: string;
+  flags?: string; // default "g"
+}
+
 export interface PreflightRule {
   tech: string;
   ruleId: string;
@@ -27,6 +41,8 @@ export interface PreflightRule {
   detail: string;
   source?: "seed" | "web";
   sourceUrl?: string;
+  fix?: RegistryFix;
+  verified?: boolean;
 }
 
 const r = (tech: string, ruleId: string, title: string, detail: string): PreflightRule => ({
@@ -41,7 +57,14 @@ export const PREFLIGHT_SEED: PreflightRule[] = [
   r("backend", "secrets-from-env", "Config from env", "Read DATABASE_URL / secrets / PORT from the environment; never hardcode — the platform injects them at deploy."),
   // ---- node/express ----
   r("node", "express-cors", "Enable CORS", "Express backends must enable CORS (permissive or an env allow-list incl. *.vercel.app) or the browser blocks the frontend's calls."),
-  r("node", "listen-port", "app.listen(process.env.PORT)", "Listen on process.env.PORT with a fallback; bind all interfaces."),
+  {
+    ...r("node", "listen-port", "app.listen(process.env.PORT)", "Listen on process.env.PORT with a fallback; bind all interfaces — a hardcoded port → unreachable container."),
+    verified: true,
+    // app.listen(3000) / .listen(8080,…) with a BARE numeric port → add the env
+    // fallback. Idempotent: a call already using process.env.PORT has no bare
+    // number to match. 2–5 digits avoids matching unrelated single-digit args.
+    fix: { glob: "\\.(jsx?|tsx?|mjs|cjs)$", find: "(\\.listen\\(\\s*)(\\d{2,5})(\\s*[,)])", replace: "$1process.env.PORT || $2$3" },
+  },
   // ---- python flask/fastapi/django ----
   r("flask", "gunicorn-bind", "gunicorn --bind [::]:$PORT", "Run under gunicorn bound to [::]/0.0.0.0 and $PORT; Flask's dev server / app.run under __main__ doesn't run in production."),
   r("flask", "jwt-string-sub", "JWT subject must be a string", "create_access_token(identity=str(user.id)) and int(get_jwt_identity()) on read — an int sub makes every protected route 422 'Subject must be a string'."),
@@ -195,6 +218,45 @@ export async function ensureSeedPersisted(): Promise<void> {
 /** Short advisory lines for the deploy log (seed rules only — instant). */
 export function preflightAdvisories(_files: SourceFile[], framework: string): string[] {
   return seedRulesFor(framework).map((rule) => `${rule.title} — ${rule.detail}`);
+}
+
+/**
+ * Apply the registry's VERIFIED deterministic fixes for a framework to a file set.
+ * Pure, idempotent, and conservative: only `verified` regex fixes whose tech tag
+ * matches and whose glob matches the path are applied — researched-but-unproven
+ * advisories never auto-edit code. Returns the (possibly) updated files + the ids
+ * that fired. Synchronous, so it slots into the existing prepare pipelines.
+ */
+export function applyRegistryFixes<T extends { path: string; content: string }>(
+  files: T[],
+  framework: string,
+): { files: T[]; applied: string[] } {
+  const tags = new Set(techTagsFor(framework));
+  const fixes = PREFLIGHT_SEED.filter((rule) => rule.verified && rule.fix && tags.has(rule.tech));
+  if (fixes.length === 0) return { files, applied: [] };
+  const applied = new Set<string>();
+  const out = files.map((f) => {
+    let content = f.content;
+    for (const rule of fixes) {
+      const fix = rule.fix!;
+      if (!new RegExp(fix.glob).test(f.path)) continue;
+      const next = content.replace(new RegExp(fix.find, fix.flags ?? "g"), fix.replace);
+      if (next !== content) { applied.add(rule.ruleId); content = next; }
+    }
+    return content === f.content ? f : { ...f, content };
+  });
+  return { files: out, applied: [...applied] };
+}
+
+/**
+ * Promotion gate: a stored, researched fix becomes auto-applicable (`verified`)
+ * once it has a strong, corroborated track record — so the engine only starts
+ * editing code with a fix AFTER it has proven itself. Curated seed fixes ship
+ * pre-verified.
+ */
+export function shouldPromote(score: { success: number; total: number } | undefined): boolean {
+  if (!score) return false;
+  return score.total >= 3 && score.success / score.total >= 0.8;
 }
 
 /** Seed rules matching a detected technology list (for the auto-fix context). */

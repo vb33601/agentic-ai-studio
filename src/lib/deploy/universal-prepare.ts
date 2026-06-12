@@ -1,6 +1,7 @@
 import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { hardenBackendFiles } from "./harden-backend";
+import { applyRegistryFixes } from "./preflight";
 
 /**
  * Prepare a generated project of ANY language/framework for a container deploy
@@ -117,6 +118,10 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // __main__-gated init under gunicorn — crash classes that survive the build and
   // break login/boot.
   files = hardenBackendFiles(files).files;
+
+  // Apply the registry's verified deterministic fixes for this stack (no-op when
+  // the framework has none — researched-but-unproven fixes never auto-apply).
+  files = applyRegistryFixes(files, plan.framework).files;
 
   // Inject the generated Dockerfile + .dockerignore unless the repo already
   // provides its own (author's Dockerfile wins). Either way, rewrite an
