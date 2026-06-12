@@ -1,5 +1,6 @@
 import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
+import { hardenBackendFiles } from "./harden-backend";
 
 /**
  * Prepare a generated project of ANY language/framework for a container deploy
@@ -101,6 +102,10 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   let files: RepoFile[] = input.map((f) =>
     ENV_FILE.test(f.path) ? { path: f.path, content: sanitizeEnv(f.content) } : f,
   );
+
+  // Runtime-harden Python source: JWT string-subject + run __main__-gated init
+  // under gunicorn — crash classes that survive the build and break login/boot.
+  files = hardenBackendFiles(files).files;
 
   // Apply the plan's source patches (e.g. an injected /health route) so the
   // deployed app affirmatively confirms liveness instead of being inferred "up"

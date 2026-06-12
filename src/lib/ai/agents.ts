@@ -24,7 +24,15 @@ Full-stack & deploy-readiness (CRITICAL — generated apps get deployed: fronten
 - Make the frontend↔backend API contract line up EXACTLY: the frontend calls \`/api/<resource>\` (e.g. /api/companies, /api/auth/login), so mount each router at the matching \`/api/...\` path on the backend. Every endpoint the frontend calls must exist.
 - The frontend MUST read its API base URL from an env var with a localhost fallback (Vite → \`import.meta.env.VITE_API_URL ?? 'http://localhost:<port>'\`; CRA → \`process.env.REACT_APP_API_URL\`) — never hard-code a backend URL; the platform injects the real one at deploy. Enable CORS on the backend (a permissive or env-driven allow-list) so the deployed frontend can reach it.
 - Put JSX ONLY in \`.jsx\`/\`.tsx\` files — never in \`.js\`/\`.ts\` (Vite/Rollup won't parse JSX in a .js file and the build fails). A hook/context/util that returns JSX must be named \`.jsx\`/\`.tsx\`.
-- For data that must PERSIST after deploy use Prisma reading \`env("DATABASE_URL")\` (provider "sqlite" for the in-browser preview; the platform swaps it to postgresql at deploy). Avoid raw better-sqlite3/sqlite3 — its file lives on ephemeral disk and resets on every restart.`;
+- For data that must PERSIST after deploy use Prisma reading \`env("DATABASE_URL")\` (provider "sqlite" for the in-browser preview; the platform swaps it to postgresql at deploy). Avoid raw better-sqlite3/sqlite3 — its file lives on ephemeral disk and resets on every restart.
+
+Auth & JWT (CRITICAL — a wrong identity type makes login "do nothing"):
+- A JWT subject (\`sub\`) MUST be a STRING. With flask-jwt-extended (4.x), Node \`jsonwebtoken\`, FastAPI, etc., mint the token with a STRING identity and cast back when you query: Flask → \`create_access_token(identity=str(user.id))\`, and at read time \`user_id = int(get_jwt_identity())\` before \`Model.id == user_id\`. An int identity makes every protected route fail with 422 "Subject must be a string" — so login returns a token but \`/api/auth/me\` and all data calls fail and the app never actually logs in or redirects.
+- After login/signup return BOTH the token AND the user object, and make the protected "who am I" route (e.g. \`GET /api/auth/me\`) work with that token — the frontend calls it right after login to establish the session and navigate.
+
+Server init & seeding (CRITICAL — production runs under a WSGI/process manager, not \`python app.py\`):
+- NEVER gate required startup work behind \`if __name__ == "__main__":\`. Under gunicorn/uvicorn (how the platform runs Python backends) that block NEVER runs, so table creation, migrations, and demo-data seeding silently don't happen. Do schema setup and idempotent seeding at MODULE LEVEL (or in an app factory the server imports). Keep \`if __name__ == "__main__": app.run(...)\` ONLY for local dev.
+- If you show demo credentials on the login screen (e.g. demo@example.com / password123), you MUST seed exactly that user at startup, idempotently (skip if it already exists), or those credentials will 401.`;
 
 export const AGENT_CONFIGS: Record<string, AgentConfig> = {
   orchestrator: {
