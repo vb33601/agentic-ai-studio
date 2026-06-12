@@ -529,13 +529,31 @@ CMD ["/usr/local/bin/app"]
 }
 
 function planDotnet(files: DockSourceFile[]): Partial {
-  const csproj = depsBlob(files, /\.csproj$/);
-  const needsDatabase = /npgsql|entityframework|sqlclient|pomelo/.test(csproj);
+  const csprojFiles = files.filter((f) => /\.csproj$/.test(f.path));
+  const csproj = csprojFiles.map((f) => f.content).join("\n");
+  const lc = csproj.toLowerCase();
+  const needsDatabase = /npgsql|entityframework|sqlclient|pomelo/.test(lc);
+
+  // Match the SDK/runtime image tag to the project's TARGET FRAMEWORK. A net9.0/net10.0
+  // app on a hardcoded sdk:8.0 image fails immediately at restore with NETSDK1045
+  // ("The current .NET SDK does not support targeting .NET X"). Trust the declared TFM
+  // (the matching mcr.microsoft.com/dotnet images exist per release); fall back to the
+  // 8.0 LTS only when no <TargetFramework> is found.
+  const ver = lc.match(/<targetframeworks?>\s*net(\d+\.\d+)/)?.[1] || "8.0";
+
+  // Publish the WEB/entry project explicitly. A bare `dotnet publish` is ambiguous when
+  // a solution holds multiple projects (MSB1011) and finds nothing when the project is
+  // in a subdir (MSB1003); a class-library project would also publish a non-runnable
+  // output. Prefer the Microsoft.NET.Sdk.Web project, else the first csproj.
+  const webProj =
+    csprojFiles.find((f) => /sdk\s*=\s*["']microsoft\.net\.sdk\.web["']/i.test(f.content)) ||
+    csprojFiles[0];
+  const projArg = webProj ? ` "${webProj.path}"` : "";
+
   // ASP.NET Core apps that bundle a JS SPA (SpaProxy/SpaServices: a ClientApp with a
   // package.json that `dotnet publish` builds via npm) need Node in the build image —
   // the dotnet SDK image ships none, so publish fails with "npm: command not found".
-  // This is the classic ".NET + React deploy failed" cause. Installing Node is a no-op
-  // for API-only projects (the publish just never invokes it).
+  // This is the classic ".NET + React deploy failed" cause. No-op for API-only projects.
   const hasSpa = has(files, /(^|\/)package\.json$/);
   const nodeSetup = hasSpa
     ? `# Node for the integrated SPA (npm install/build runs during dotnet publish).
@@ -544,12 +562,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
 `
     : "";
-  const dockerfile = `# .NET app${hasSpa ? " (+ integrated SPA)" : ""}
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+  const dockerfile = `# .NET app (net${ver})${hasSpa ? " + integrated SPA" : ""}
+FROM mcr.microsoft.com/dotnet/sdk:${ver} AS build
 ${nodeSetup}WORKDIR /src
 COPY . .
-RUN dotnet publish -c Release -o /app
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+# Publish the web project explicitly so multi-project solutions and subdir layouts
+# resolve their project references from the build context.
+RUN dotnet publish${projArg} -c Release -o /app
+FROM mcr.microsoft.com/dotnet/aspnet:${ver}
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_URLS=http://[::]:8080
@@ -561,9 +581,11 @@ EXPOSE 8080
 CMD ["sh", "-c", "export ASPNETCORE_URLS=http://[::]:\${PORT:-8080}; dll=$(ls *.runtimeconfig.json | head -n1); exec dotnet \\"\${dll%.runtimeconfig.json}.dll\\""]
 `;
   return { framework: "aspnet", role: "backend", dockerfile, port: 8080, needsDatabase, runsMigrations: false,
-    notes: hasSpa
-      ? [".NET detected with an integrated SPA; Node installed in the build stage for the publish-time npm build. ASPNETCORE_URLS binds [::] on $PORT (dual-stack for Fly)."]
-      : [".NET detected; ASPNETCORE_URLS binds [::] on $PORT (dual-stack for Fly)."] };
+    notes: [
+      `.NET detected (target net${ver}); ASPNETCORE_URLS binds [::] on $PORT (dual-stack for Fly).`,
+      ...(webProj && csprojFiles.length > 1 ? [`Publishing ${webProj.path} (the web project) of ${csprojFiles.length} projects.`] : []),
+      ...(hasSpa ? ["Integrated SPA detected; Node installed in the build stage for the publish-time npm build."] : []),
+    ] };
 }
 
 function planElixir(files: DockSourceFile[]): Partial {

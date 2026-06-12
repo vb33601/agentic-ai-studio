@@ -49,6 +49,19 @@ function dir(path: string): string {
  * when there's no non-Node backend.
  */
 export function findBackendRoot(files: RepoFile[]): { dir: string; files: RepoFile[] } | null {
+  // A .NET solution references projects across sibling dirs (Api → Domain → Infra),
+  // so root at the .sln's directory — scoping to a single .csproj dir would drop its
+  // project references and `dotnet publish` fails to restore them. (Shallowest .sln.)
+  const sln = files
+    .filter((f) => /\.sln$/.test(f.path))
+    .sort((a, b) => dir(a.path).split("/").length - dir(b.path).split("/").length)[0];
+  if (sln) {
+    const d = dir(sln.path);
+    if (d === "") return { dir: "", files };
+    const prefix = `${d}/`;
+    return { dir: d, files: files.filter((f) => f.path.startsWith(prefix)).map((f) => ({ path: f.path.slice(prefix.length), content: f.content })) };
+  }
+
   let best: string | null = null;
   let bestScore = -Infinity;
   for (const f of files) {
