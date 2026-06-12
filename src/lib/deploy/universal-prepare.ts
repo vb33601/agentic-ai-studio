@@ -103,17 +103,20 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
     ENV_FILE.test(f.path) ? { path: f.path, content: sanitizeEnv(f.content) } : f,
   );
 
-  // Runtime-harden Python source: JWT string-subject + run __main__-gated init
-  // under gunicorn — crash classes that survive the build and break login/boot.
-  files = hardenBackendFiles(files).files;
-
   // Apply the plan's source patches (e.g. an injected /health route) so the
   // deployed app affirmatively confirms liveness instead of being inferred "up"
-  // from a tolerated 404. Patches are keyed by path and replace the original.
+  // from a tolerated 404. Patches are keyed by path and REPLACE the original — so
+  // they must run BEFORE hardening, otherwise they'd clobber the hardened source.
   if (plan.sourcePatches?.length) {
     const patchByPath = new Map(plan.sourcePatches.map((p) => [p.path, p.content] as const));
     files = files.map((f) => (patchByPath.has(f.path) ? { path: f.path, content: patchByPath.get(f.path)! } : f));
   }
+
+  // Runtime-harden Python source LAST, so it operates on the final file (incl. any
+  // source patches above) and can't be overwritten: JWT string-subject + run
+  // __main__-gated init under gunicorn — crash classes that survive the build and
+  // break login/boot.
+  files = hardenBackendFiles(files).files;
 
   // Inject the generated Dockerfile + .dockerignore unless the repo already
   // provides its own (author's Dockerfile wins). Either way, rewrite an
