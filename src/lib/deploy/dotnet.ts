@@ -135,6 +135,63 @@ export function autoRegisterDotnetServices(files: RepoFile[]): DotnetFixResult {
   return { files: out, notes };
 }
 
+/**
+ * Remove DI registrations that reference services the generator never created.
+ *
+ * Generated apps frequently over-register: Program.cs lists
+ * `AddScoped<IStaffService, StaffService>()` for services it planned but never
+ * emitted as files, so the build fails to COMPILE (not restore):
+ *   Program.cs: error CS0246: 'IStaffService' could not be found
+ * Nothing else references the phantom service, so dropping the dead registration
+ * lets the build proceed with the services that DO exist.
+ *
+ * Scoped tightly to the app-domain naming convention (…Service/Repository/Handler/
+ * …) and gated on the type being undefined in the entire source, so framework
+ * registrations (IHttpContextAccessor, IMemoryCache, …) are never touched.
+ */
+const DOMAIN_SERVICE = /(?:Service|Repository|Manager|Handler|Provider|Store|Gateway|UseCase|Factory)$/;
+
+export function pruneDanglingServiceRegistrations(files: RepoFile[]): DotnetFixResult {
+  const notes: string[] = [];
+  const progIdx = files.findIndex(
+    (f) => /\.cs$/.test(f.path) && /WebApplication\.CreateBuilder/.test(f.content) && /builder\.Build\(\)/.test(f.content),
+  );
+  if (progIdx === -1) return { files, notes };
+
+  // Every type the app actually defines.
+  const defined = new Set<string>();
+  for (const f of files) {
+    if (!/\.cs$/.test(f.path)) continue;
+    for (const m of f.content.matchAll(/\b(?:interface|class|record|struct|enum)\s+(\w+)/g)) defined.add(m[1]);
+  }
+
+  const removed: string[] = [];
+  const kept = files[progIdx].content
+    .split("\n")
+    .filter((line) => {
+      const m = line.match(/\bAdd(?:Scoped|Singleton|Transient)\s*<([^>]+)>\s*\(\s*\)/);
+      if (!m) return true;
+      const args = m[1].split(",").map((s) => s.trim().replace(/<.*>/, ""));
+      // Drop the line if any arg is a domain service that isn't defined in the source.
+      const phantom = args.find((a) => DOMAIN_SERVICE.test(a) && !defined.has(a));
+      if (phantom) {
+        removed.push(phantom);
+        return false;
+      }
+      return true;
+    })
+    .join("\n");
+
+  if (removed.length === 0) return { files, notes };
+  const out = [...files];
+  out[progIdx] = { path: files[progIdx].path, content: kept };
+  notes.push(
+    `.NET: removed ${removed.length} DI registration(s) for services the app never defined ` +
+      `(${[...new Set(removed)].join(", ")}) — phantom registrations that fail the build with CS0246.`,
+  );
+  return { files: out, notes };
+}
+
 /** Add `using <ns>;` lines after the leading using block (top-level-statement safe). */
 function ensureUsings(src: string, namespaces: string[]): string {
   const missing = namespaces.filter(

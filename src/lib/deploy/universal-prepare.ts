@@ -2,7 +2,7 @@ import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices } from "./dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations } from "./dotnet";
 import { hardenRuntime } from "./runtime-harden";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
@@ -187,6 +187,12 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const dotnetDi = autoRegisterDotnetServices(files);
   files = dotnetDi.files;
 
+  // Remove DI registrations for services the generator listed but never created
+  // (AddScoped<IStaffService, StaffService> with no such type) — they fail the
+  // build with CS0246. Nothing references them, so dropping them is safe.
+  const dotnetPrune = pruneDanglingServiceRegistrations(files);
+  files = dotnetPrune.files;
+
   // Cross-stack runtime readiness: reconcile deps used in code but missing from
   // the manifest (Python/Node/Ruby) or self-resolve them at build (Go), so the
   // app doesn't deploy green and then crash on first import/require. See
@@ -199,7 +205,7 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // provides its own (author's Dockerfile wins). Either way, rewrite an
   // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
-  const notes = [...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...runtime.notes];
+  const notes = [...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...runtime.notes];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];
   } else {
