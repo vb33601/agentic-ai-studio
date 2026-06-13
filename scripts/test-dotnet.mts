@@ -4,7 +4,7 @@
  *
  *   npx tsx scripts/test-dotnet.mts
  */
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors } from "../src/lib/deploy/dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi } from "../src/lib/deploy/dotnet";
 
 type F = { path: string; content: string };
 let fails = 0;
@@ -84,6 +84,25 @@ const prog = (files: F[]) => files.find((f) => f.path === "Program.cs")!.content
   const hasCors: F[] = [{ path: "Program.cs", content: 'var builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddCors();\nvar app = builder.Build();\napp.UseCors("My");\napp.Run();\n' }];
   const r2 = ensureDotnetCors(hasCors);
   check("leaves an app that already uses CORS untouched", r2.files === hasCors && r2.notes.length === 0);
+}
+
+// --- missing-API detection: warn when MapControllers but no controllers/routes ---
+{
+  const noApi: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.MapControllers();\napp.Run();\n" },
+    { path: "Services/AuthService.cs", content: "namespace X; public class AuthService {}" },
+  ];
+  const withApi: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.MapControllers();\napp.Run();\n" },
+    { path: "Controllers/AuthController.cs", content: "[ApiController]\n[Route(\"api/[controller]\")]\npublic class AuthController : ControllerBase {}" },
+  ];
+  const minimal: F[] = [
+    { path: "Program.cs", content: 'var builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.MapPost("/api/login", () => "ok");\napp.Run();\n' },
+  ];
+  console.log("missing-api:");
+  check("warns when no controllers/endpoints", detectMissingDotnetApi(noApi).notes.length === 1, JSON.stringify(detectMissingDotnetApi(noApi).notes));
+  check("silent when controllers exist", detectMissingDotnetApi(withApi).notes.length === 0);
+  check("silent when minimal-API routes exist", detectMissingDotnetApi(minimal).notes.length === 0);
 }
 
 console.log("-".repeat(60));

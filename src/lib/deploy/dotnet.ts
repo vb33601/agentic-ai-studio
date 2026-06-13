@@ -239,6 +239,41 @@ export function ensureDotnetCors(files: RepoFile[]): DotnetFixResult {
   return { files: out, notes };
 }
 
+/**
+ * Flag a backend that exposes NO HTTP endpoints.
+ *
+ * Some generations emit Models + Data + Services (and call `app.MapControllers()`)
+ * but never write the Controllers — so the API the frontend calls doesn't exist
+ * and every /api/* request 404s. The deploy engine can make such an app build,
+ * run, and accept CORS, but it cannot invent a correct, frontend-matching API
+ * surface (routes, DTOs, a registration flow the service may not even support).
+ * That's a code-generation gap; the honest move is to surface it loudly rather
+ * than ship a backend with no routes. Returns a warning note (does not block).
+ */
+export function detectMissingDotnetApi(files: RepoFile[]): DotnetFixResult {
+  const progIdx = files.findIndex(
+    (f) => /\.cs$/.test(f.path) && /WebApplication\.CreateBuilder/.test(f.content) && /builder\.Build\(\)/.test(f.content),
+  );
+  if (progIdx === -1) return { files, notes: [] };
+  const prog = files[progIdx].content;
+
+  const mapsControllers = /\bMapControllers\s*\(\s*\)/.test(prog);
+  const hasController = files.some(
+    (f) => /\.cs$/.test(f.path) && /:\s*(ControllerBase|Controller)\b/.test(f.content) && /\[(ApiController|Route|Http\w+)\b/.test(f.content),
+  );
+  const hasMinimalEndpoints = /\bapp\.Map(Get|Post|Put|Delete|Patch|Group)\s*\(/.test(prog) || /\bMapGroup\s*\(/.test(prog);
+
+  if (mapsControllers && !hasController && !hasMinimalEndpoints) {
+    return {
+      files,
+      notes: [
+        "⚠ Backend exposes NO HTTP endpoints — MapControllers() is called but the app ships no controllers and no minimal-API routes, so every /api/* request 404s. The backend was generated without its API layer; it must be regenerated WITH controllers (the deploy engine can't synthesise a frontend-matching API).",
+      ],
+    };
+  }
+  return { files, notes: [] };
+}
+
 /** Add `using <ns>;` lines after the leading using block (top-level-statement safe). */
 function ensureUsings(src: string, namespaces: string[]): string {
   const missing = namespaces.filter(
