@@ -1,6 +1,7 @@
 import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { checkDockerfileInvariants } from "./stack-invariants";
+import { prepareSchema } from "./schema";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
 
@@ -162,13 +163,22 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // the framework has none — researched-but-unproven fixes never auto-apply).
   files = applyRegistryFixes(files, plan.framework).files;
 
+  // No-migrations / auto-create-schema strategy (see schema.ts): drop broken
+  // migration scaffolding and switch the app to build its schema from the model
+  // at startup, so generated apps that ship hallucinated migrations still build
+  // and write straight to a freshly-created database. Returns the sanitized file
+  // set and a Dockerfile whose DB step is rewritten to the no-migration form.
+  const schema = prepareSchema(plan, files, plan.dockerfile);
+  files = schema.files;
+  const dockerfile = schema.dockerfile;
+
   // Inject the generated Dockerfile + .dockerignore unless the repo already
   // provides its own (author's Dockerfile wins). Either way, rewrite an
   // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
-  const notes = [...plan.notes];
+  const notes = [...plan.notes, ...schema.notes];
   if (!hasRootDockerfile(files)) {
-    files = [...files, { path: "Dockerfile", content: bindDualStack(plan.dockerfile) }];
+    files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];
   } else {
     notes.unshift("Using the project's existing Dockerfile (a generated one was not added).");
     files = files.map((f) => {
