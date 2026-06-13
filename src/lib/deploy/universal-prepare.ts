@@ -4,6 +4,7 @@ import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
 import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations } from "./dotnet";
 import { hardenRuntime } from "./runtime-harden";
+import { hardeningPassesFor } from "./hardening-matrix";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
 
@@ -205,7 +206,10 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // provides its own (author's Dockerfile wins). Either way, rewrite an
   // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
-  const notes = [...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...runtime.notes];
+  const notes = [
+    `Hardening passes for ${plan.stack}: ${hardeningPassesFor(plan.stack).join(", ")}.`,
+    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...runtime.notes,
+  ];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];
   } else {

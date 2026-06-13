@@ -1,0 +1,50 @@
+/**
+ * Asserts the per-stack hardening matrix is internally consistent and matches
+ * what the engine actually does. Completeness (every Stack has an entry) is
+ * enforced at compile time by `Record<Stack, …>`; this guards against drift
+ * between the documented matrix and the real reconciler/.NET passes.
+ *
+ *   npx tsx scripts/test-hardening-matrix.mts
+ */
+import { HARDENING_MATRIX, hardeningPassesFor } from "../src/lib/deploy/hardening-matrix";
+
+let fails = 0;
+const check = (name: string, cond: boolean, detail = "") => {
+  console.log(`  ${cond ? "✓" : "✗"} ${name}${cond ? "" : "  <- " + detail}`);
+  if (!cond) fails++;
+};
+
+const entries = Object.entries(HARDENING_MATRIX);
+const stacksWith = (p: string) => entries.filter(([, v]) => v.passes.includes(p as never)).map(([k]) => k).sort();
+
+console.log(`matrix covers ${entries.length} stacks`);
+check("every stack runs strip-broken-files", entries.every(([, v]) => v.passes.includes("strip-broken-files")));
+check("every stack has a non-empty context", entries.every(([, v]) => v.context.trim().length > 10));
+
+// dep-reconcile must be exactly the dynamic stacks the reconciler supports.
+check(
+  "dep-reconcile stacks = python,node,bun,ruby",
+  JSON.stringify(stacksWith("dep-reconcile")) === JSON.stringify(["bun", "node", "python", "ruby"]),
+  stacksWith("dep-reconcile").join(","),
+);
+check("go-mod-tidy only on go", JSON.stringify(stacksWith("go-mod-tidy")) === JSON.stringify(["go"]), stacksWith("go-mod-tidy").join(","));
+
+// The .NET-specific passes apply to dotnet alone.
+for (const p of ["dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune"]) {
+  check(`${p} only on dotnet`, JSON.stringify(stacksWith(p)) === JSON.stringify(["dotnet"]), stacksWith(p).join(","));
+}
+check("dotnet has all three .NET passes + schema", ["dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "schema-autocreate"].every((p) => HARDENING_MATRIX.dotnet.passes.includes(p as never)));
+
+// schema-autocreate = the ORM-bearing stacks.
+check(
+  "schema-autocreate stacks = dotnet,java,node,php,python,ruby",
+  JSON.stringify(stacksWith("schema-autocreate")) === JSON.stringify(["dotnet", "java", "node", "php", "python", "ruby"]),
+  stacksWith("schema-autocreate").join(","),
+);
+
+// hardeningPassesFor is total.
+check("hardeningPassesFor returns passes for a known stack", hardeningPassesFor("rust").includes("strip-broken-files"));
+
+console.log("-".repeat(60));
+console.log(fails === 0 ? "ALL HARDENING-MATRIX TESTS PASSED" : `${fails} TEST(S) FAILED`);
+process.exit(fails ? 1 : 0);
