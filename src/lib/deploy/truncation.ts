@@ -243,17 +243,146 @@ export function repairTruncatedJs(path: string, content: string): string | null 
   return [banner, base, ...additions].filter(Boolean).join("\n\n") + "\n";
 }
 
+/* ───────────────────────────── C# (and brace-compiled langs) ─────────────────────────────
+ *
+ * The JS analyzer mis-scans C#: `'{'` (char literal), `@"a\b"` (verbatim — no `\`
+ * escape, `""` is a literal quote), and `$"{expr}"` (interpolation) all need
+ * different rules or braces get miscounted. This dedicated scanner handles them,
+ * and — unlike JS — repair must keep the file COMPILING, which for a compiled
+ * language means satisfying definite-return. A truncated method can't just be
+ * closed (CS0161 "not all code paths return a value"), and it can't be DROPPED
+ * either (its interface would report CS0535 "does not implement member"). So we
+ * terminate the dangling body with `throw new NotImplementedException();` — valid
+ * for ANY return type, keeps the member present — then close the open braces. If
+ * the file is truncated mid-expression / mid-string (no safe completion), repair
+ * returns null and the caller BLOCKS the deploy with a precise error instead of
+ * shipping a build that is certain to fail.
+ */
+
+interface CsAnalysis {
+  unbalanced: boolean;
+  /** Net unclosed `{` at EOF. */
+  deficit: number;
+  /** The innermost open `{` is a statement block (its `{` follows a `)`), i.e. a
+   *  method/ctor/if/for/while/using/lock body — where a `throw;` is legal. */
+  innermostStmtBlock: boolean;
+  /** Last real token is `;`/`{`/`}` — a safe place to append a completion. */
+  endsAtStatementBoundary: boolean;
+}
+
+function analyzeCSharp(src: string): CsAnalysis {
+  const n = src.length;
+  let i = 0;
+  let mode: "code" | "line" | "block" | "char" = "code";
+  // Active string contexts, innermost last. A non-empty stack means we're inside a
+  // string UNLESS we've descended into an interpolation `{expr}` (tracked by interpAt).
+  const strs: Array<{ interp: boolean; verbatim: boolean }> = [];
+  const braces: boolean[] = [];   // precededByParen per open code `{`
+  const interpAt: number[] = [];  // braces.length captured when an interpolation `{expr}` opened
+  let parens = 0, squares = 0;
+  let lastSig = "";
+  const inString = () => strs.length > interpAt.length; // in string text, not its `{expr}`
+
+  while (i < n) {
+    const c = src[i], c2 = src[i + 1], c3 = src[i + 2];
+
+    if (mode === "line") { if (c === "\n") mode = "code"; i++; continue; }
+    if (mode === "block") { if (c === "*" && c2 === "/") { mode = "code"; i += 2; continue; } i++; continue; }
+    if (mode === "char") { if (c === "\\") { i += 2; continue; } if (c === "'") { mode = "code"; lastSig = "'"; } i++; continue; }
+
+    if (inString()) {
+      const s = strs[strs.length - 1];
+      if (!s.verbatim && c === "\\") { i += 2; continue; }          // escape (non-verbatim)
+      if (s.verbatim && c === '"' && c2 === '"') { i += 2; continue; } // "" literal quote (verbatim)
+      if (c === '"') { strs.pop(); lastSig = '"'; i++; continue; }  // end of string
+      if (s.interp && c === "{") {
+        if (c2 === "{") { i += 2; continue; }                       // {{ literal
+        interpAt.push(braces.length); i++; continue;               // enter {expr} → code
+      }
+      if (s.interp && c === "}" && c2 === "}") { i += 2; continue; } // }} literal
+      i++; continue;
+    }
+
+    // code (top level, or inside an interpolation expression)
+    if (c === "/" && c2 === "/") { mode = "line"; i += 2; continue; }
+    if (c === "/" && c2 === "*") { mode = "block"; i += 2; continue; }
+    if ((c === "$" && c2 === "@" && c3 === '"') || (c === "@" && c2 === "$" && c3 === '"')) { strs.push({ interp: true, verbatim: true }); i += 3; continue; }
+    if (c === "$" && c2 === '"') { strs.push({ interp: true, verbatim: false }); i += 2; continue; }
+    if (c === "@" && c2 === '"') { strs.push({ interp: false, verbatim: true }); i += 2; continue; }
+    if (c === '"') { strs.push({ interp: false, verbatim: false }); i++; continue; }
+    if (c === "'") { mode = "char"; i++; continue; }
+    if (c === "{") { braces.push(lastSig === ")"); lastSig = "{"; i++; continue; }
+    if (c === "}") {
+      if (interpAt.length && interpAt[interpAt.length - 1] === braces.length) { interpAt.pop(); lastSig = "}"; i++; continue; } // close {expr}
+      if (braces.length) braces.pop();
+      lastSig = "}"; i++; continue;
+    }
+    if (c === "(") { parens++; lastSig = "("; i++; continue; }
+    if (c === ")") { if (parens) parens--; lastSig = ")"; i++; continue; }
+    if (c === "[") { squares++; lastSig = "["; i++; continue; }
+    if (c === "]") { if (squares) squares--; lastSig = "]"; i++; continue; }
+    if (!/\s/.test(c)) lastSig = c;
+    i++;
+  }
+
+  const deficit = braces.length;
+  return {
+    unbalanced: deficit > 0 || mode === "block" || strs.length > 0 || parens > 0 || squares > 0,
+    deficit,
+    innermostStmtBlock: deficit > 0 && braces[braces.length - 1] === true,
+    endsAtStatementBoundary: lastSig === ";" || lastSig === "{" || lastSig === "}",
+  };
+}
+
+/**
+ * Repair a truncated C# file by completing the dangling construct and closing the
+ * open braces — or null when it isn't a brace-truncation we can finish safely
+ * (unterminated string/comment, or truncated mid-expression). Idempotent.
+ */
+export function repairTruncatedCSharp(path: string, content: string): string | null {
+  if (!/\.(cs)$/.test(path)) return null;
+  const a = analyzeCSharp(content);
+  if (!a.unbalanced) return null;                    // healthy
+  if (a.deficit <= 0) return null;                   // unterminated string/comment → can't brace-close
+  if (!a.endsAtStatementBoundary) return null;       // mid-expression → no safe completion
+
+  const lines: string[] = [content.replace(/\s+$/, "")];
+  // Inside a method/ctor/if/… body → terminate the flow so the method satisfies
+  // definite-return for any return type while keeping the member present.
+  if (a.innermostStmtBlock) {
+    lines.push("    throw new System.NotImplementedException(); // [deploy-engine] generator output was truncated here");
+  }
+  for (let k = 0; k < a.deficit; k++) lines.push("}");
+  const repaired = lines.join("\n") + "\n";
+  if (analyzeCSharp(repaired).unbalanced) return null; // didn't actually balance → let the gate block
+  return "// [deploy-engine] repaired truncated source (generator output was cut off).\n" + repaired;
+}
+
+/** True when a file looks truncated, using the right analyzer for its language. */
+function isTruncated(path: string, content: string): boolean {
+  if (/\.cs$/.test(path)) return analyzeCSharp(content).unbalanced;
+  if (JS_FAMILY.test(path)) {
+    const a = analyze(content);
+    return a.unbalanced || a.danglingTail;
+  }
+  if (BRACE_LANGS.test(path)) {
+    const a = analyze(content);
+    return a.unbalanced || a.danglingTail;
+  }
+  return false;
+}
+
 export interface TruncationResult {
   files: SrcFile[];
   /** Paths that were repaired (for the deploy log + learning signal). */
   repaired: string[];
 }
 
-/** Repair every truncated JS/TS file in the set (the Vercel-path transform). */
+/** Repair every truncated source file we can (JS/TS fully, C# brace-completion). */
 export function repairTruncatedSource(files: SrcFile[]): TruncationResult {
   const repaired: string[] = [];
   const out = files.map((f) => {
-    const fixed = repairTruncatedJs(f.path, f.content);
+    const fixed = /\.cs$/.test(f.path) ? repairTruncatedCSharp(f.path, f.content) : repairTruncatedJs(f.path, f.content);
     if (fixed === null || fixed === f.content) return f;
     repaired.push(f.path);
     return { ...f, content: fixed };
@@ -262,17 +391,11 @@ export function repairTruncatedSource(files: SrcFile[]): TruncationResult {
 }
 
 /**
- * Universal (read-only) detector: which source files look truncated, in ANY
- * brace-delimited language. Used on the backend/container path to surface the
- * defect as a loud deploy note and feed the learning signal — we DON'T auto-stub
- * backend code (a half-written controller/entity can't be safely synthesized).
+ * Read-only detector: which source files still look truncated, in any
+ * brace-delimited language (C#-aware for `.cs`). Used by the container path to GATE
+ * the deploy — anything still truncated after repair would fail the remote build,
+ * so the caller blocks with a precise error rather than shipping it.
  */
 export function detectTruncatedSources(files: SrcFile[]): string[] {
-  const hits: string[] = [];
-  for (const f of files) {
-    if (!BRACE_LANGS.test(f.path)) continue;
-    const a = analyze(f.content);
-    if (a.unbalanced || a.danglingTail) hits.push(f.path);
-  }
-  return hits;
+  return files.filter((f) => BRACE_LANGS.test(f.path) && isTruncated(f.path, f.content)).map((f) => f.path);
 }

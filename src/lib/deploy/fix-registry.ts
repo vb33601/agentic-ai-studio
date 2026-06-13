@@ -62,6 +62,9 @@ export const FIX_REGISTRY: FixRule[] = [
       /Unexpected token, expected/i,
       /Unterminated (?:string|template|comment|regexp)/i,
       /declaration or statement expected/i,
+      /\bCS1513\b/,                 // C#: } expected (truncated mid-method/class)
+      /\bCS1002\b/,                 // C#: ; expected (truncated mid-statement)
+      /error[: ].*['"}\]] expected/i,
     ],
     appliesTo: ["*"],
     module: "truncation.ts",

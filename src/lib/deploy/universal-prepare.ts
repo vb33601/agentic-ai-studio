@@ -152,20 +152,23 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // Truncated-source guard (see truncation.ts). The generator occasionally cuts a
   // file off mid-construct, which fails the REMOTE build minutes later with an
   // opaque parse error (on Fly the app is created but no machine ever releases).
-  // We can safely repair the JS/TS family (salvage + stub exports); for compiled
-  // backends a half-written class can't be synthesized, so we surface it as a loud
-  // note instead of silently shipping a build that will abort.
+  // We repair what's safe — the JS/TS family (salvage + stub exports) and C#
+  // (complete the dangling method + close braces). Anything STILL truncated after
+  // repair (truncated mid-expression / mid-string) is certain to fail the remote
+  // build, so we BLOCK here with a precise, actionable error rather than ship it —
+  // the "fix it, or report and don't deploy broken" gate.
   const truncNotes: string[] = [];
   const trunc = repairTruncatedSource(files);
   files = trunc.files;
   if (trunc.repaired.length) {
-    truncNotes.push(`Repaired ${trunc.repaired.length} truncated JS/TS source file(s): ${trunc.repaired.join(", ")}.`);
+    truncNotes.push(`Repaired ${trunc.repaired.length} truncated source file(s) the generator cut off: ${trunc.repaired.join(", ")}.`);
   }
   const stillTruncated = detectTruncatedSources(files);
   if (stillTruncated.length) {
-    truncNotes.push(
-      `WARNING: ${stillTruncated.length} source file(s) look truncated and can't be auto-repaired for this stack ` +
-        `(the generator's output was cut off): ${stillTruncated.join(", ")}. The remote build will likely fail until these are regenerated.`,
+    throw new Error(
+      `Deploy blocked: ${stillTruncated.length} source file(s) are truncated and can't be safely auto-completed — ` +
+        `the generator's output was cut off mid-statement, so the build would fail (e.g. CS1513 '} expected'). ` +
+        `Regenerate these file(s) and redeploy: ${stillTruncated.join(", ")}.`,
     );
   }
 

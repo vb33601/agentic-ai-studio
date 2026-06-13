@@ -14,10 +14,11 @@
     "test:matrix": "tsx scripts/test-hardening-matrix.mts",
     "test:cors": "tsx scripts/test-cors.mts",
     "test:truncation": "tsx scripts/test-truncation.mts",
+    "test:truncation-cs": "tsx scripts/test-truncation-cs.mts",
     "test:registry": "tsx scripts/test-fix-registry.mts",
     "test:regression": "tsx scripts/test-regression.mts",
     "test:dotnet-di": "tsx scripts/test-dotnet-di-prune.mts",
-    "test:all": "npm run test:matrix && npm run test:harden && npm run test:cors && npm run test:dotnet && npm run test:dotnet-di && npm run test:truncation && npm run test:registry && npm run test:regression",
+    "test:all": "npm run test:matrix && npm run test:harden && npm run test:cors && npm run test:dotnet && npm run test:dotnet-di && npm run test:truncation && npm run test:truncation-cs && npm run test:registry && npm run test:regression",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"
