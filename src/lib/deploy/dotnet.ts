@@ -192,6 +192,53 @@ export function pruneDanglingServiceRegistrations(files: RepoFile[]): DotnetFixR
   return { files: out, notes };
 }
 
+/**
+ * Ensure the backend accepts cross-origin calls from its separately-deployed
+ * frontend.
+ *
+ * In a split deploy (backend → Fly, frontend → Vercel) the browser makes a
+ * cross-origin request from the Vercel origin to the Fly backend. If the backend
+ * has no CORS policy — generated .NET APIs frequently ship none — every call is
+ * blocked: "Access-Control-Allow-Origin: none / Failed to fetch", and login/
+ * register die in the browser even though the API works via curl.
+ *
+ * The exact frontend origin is unknown when the backend builds (the backend
+ * deploys FIRST to hand its URL to the frontend), so we install a policy that
+ * reflects any origin. `SetIsOriginAllowed(_ => true)` (not AllowAnyOrigin) is
+ * used deliberately: it echoes the caller's origin, which — unlike the literal
+ * `*` — is valid together with AllowCredentials, so the policy works whether the
+ * app authenticates via the Authorization header or cookies.
+ *
+ * Only injected when the app has NO CORS pipeline; an app that already calls
+ * UseCors is left to its own configuration.
+ */
+export function ensureDotnetCors(files: RepoFile[]): DotnetFixResult {
+  const notes: string[] = [];
+  const progIdx = files.findIndex(
+    (f) => /\.cs$/.test(f.path) && /WebApplication\.CreateBuilder/.test(f.content) && /builder\.Build\(\)/.test(f.content),
+  );
+  if (progIdx === -1) return { files, notes };
+  let prog = files[progIdx].content;
+  if (/\bUseCors\b/.test(prog)) return { files, notes }; // app configures its own CORS
+
+  const POLICY = `builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.SetIsOriginAllowed(_ => true).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));`;
+  if (!/AddCors\s*\(/.test(prog)) {
+    prog = /var\s+app\s*=\s*builder\.Build\(\)\s*;/.test(prog)
+      ? prog.replace(/(var\s+app\s*=\s*builder\.Build\(\)\s*;)/, `${POLICY}\n$1`)
+      : prog.replace(/([^\n]*\bbuilder\.Build\(\)[^\n]*\n)/, `${POLICY}\n$1`);
+  }
+  // UseCors must run before auth/authorization; placing it right after Build()
+  // puts it ahead of UseAuthentication/UseAuthorization/MapControllers.
+  prog = prog.replace(/(var\s+app\s*=\s*builder\.Build\(\)\s*;\n)/, `$1app.UseCors();\n`);
+
+  const out = [...files];
+  out[progIdx] = { path: files[progIdx].path, content: prog };
+  notes.push(
+    ".NET: injected an open CORS policy (reflect-any-origin + credentials) so the Vercel-hosted frontend's cross-origin API calls aren't blocked (was: Access-Control-Allow-Origin none → 'Failed to fetch').",
+  );
+  return { files: out, notes };
+}
+
 /** Add `using <ns>;` lines after the leading using block (top-level-statement safe). */
 function ensureUsings(src: string, namespaces: string[]): string {
   const missing = namespaces.filter(

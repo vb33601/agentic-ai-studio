@@ -34,7 +34,8 @@ export type HardeningPass =
   | "schema-autocreate"         // no migrations; ORM builds schema from the model
   | "dotnet-package-conflict"   // .NET: resolve NU1605 downgrade at source
   | "dotnet-di-register"        // .NET: register injected-but-unregistered services
-  | "dotnet-di-prune";          // .NET: drop registrations for undefined services
+  | "dotnet-di-prune"           // .NET: drop registrations for undefined services
+  | "dotnet-cors";              // .NET: open CORS so the split-deployed frontend can call the API
 
 export interface StackHardening {
   passes: HardeningPass[];
@@ -53,8 +54,8 @@ const compiled = (lang: string): StackHardening => ({
 export const HARDENING_MATRIX: Record<Stack, StackHardening> = {
   // --- .NET: the only stack with all three .NET-specific defect classes ---
   dotnet: {
-    passes: [STRIP, "dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "schema-autocreate"],
-    context: "Explicit DI registration, NuGet restore (NU1605 downgrades), and EF migrations — compiles-but-crashes in three distinct ways, each auto-fixed.",
+    passes: [STRIP, "dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "dotnet-cors", "schema-autocreate"],
+    context: "Explicit DI registration, NuGet restore (NU1605 downgrades), EF migrations, and missing CORS — each a distinct compiles-but-fails defect, all auto-fixed.",
   },
 
   // --- Interpreted/dynamic: install only declared deps → reconcile manifest ---

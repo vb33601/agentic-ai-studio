@@ -2,7 +2,7 @@ import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations } from "./dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors } from "./dotnet";
 import { hardenRuntime } from "./runtime-harden";
 import { hardeningPassesFor } from "./hardening-matrix";
 import { hardenBackendFiles } from "./harden-backend";
@@ -194,6 +194,11 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const dotnetPrune = pruneDanglingServiceRegistrations(files);
   files = dotnetPrune.files;
 
+  // Ensure the backend accepts cross-origin calls from its Vercel-hosted frontend
+  // (generated .NET APIs often ship no CORS → "Failed to fetch" in the browser).
+  const dotnetCors = ensureDotnetCors(files);
+  files = dotnetCors.files;
+
   // Cross-stack runtime readiness: reconcile deps used in code but missing from
   // the manifest (Python/Node/Ruby) or self-resolve them at build (Go), so the
   // app doesn't deploy green and then crash on first import/require. See
@@ -208,7 +213,7 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
   const notes = [
     `Hardening passes for ${plan.stack}: ${hardeningPassesFor(plan.stack).join(", ")}.`,
-    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...runtime.notes,
+    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...runtime.notes,
   ];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];

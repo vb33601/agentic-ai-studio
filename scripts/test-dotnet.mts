@@ -4,7 +4,7 @@
  *
  *   npx tsx scripts/test-dotnet.mts
  */
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations } from "../src/lib/deploy/dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors } from "../src/lib/deploy/dotnet";
 
 type F = { path: string; content: string };
 let fails = 0;
@@ -69,6 +69,21 @@ const prog = (files: F[]) => files.find((f) => f.path === "Program.cs")!.content
   console.log("package conflict:");
   check("removes System.IdentityModel.Tokens.Jwt pin", !/System\.IdentityModel\.Tokens\.Jwt/.test(csproj), csproj);
   check("keeps JwtBearer", /JwtBearer/.test(csproj), csproj);
+}
+
+// --- CORS: inject when absent, leave when present ---
+{
+  const noCors: F[] = [{ path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.UseAuthorization();\napp.Run();\n" }];
+  const r = ensureDotnetCors(noCors);
+  const p = prog(r.files);
+  console.log("cors:");
+  check("injects AddCors default policy", /AddCors\(o => o\.AddDefaultPolicy/.test(p), p);
+  check("injects app.UseCors() before auth", p.indexOf("UseCors") < p.indexOf("UseAuthorization"), p);
+  check("uses reflect-origin + credentials (not literal *)", /SetIsOriginAllowed\(_ => true\)/.test(p) && /AllowCredentials/.test(p), p);
+
+  const hasCors: F[] = [{ path: "Program.cs", content: 'var builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddCors();\nvar app = builder.Build();\napp.UseCors("My");\napp.Run();\n' }];
+  const r2 = ensureDotnetCors(hasCors);
+  check("leaves an app that already uses CORS untouched", r2.files === hasCors && r2.notes.length === 0);
 }
 
 console.log("-".repeat(60));
