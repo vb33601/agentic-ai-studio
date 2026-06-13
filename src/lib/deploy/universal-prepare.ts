@@ -2,7 +2,7 @@ import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
-import { fixDotnetPackageConflicts } from "./dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices } from "./dotnet";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
 
@@ -180,11 +180,17 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const dotnet = fixDotnetPackageConflicts(files);
   files = dotnet.files;
 
+  // Auto-register app-defined services that controllers inject but Program.cs
+  // never wired into DI — otherwise the app builds but every request to that
+  // controller 500s with "Unable to resolve service" (breaks login/register).
+  const dotnetDi = autoRegisterDotnetServices(files);
+  files = dotnetDi.files;
+
   // Inject the generated Dockerfile + .dockerignore unless the repo already
   // provides its own (author's Dockerfile wins). Either way, rewrite an
   // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
-  const notes = [...plan.notes, ...schema.notes, ...dotnet.notes];
+  const notes = [...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];
   } else {
