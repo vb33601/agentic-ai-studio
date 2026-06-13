@@ -1,5 +1,6 @@
 import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
+import { checkDockerfileInvariants } from "./stack-invariants";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
 
@@ -123,6 +124,19 @@ export function bindDualStack(dockerfile: string): string {
 
 export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const plan = detectStackPlan(input);
+
+  // Verify the generated Dockerfile still carries the build-correctness directives
+  // its stack requires (see stack-invariants.ts). A violation means a planner
+  // regressed and would ship an app that fails its REMOTE build minutes later with
+  // an opaque error — fail loud here instead. The 45-stack harness asserts every
+  // fixture passes these same invariants, so this gate never fires on a healthy build.
+  const violations = checkDockerfileInvariants(plan);
+  if (violations.length) {
+    throw new Error(
+      `Generated Dockerfile failed build-invariant checks for ${plan.stack}/${plan.framework}:\n` +
+        violations.map((v) => `  - ${v}`).join("\n"),
+    );
+  }
 
   // Sanitize committed env files (don't pin PORT/DATABASE_URL into the image).
   let files: RepoFile[] = input.map((f) =>

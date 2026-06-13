@@ -634,7 +634,13 @@ ${nodeSetup}WORKDIR /src
 COPY . .
 # Publish the web project explicitly so multi-project solutions and subdir layouts
 # resolve their project references from the build context.
-RUN dotnet publish${projArg} -c Release -o /app
+# NoWarn=NU1605 + TreatWarningsAsErrors=false keep the build alive through the
+# NuGet version conflicts generated .csproj files routinely carry: a transitive
+# dependency pins a package higher than a direct reference, which NuGet reports as
+# the *error* NU1605 ("Detected package downgrade … Warning As Error") and aborts
+# restore. Demoting it lets restore pick a coherent version and publish proceed —
+# the single most common .NET deploy-build failure on generated code.
+RUN dotnet publish${projArg} -c Release -o /app -p:NoWarn=NU1605 -p:TreatWarningsAsErrors=false
 FROM mcr.microsoft.com/dotnet/aspnet:${ver}
 WORKDIR /app
 COPY --from=build /app .
@@ -757,7 +763,7 @@ function planStatic(): Partial {
 FROM nginx:alpine
 ENV PORT=80
 COPY . /usr/share/nginx/html
-RUN rm -f /etc/nginx/conf.d/default.conf && printf 'server { listen \${PORT}; root /usr/share/nginx/html; location / { try_files $uri $uri/ /index.html; } }' > /etc/nginx/templates/default.conf.template
+RUN rm -f /etc/nginx/conf.d/default.conf && mkdir -p /etc/nginx/templates && printf 'server { listen \${PORT}; root /usr/share/nginx/html; location / { try_files $uri $uri/ /index.html; } }' > /etc/nginx/templates/default.conf.template
 EXPOSE 80
 `;
   return { framework: "static", role: "static", dockerfile, port: 80, needsDatabase: false, runsMigrations: false, notes: [] };
