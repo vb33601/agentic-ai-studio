@@ -42,6 +42,10 @@ check(
   stacksWith("schema-autocreate").join(","),
 );
 
+// CORS coverage: generic `cors` on the web stacks, `dotnet-cors` on dotnet.
+check("cors stacks = node,python", JSON.stringify(stacksWith("cors")) === JSON.stringify(["node", "python"]), stacksWith("cors").join(","));
+check("dotnet-cors only on dotnet", JSON.stringify(stacksWith("dotnet-cors")) === JSON.stringify(["dotnet"]), stacksWith("dotnet-cors").join(","));
+
 // hardeningPassesFor is total.
 check("hardeningPassesFor returns passes for a known stack", hardeningPassesFor("rust").includes("strip-broken-files"));
 

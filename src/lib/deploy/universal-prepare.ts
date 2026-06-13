@@ -4,6 +4,7 @@ import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
 import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi } from "./dotnet";
 import { hardenRuntime } from "./runtime-harden";
+import { hardenCors } from "./cors-harden";
 import { hardeningPassesFor } from "./hardening-matrix";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
@@ -211,13 +212,19 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   files = runtime.files;
   dockerfile = runtime.dockerfile;
 
+  // Cross-stack CORS: ensure the backend accepts cross-origin calls from its
+  // Vercel-hosted frontend, using each framework's idiomatic mechanism
+  // (FastAPI/Flask/Django/Express). See cors-harden.ts.
+  const cors = hardenCors(plan, files);
+  files = cors.files;
+
   // Inject the generated Dockerfile + .dockerignore unless the repo already
   // provides its own (author's Dockerfile wins). Either way, rewrite an
   // IPv4-only bind to dual-stack [::] so the image is reachable on Fly's IPv6
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
   const notes = [
     `Hardening passes for ${plan.stack}: ${hardeningPassesFor(plan.stack).join(", ")}.`,
-    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...dotnetApi.notes, ...runtime.notes,
+    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...dotnetApi.notes, ...runtime.notes, ...cors.notes,
   ];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];

@@ -35,7 +35,8 @@ export type HardeningPass =
   | "dotnet-package-conflict"   // .NET: resolve NU1605 downgrade at source
   | "dotnet-di-register"        // .NET: register injected-but-unregistered services
   | "dotnet-di-prune"           // .NET: drop registrations for undefined services
-  | "dotnet-cors";              // .NET: open CORS so the split-deployed frontend can call the API
+  | "dotnet-cors"               // .NET: open CORS so the split-deployed frontend can call the API
+  | "cors";                     // other web frameworks: idiomatic open CORS (FastAPI/Flask/Django/Express)
 
 export interface StackHardening {
   passes: HardeningPass[];
@@ -59,8 +60,8 @@ export const HARDENING_MATRIX: Record<Stack, StackHardening> = {
   },
 
   // --- Interpreted/dynamic: install only declared deps → reconcile manifest ---
-  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb." },
-  node:   { passes: [STRIP, "dep-reconcile", "schema-autocreate"], context: "npm installs only declared deps; an undeclared import throws 'Cannot find module'. Prisma pushes the schema (db push) instead of migrating." },
+  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb. FastAPI/Flask/Django get idiomatic CORS for the split frontend." },
+  node:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors"], context: "npm installs only declared deps; an undeclared import throws 'Cannot find module'. Prisma pushes the schema (db push) instead of migrating. Express gets cors() middleware for the split frontend." },
   bun:    { passes: [STRIP, "dep-reconcile"], context: "Bun installs only declared deps; undeclared imports crash at runtime." },
   ruby:   { passes: [STRIP, "dep-reconcile", "schema-autocreate"], context: "Bundler installs only gems in the Gemfile; an undeclared require is a LoadError. Rails loads schema directly (db:schema:load)." },
 
