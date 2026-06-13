@@ -8,6 +8,7 @@ import { hardenCors } from "./cors-harden";
 import { hardeningPassesFor } from "./hardening-matrix";
 import { hardenBackendFiles } from "./harden-backend";
 import { applyRegistryFixes } from "./preflight";
+import { repairTruncatedSource, detectTruncatedSources } from "./truncation";
 
 /**
  * Prepare a generated project of ANY language/framework for a container deploy
@@ -148,6 +149,26 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
     ENV_FILE.test(f.path) ? { path: f.path, content: sanitizeEnv(f.content) } : f,
   );
 
+  // Truncated-source guard (see truncation.ts). The generator occasionally cuts a
+  // file off mid-construct, which fails the REMOTE build minutes later with an
+  // opaque parse error (on Fly the app is created but no machine ever releases).
+  // We can safely repair the JS/TS family (salvage + stub exports); for compiled
+  // backends a half-written class can't be synthesized, so we surface it as a loud
+  // note instead of silently shipping a build that will abort.
+  const truncNotes: string[] = [];
+  const trunc = repairTruncatedSource(files);
+  files = trunc.files;
+  if (trunc.repaired.length) {
+    truncNotes.push(`Repaired ${trunc.repaired.length} truncated JS/TS source file(s): ${trunc.repaired.join(", ")}.`);
+  }
+  const stillTruncated = detectTruncatedSources(files);
+  if (stillTruncated.length) {
+    truncNotes.push(
+      `WARNING: ${stillTruncated.length} source file(s) look truncated and can't be auto-repaired for this stack ` +
+        `(the generator's output was cut off): ${stillTruncated.join(", ")}. The remote build will likely fail until these are regenerated.`,
+    );
+  }
+
   // Apply the plan's source patches (e.g. an injected /health route) so the
   // deployed app affirmatively confirms liveness instead of being inferred "up"
   // from a tolerated 404. Patches are keyed by path and REPLACE the original — so
@@ -224,6 +245,7 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   // proxy (no-op for already-dual-stack apps; harmless on Render/Railway).
   const notes = [
     `Hardening passes for ${plan.stack}: ${hardeningPassesFor(plan.stack).join(", ")}.`,
+    ...truncNotes,
     ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...dotnetApi.notes, ...runtime.notes, ...cors.notes,
   ];
   if (!hasRootDockerfile(files)) {

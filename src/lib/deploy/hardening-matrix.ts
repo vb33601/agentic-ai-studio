@@ -29,6 +29,7 @@ import type { Stack } from "./dockerfile";
 
 export type HardeningPass =
   | "strip-broken-files"        // universal: drop source files that are actually markup/XML
+  | "repair-truncated-source"   // universal: repair/flag source the generator cut off mid-construct
   | "dep-reconcile"             // add deps used in code but missing from the manifest
   | "go-mod-tidy"               // Go: back-fill go.mod from source before build
   | "schema-autocreate"         // no migrations; ORM builds schema from the model
@@ -116,7 +117,16 @@ export const HARDENING_MATRIX: Record<Stack, StackHardening> = {
   deno: { passes: [STRIP], context: "URL / jsr: / npm: imports resolve themselves at runtime — there is no manifest to reconcile." },
 };
 
-/** The hardening passes that apply to a stack (empty-safe). */
+/**
+ * Passes that apply to EVERY stack because the defect is in the source bytes
+ * themselves, before any toolchain runs: a file misnamed as code but holding
+ * markup, or a file the generator cut off mid-construct. Returned first (and
+ * deduped) for all stacks, so adding a stack can never forget them.
+ */
+const UNIVERSAL_PASSES: HardeningPass[] = ["strip-broken-files", "repair-truncated-source"];
+
+/** The hardening passes that apply to a stack (universal passes first, deduped). */
 export function hardeningPassesFor(stack: Stack): HardeningPass[] {
-  return HARDENING_MATRIX[stack]?.passes ?? [STRIP];
+  const entry = HARDENING_MATRIX[stack]?.passes ?? [];
+  return [...new Set<HardeningPass>([...UNIVERSAL_PASSES, ...entry])];
 }

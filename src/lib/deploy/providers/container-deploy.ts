@@ -1,6 +1,7 @@
 import { createRepoAndPush, type RepoFile } from "../github";
 import { createRenderService, type RenderEnvVar } from "../render";
 import { detectStackPlan } from "../dockerfile";
+import { bindDualStack } from "../universal-prepare";
 import { deployToRailway } from "./railway";
 import { deployToFly } from "./fly";
 import { isConfigured } from "./registry";
@@ -70,8 +71,26 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
     }
   }
 
+  // Fly builds a Docker IMAGE from the repo, so it REQUIRES a Dockerfile. The Node
+  // backend path produces Render-native build/start commands and ships no
+  // Dockerfile — which made `flyctl deploy` fail with "Dockerfile not found" and
+  // the Fly app hang at 0 machines (the silent Fly failure). Synthesize one (the
+  // universal engine's image for the detected stack, dual-stack-bound for Fly's
+  // IPv6 proxy) whenever Fly is a candidate and the repo has none. Safe for the
+  // other providers: Render selects native-vs-docker by `runtime` and ignores a
+  // stray Dockerfile for runtime:node; Railway builds via Railpack.
+  let files = input.files;
+  if (candidates.includes("fly") && !files.some((f) => f.path === "Dockerfile")) {
+    const plan = detectStackPlan(files);
+    files = [
+      ...files,
+      { path: "Dockerfile", content: bindDualStack(plan.dockerfile) },
+      ...(files.some((f) => f.path === ".dockerignore") ? [] : [{ path: ".dockerignore", content: plan.dockerignore }]),
+    ];
+  }
+
   // Push the repo once; every candidate builds from it.
-  const repo = await createRepoAndPush(input.githubToken, input.name, input.files, {
+  const repo = await createRepoAndPush(input.githubToken, input.name, files, {
     private: true,
     description: input.description || "Deployed from agentic-ai-studio",
   });
@@ -97,7 +116,7 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
         // Fly builds via a remote-build GitHub Actions workflow (no Docker here);
         // the release finishes asynchronously, like Render/Railway after create.
         // fly.toml's internal_port must match the Dockerfile's port → detect it.
-        const port = detectStackPlan(input.files).port;
+        const port = detectStackPlan(files).port;
         const r = await deployToFly({
           githubToken: input.githubToken, repoOwner: repo.owner, repoName: repo.repo,
           branch: repo.branch, name: input.name, envVars: input.envVars, port,

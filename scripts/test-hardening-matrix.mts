@@ -49,6 +49,16 @@ check("dotnet-cors only on dotnet", JSON.stringify(stacksWith("dotnet-cors")) ==
 // hardeningPassesFor is total.
 check("hardeningPassesFor returns passes for a known stack", hardeningPassesFor("rust").includes("strip-broken-files"));
 
+// Universal source-integrity passes are injected for EVERY stack (deduped).
+check(
+  "repair-truncated-source is universal",
+  entries.every(([k]) => hardeningPassesFor(k as never).includes("repair-truncated-source")),
+);
+check(
+  "strip-broken-files is universal (via hardeningPassesFor)",
+  entries.every(([k]) => hardeningPassesFor(k as never).includes("strip-broken-files")),
+);
+
 console.log("-".repeat(60));
 console.log(fails === 0 ? "ALL HARDENING-MATRIX TESTS PASSED" : `${fails} TEST(S) FAILED`);
 process.exit(fails ? 1 : 0);

@@ -1,5 +1,6 @@
 import { augmentPackageJson, type SourceFile } from "@/lib/ai/deps";
 import { hardenFiles } from "./harden";
+import { repairTruncatedSource } from "./truncation";
 
 /**
  * Normalize a generated project so it deploys reliably on Vercel across a wide
@@ -523,9 +524,16 @@ function detectByFiles(files: SourceFile[]): string | null {
 
 export function prepareForDeploy(input: SourceFile[]): DeployPrep {
   let files = augmentPackageJson(input);
-  // Build-resilience: rename JSX-in-.js/.ts files to .jsx/.tsx, repair misrouted
-  // relative imports, stub still-missing local imports, and pin Tailwind to v3
-  // (applies to ALL Vercel deploys — provider grid and full-stack).
+  // Build-resilience: FIRST repair any syntactically-truncated source (the
+  // generator's output got cut off mid-file — `function` with nothing after it,
+  // an unclosed brace), which otherwise fails the bundler with an opaque
+  // "Expected identifier but found end of file". Run before the import-repair
+  // chain so the salvaged/stubbed module participates in named-import
+  // reconciliation. See truncation.ts.
+  files = repairTruncatedSource(files).files;
+  // Then: rename JSX-in-.js/.ts files to .jsx/.tsx, repair misrouted relative
+  // imports, stub still-missing local imports, and pin Tailwind to v3 (applies to
+  // ALL Vercel deploys — provider grid and full-stack).
   files = renameJsxSourceFiles(files);
   files = repairImportPaths(files);
   files = reconcileNamedImports(files);
