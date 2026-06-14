@@ -30,6 +30,7 @@ function makeFactory(script: Array<{ failOnStep?: string; log?: string }>) {
         }
         return { exitCode: 0, stdout: "", stderr: "" };
       },
+      domain(port: number) { return `https://fake-${port}.vercel.run`; },
       async stop() {},
     };
   };
@@ -37,19 +38,31 @@ function makeFactory(script: Array<{ failOnStep?: string; log?: string }>) {
 }
 
 const recipe = recipeFor("node")!;
+// Injected HTTP probe (offline): the booted app "answers" 200.
+const httpOk = async () => ({ status: 200 });
+const httpDown = async () => { throw new Error("conn refused"); };
 
-// 1) Green build → ok on first attempt.
+// 1) Green build → ok on first attempt; run/smoke answers.
 {
   const f = makeFactory([{}]);
-  const r = await sandboxVerifyBuild({ files: [{ path: "index.js", content: "console.log(1)" }], recipe, factory: f.factory });
+  const r = await sandboxVerifyBuild({ files: [{ path: "index.js", content: "console.log(1)" }], recipe, factory: f.factory, httpGet: httpOk });
   check("green build passes on attempt 1", r.ok && r.attempts === 1 && f.attempts() === 1);
+  check("run/smoke tier ran and the app answered", r.runChecked === true && r.runOk === true);
+}
+
+// 1b) Build green but the app never answers → soft WARNING, still ok (no false block).
+{
+  const fastRecipe = { ...recipe, run: { ...recipe.run!, bootTimeoutMs: 2000 } };
+  const f = makeFactory([{}]);
+  const r = await sandboxVerifyBuild({ files: [{ path: "index.js", content: "1" }], recipe: fastRecipe, factory: f.factory, httpGet: httpDown });
+  check("non-responding app is a warning, not a block", r.ok && r.runChecked === true && r.runOk === false && !!r.runWarning);
 }
 
 // 2) Truncation failure → auto-fixed (repair-truncated-source) → retry green.
 {
   const truncated = { path: "src/api.js", content: "export function load() {\n  const x = fetch('/a')\nfunction" };
   const f = makeFactory([{ failOnStep: "run build", log: "Unexpected end of file / Expected identifier but found end of file" }, {}]);
-  const r = await sandboxVerifyBuild({ files: [truncated], recipe, factory: f.factory, maxAttempts: 2 });
+  const r = await sandboxVerifyBuild({ files: [truncated], recipe, factory: f.factory, maxAttempts: 2, httpGet: httpOk });
   check("recognises + auto-fixes truncation then passes", r.ok && r.attempts === 2);
   check("reports the applied auto-fix", r.fixesApplied.includes("repair-truncated-source"));
   check("the returned file was actually repaired", !r.files[0].content.endsWith("function"));
@@ -72,8 +85,12 @@ const recipe = recipeFor("node")!;
   check("blocker includes the build log tail", /libmystery/.test(r.blocker));
 }
 
-// 5) recipeFor coverage.
-check("recipeFor(node) returns a recipe", recipeFor("node")?.runtime === "node24");
+// 5) recipeFor coverage (node/static/python native; dotnet/go via toolchain install).
+check("recipeFor(node) → node24 + run spec", recipeFor("node")?.runtime === "node24" && !!recipeFor("node")?.run);
+check("recipeFor(static) → build only (no run)", recipeFor("static")?.runtime === "node24" && !recipeFor("static")?.run);
+check("recipeFor(python) → python3.13", recipeFor("python")?.runtime === "python3.13");
+check("recipeFor(dotnet) installs the SDK then builds", recipeFor("dotnet")?.steps.some((s) => s.args.join(" ").includes("dotnet-install")) === true);
+check("recipeFor(go) builds via the go toolchain", recipeFor("go")?.steps.some((s) => s.args.join(" ").includes("go build")) === true);
 check("recipeFor(rust) is null (sandbox tier skipped)", recipeFor("rust") === null);
 
 console.log("-".repeat(60));

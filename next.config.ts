@@ -22,6 +22,9 @@ const nextConfig: NextConfig = {
     "playwright-chromium",
     "playwright-core",
     "playwright",
+    // Server-only ephemeral-sandbox SDK (pre-deploy build verification). Heavy +
+    // node-only; loaded dynamically only when SANDBOX_VERIFY is enabled.
+    "@vercel/sandbox",
   ],
   images: {
     remotePatterns: [

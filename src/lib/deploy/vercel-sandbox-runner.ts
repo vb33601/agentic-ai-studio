@@ -5,79 +5,80 @@ import type { Stack } from "./dockerfile";
 /**
  * Real `@vercel/sandbox` adapter for the sandbox build-verifier.
  *
- * Kept deliberately separate from the orchestration (sandbox-verify.ts) so the only
- * code that touches the network/SDK is here, behind a LAZY dynamic import:
- *  - `@vercel/sandbox` is an OPTIONAL dependency. If it isn't installed, the import
- *    throws and `isSandboxConfigured()` returns false → the caller skips the sandbox
- *    tier entirely (the static gate still runs). So the repo builds and deploys
- *    fine without the package.
+ * Auth follows the SAME pattern as the Vercel DEPLOY path: the project is created
+ * on the go from the API key. `inferScope({ token })` resolves (and auto-creates) a
+ * default sandbox project + team from `VERCEL_TOKEN` alone — no fixed
+ * VERCEL_TEAM_ID/PROJECT_ID needed. (On Vercel, OIDC works automatically.)
  *
- * To ACTIVATE this tier:
- *   1) `npm i @vercel/sandbox`
- *   2) set VERCEL_TOKEN + VERCEL_TEAM_ID + VERCEL_PROJECT_ID (on Vercel, OIDC is
- *      automatic and the team/project are implicit).
+ * ACTIVATION is gated behind `SANDBOX_VERIFY` (truthy), NOT merely the presence of
+ * the token — because the token is ALWAYS present (it's the deploy token), and a
+ * sandbox `npm install` + build can exceed the deploy route's 60s budget on Hobby.
+ * Default off ⇒ zero change to existing deploys. Turn it on where the runtime
+ * budget allows (Render/Docker has no 60s cap).
  *
- * Server-only.
+ * Everything is loaded dynamically and is server-only; `@vercel/sandbox` is in
+ * next.config `serverExternalPackages` so it's never bundled.
  */
 
-/** True when the env is set up to create sandboxes (the package is checked lazily). */
+/** True when sandbox verification is explicitly enabled AND auth is available. */
 export function isSandboxConfigured(): boolean {
-  // On Vercel, OIDC is automatic (VERCEL_OIDC_TOKEN); otherwise need explicit creds.
-  const hasOidc = !!process.env.VERCEL_OIDC_TOKEN;
-  const hasExplicit = !!(process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID);
-  return hasOidc || hasExplicit;
+  const flag = (process.env.SANDBOX_VERIFY || "").toLowerCase();
+  const enabled = flag === "1" || flag === "true" || flag === "yes";
+  return enabled && (!!process.env.VERCEL_TOKEN || !!process.env.VERCEL_OIDC_TOKEN);
 }
 
-function credentials(): Record<string, string> {
-  if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {
-    return {
-      token: process.env.VERCEL_TOKEN,
-      teamId: process.env.VERCEL_TEAM_ID,
-      projectId: process.env.VERCEL_PROJECT_ID,
-    };
+function vercelToken(): string {
+  return (process.env.VERCEL_TOKEN || "").replace(/^"|"$/g, "");
+}
+
+// Resolved once per process: inferScope creates/reuses a default sandbox project.
+let scopeCache: Promise<{ teamId: string; projectId: string }> | null = null;
+async function resolveScope(token: string): Promise<{ teamId: string; projectId: string }> {
+  if (!scopeCache) {
+    scopeCache = (async () => {
+      const auth = (await import("@vercel/sandbox/dist/auth/index.js")) as {
+        inferScope: (o: { token: string }) => Promise<{ teamId: string; projectId: string }>;
+      };
+      const s = await auth.inferScope({ token });
+      return { teamId: s.teamId, projectId: s.projectId };
+    })().catch((e) => { scopeCache = null; throw e; });
   }
-  return {}; // fall back to OIDC on Vercel
+  return scopeCache;
 }
 
-// Minimal structural types for the bits of the SDK we use (avoids a hard dep on the
-// package's types, which may be absent at typecheck time).
-interface SdkRunResult {
-  exitCode?: number;
-  stdout?: () => Promise<string>;
-  stderr?: () => Promise<string>;
-}
+// Structural view of the SDK surface we use (avoids a hard type dep).
+interface SdkCommand { exitCode: number | null; stdout(): Promise<string>; stderr(): Promise<string>; }
 interface SdkSandbox {
-  writeFiles(files: Array<{ path: string; content: Buffer }>): Promise<void>;
-  runCommand(cmd: string, args: string[]): Promise<SdkRunResult>;
+  writeFiles(files: Array<{ path: string; content: string }>): Promise<void>;
+  runCommand(command: string, args?: string[], opts?: Record<string, unknown>): Promise<SdkCommand>;
+  domain(port: number): string;
   stop(): Promise<void>;
 }
-interface SdkSandboxStatic {
-  create(opts: Record<string, unknown>): Promise<SdkSandbox>;
-}
+interface SdkSandboxStatic { create(opts: Record<string, unknown>): Promise<SdkSandbox>; }
 
-/**
- * Create a real Vercel Sandbox session. Throws if the SDK isn't installed or
- * sandbox creation fails — the caller is expected to gate on `isSandboxConfigured()`
- * and treat any throw as "skip the sandbox tier" (fail-open).
- */
-export const vercelSandboxFactory: SandboxFactory = async ({ runtime, timeoutMs }): Promise<SandboxSession> => {
-  // Lazy import via a RUNTIME-CONSTRUCTED specifier so the bundler (Turbopack/
-  // webpack) can't statically resolve it — the optional dep being absent must never
-  // break `next build`. Throws at runtime if not installed; the caller treats that
-  // as "skip the sandbox tier" (fail-open).
-  const spec = ["@vercel", "sandbox"].join("/");
-  const mod = (await import(/* @vite-ignore */ /* webpackIgnore: true */ spec)) as { Sandbox: SdkSandboxStatic };
-  const sandbox = await mod.Sandbox.create({ ...credentials(), runtime, timeout: timeoutMs });
-
+/** Create a real Vercel Sandbox session (token-only auth via inferScope). */
+export const vercelSandboxFactory: SandboxFactory = async ({ runtime, timeoutMs, ports }): Promise<SandboxSession> => {
+  const token = vercelToken();
+  const mod = (await import("@vercel/sandbox")) as unknown as { Sandbox: SdkSandboxStatic };
+  const opts: Record<string, unknown> = { runtime, timeout: timeoutMs };
+  if (ports?.length) opts.ports = ports;
+  if (token) {
+    const scope = await resolveScope(token);
+    opts.token = token;
+    opts.teamId = scope.teamId;
+    opts.projectId = scope.projectId;
+  }
+  const sandbox = await mod.Sandbox.create(opts);
   return {
     async writeFiles(files: SrcFile[]) {
-      await sandbox.writeFiles(files.map((f) => ({ path: f.path, content: Buffer.from(f.content, "utf8") })));
+      await sandbox.writeFiles(files.map((f) => ({ path: f.path, content: f.content })));
     },
     async run(cmd: string, args: string[]): Promise<SandboxRunResult> {
       const r = await sandbox.runCommand(cmd, args);
-      const stdout = r.stdout ? await r.stdout() : "";
-      const stderr = r.stderr ? await r.stderr() : "";
-      return { exitCode: r.exitCode ?? 0, stdout, stderr };
+      return { exitCode: r.exitCode ?? 0, stdout: await r.stdout(), stderr: await r.stderr() };
+    },
+    domain(port: number) {
+      return sandbox.domain(port);
     },
     async stop() {
       await sandbox.stop();
@@ -91,7 +92,7 @@ export class SandboxBuildError extends Error {}
 
 /**
  * Opt-in, fail-open pre-deploy sandbox gate for a call site.
- *  - No sandbox configured, or no recipe for the stack → returns the files unchanged
+ *  - Not enabled, or no recipe for the stack → returns the files unchanged
  *    (static gate still applies upstream).
  *  - Sandbox builds + the build FAILS → throws SandboxBuildError (block the deploy).
  *  - Sandbox infra/SDK error → returns the files unchanged (proceed; the remote
