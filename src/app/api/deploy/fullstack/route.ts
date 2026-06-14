@@ -3,6 +3,7 @@ import { type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl, containerDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareForContainer, findBackendRoot } from "@/lib/deploy/universal-prepare";
 import { verifyForDeploy } from "@/lib/deploy/verify-gate";
+import { sandboxGate } from "@/lib/deploy/vercel-sandbox-runner";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
@@ -137,8 +138,13 @@ export async function POST(req: NextRequest) {
           // file is still truncated — don't push a build that's certain to fail.
           const gate = verifyForDeploy({ files: nodeFiles });
           if (!gate.ok) throw new Error(`Backend deploy blocked: ${gate.blockers.join("; ")}`);
+          // Phase 3: if a sandbox is configured, actually build the backend in an
+          // ephemeral microVM (with auto-fix + retry) before pushing. Opt-in +
+          // fail-open: inert without VERCEL_TEAM_ID/PROJECT_ID; only blocks on a real
+          // build failure, not on sandbox unavailability.
+          const verifiedNodeFiles = await sandboxGate(gate.files, "node", "Backend");
           const r = await deployContainer({
-            githubToken: token, name: backendName, files: gate.files, runtime: "node",
+            githubToken: token, name: backendName, files: verifiedNodeFiles, runtime: "node",
             buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars, provider,
             description: "Backend from agentic-ai-studio",
           });
@@ -164,7 +170,10 @@ export async function POST(req: NextRequest) {
       try {
         if (!serverToken("VERCEL_TOKEN")) throw new Error("VERCEL_TOKEN is not configured.");
         const prep = prepareForDeploy(front.files);
-        const result = await deployToVercel(prep.files as WorkspaceFile[], {
+        // Phase 3: sandbox-build the frontend (npm install + build) before pushing to
+        // Vercel, so a build break is caught + auto-fixed here. Opt-in + fail-open.
+        const verifiedFrontFiles = await sandboxGate(prep.files as WorkspaceFile[], "static", "Frontend");
+        const result = await deployToVercel(verifiedFrontFiles as WorkspaceFile[], {
           name: slug,
           framework: prep.framework,
           buildCommand: prep.buildCommand,

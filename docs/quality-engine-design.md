@@ -82,8 +82,17 @@ build arbitrary stacks itself:
   cached Tavily-on-miss) with tests. Foundations, fully tested, no new infra.
 - **Phase 2:** wire the enhancer into `/api/chat` (preprocess) and into the deploy
   modify-before-deploy step; expand the library; add Subsystem B refinement.
-- **Phase 3:** Vercel Sandbox full build+run+flow verification + bounded auto-fix
-  retry; per-stack sandbox recipes; promote learned fixes.
+- **Phase 3 (implemented — build tier):** `sandbox-verify.ts` builds the app in an
+  ephemeral Vercel Sandbox before deploy, with the bounded auto-fix → retry loop
+  (`DEFAULT_AUTO_FIXERS` + `matchKnownFix`); per-stack recipes (`recipeFor`, node/
+  static today, additive). `vercel-sandbox-runner.ts` is the real adapter (lazy,
+  runtime-constructed import so the optional `@vercel/sandbox` dep never breaks
+  `next build`) + `sandboxGate()`, wired opt-in + fail-open into the deploy route's
+  Node-backend and frontend paths. **Activate** with `npm i @vercel/sandbox` and
+  `VERCEL_TOKEN`+`VERCEL_TEAM_ID`+`VERCEL_PROJECT_ID` (OIDC is automatic on Vercel).
+  - **Remaining (Phase 3b):** the live RUN + browser flow tier (boot the app +
+    agent-browser smoke per the sandbox snapshot pattern) layered on the build tier;
+    compiled-stack recipes (.NET/Java/Go/…); promote learned fixes via `learn.ts`.
 
 Every phase keeps the test harness green (`npm run test:all`) and the
 fail-open guarantee.
