@@ -102,13 +102,21 @@ export class SandboxBuildError extends Error {}
 export async function sandboxGate(files: SrcFile[], stack: Stack, label: string): Promise<SrcFile[]> {
   if (!isSandboxConfigured()) return files;
   const recipe = recipeFor(stack);
-  if (!recipe) return files;
+  if (!recipe) {
+    console.log(`[sandbox] ${label} (${stack}): no recipe — skipped (static gate applies)`);
+    return files;
+  }
+  console.log(`[sandbox] ${label} (${stack}): building in an ephemeral sandbox…`);
   try {
     const sv = await sandboxVerifyBuild({ files, recipe, factory: vercelSandboxFactory });
     if (!sv.ok) throw new SandboxBuildError(`${label} sandbox build failed: ${sv.blocker}`);
+    console.log(`[sandbox] ${label} (${stack}): OK in ${sv.attempts} attempt(s)` +
+      `${sv.fixesApplied.length ? `, auto-fixed: ${sv.fixesApplied.join(",")}` : ""}` +
+      `${sv.runChecked ? `, runOk=${sv.runOk}${sv.runWarning ? ` (${sv.runWarning})` : ""}` : ""}`);
     return sv.files;
   } catch (e) {
-    if (e instanceof SandboxBuildError) throw e; // real build failure → propagate (block)
+    if (e instanceof SandboxBuildError) { console.log(`[sandbox] ${label} (${stack}): BLOCKED — ${e.message}`); throw e; }
+    console.log(`[sandbox] ${label} (${stack}): unavailable, proceeding fail-open (${e instanceof Error ? e.message : String(e)})`);
     return files; // sandbox unavailable / SDK error → fail-open
   }
 }

@@ -112,8 +112,12 @@ export async function POST(req: NextRequest) {
           // Apply the registry's VERIFIED (incl. distilled-then-promoted) fixes for
           // this stack before pushing the repo.
           const backendFiles = (await applyStoredFixes(container.prep.files, container.prep.plan.framework)).files;
+          // Phase 3: sandbox-build the container backend (.NET/Python/Go) before
+          // pushing to Render/Fly/Railway — same gate as the Node path. Opt-in +
+          // fail-open; recipeFor() decides which stacks actually run.
+          const verifiedBackendFiles = await sandboxGate(backendFiles, container.prep.plan.stack, "Backend");
           const r = await deployContainer({
-            githubToken: token, name: backendName, files: backendFiles, runtime: "docker",
+            githubToken: token, name: backendName, files: verifiedBackendFiles, runtime: "docker",
             dockerfilePath: container.prep.dockerfilePath, envVars, provider,
             description: `Container backend (${container.prep.plan.framework}) from agentic-ai-studio`,
           });
