@@ -167,30 +167,27 @@ Provide every file the project needs as its own labeled code block. Do not abbre
         let magicText = magicPromptText;
         if (isArtifactAgent(resolvedAgentType)) {
           // Magic prompt: expand the request into a detailed 500-1000 word brief
-          // that the model builds from (and the plan + verification derive from).
-          // Fail-open: on any error / weak expansion we keep the original prompt.
-          if (!pre.analysis.hasInjection && !pre.analysis.looksLikeCode) {
-            try {
-              const expanded = await generateMagicPrompt(magicText, resolvedAgentType);
-              if (expanded) {
-                magicText = expanded;
-                implMessages = replaceLastUserText(pre.modelMessages, expanded);
-              }
-            } catch {
-              /* fail-open: keep the original prompt */
-            }
+          // that the model builds from (and verification derives from). The plan
+          // is generated CONCURRENTLY from the original request so the two LLM
+          // passes overlap instead of stacking ~16s + ~8s of latency before the
+          // build starts. Both fail-open: errors leave the original prompt / no plan.
+          const canExpand = !pre.analysis.hasInjection && !pre.analysis.looksLikeCode;
+          const [expanded, plan] = await Promise.all([
+            canExpand ? generateMagicPrompt(magicText, resolvedAgentType).catch(() => null) : Promise.resolve(null),
+            generateImplementationPlan(magicText, resolvedAgentType).catch(() => null),
+          ]);
+          if (expanded) {
+            magicText = expanded;
+            implMessages = replaceLastUserText(pre.modelMessages, expanded);
           }
+          console.log(`[chat] magic-prompt expanded=${!!expanded} from=${(magicPromptText || "").length} to=${magicText.length} chars`);
           writer.write({
             type: "data-magicPrompt",
             id: "magic-prompt",
             data: { original: lastText, enhanced: magicText, rewritten: magicText !== lastText, source: qualityMeta },
           } as never);
-          try {
-            implPlan = await generateImplementationPlan(magicText, resolvedAgentType);
-            if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
-          } catch {
-            /* fail-open: no plan part */
-          }
+          implPlan = plan;
+          if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
         }
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {

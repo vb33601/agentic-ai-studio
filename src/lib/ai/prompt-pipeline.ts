@@ -307,11 +307,16 @@ export async function generateMagicPrompt(text: string, agentType: string): Prom
         // ~1000 words of brief; keep the upfront credit reservation bounded.
         maxOutputTokens: 2500,
       }),
-      15000,
+      // A 500-1000 word brief takes ~10-16s to generate; 15s timed out
+      // intermittently and fell back to the original prompt. Give it real room.
+      30000,
     );
     const clean = (out || "").trim();
-    // Only adopt it if it's a real expansion over the original request.
-    return clean.length > Math.max(200, text.length * 2) ? clean : null;
+    // Adopt the brief whenever the model returned something substantial (a real
+    // multi-paragraph brief, not a truncated/empty reply). We intentionally do
+    // NOT require it to be ~2x the original — that rejected expansions of longer,
+    // already-detailed prompts and left the magic prompt showing the input text.
+    return clean.length >= 350 && clean.length >= text.trim().length ? clean : null;
   } catch {
     return null;
   }
