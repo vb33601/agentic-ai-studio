@@ -87,6 +87,12 @@ const GOOD: Array<[string, string]> = [
   ["line comment as last line", `export const N = 1\n// trailing comment, file ends here\n`],
   ["block comment at EOF", `export const N = 1;\n/* a closing note */\n`],
   ["division not regex", `export const ratio = width / height;\nexport const half = total / 2;\n`],
+  // The combo-deploy regression: a COMPLETE component on ONE line. The closing tags
+  // </h1></p></div> must not be mistaken for regex (which corrupted the scan and
+  // stubbed the component to `return null` → a blank React app).
+  ["single-line JSX component", `import React from 'react';export default function App(){return <div className='min-h-screen bg-slate-50 p-8'><h1 className='text-2xl font-bold'>Combo deploy</h1><p>frontend + backend</p></div>;}`],
+  ["single-line nested closing tags", `export const Card = () => <div><span>a</span><b>x</b></div>;\nexport const Two = () => <ul><li>1</li><li>2</li></ul>;`],
+  ["JSX with self-closing + division nearby", `export default function C(){const r = w / h;return <div><img src='x'/><br/></div>;}`],
 ];
 for (const [name, content] of GOOD) {
   const r = repairTruncatedJs(name.endsWith("cast") ? "f.tsx" : "f.jsx", content);

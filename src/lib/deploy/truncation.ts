@@ -53,9 +53,17 @@ interface Analysis {
   openDepth: number;
 }
 
-/** A `/` begins a regex (not division) when the preceding real token is one of these. */
+/**
+ * A `/` begins a regex (not division) only after a token that clearly expects a
+ * value. Deliberately CONSERVATIVE: it must NEVER fire on a JSX close tag (`</div>`)
+ * — `<` and `>` are excluded — because a false regex would swallow the rest of a
+ * single-line JSX element and corrupt brace-scanning, false-flagging a valid
+ * component as truncated (which then gets stubbed to `return null` → a blank app).
+ * Missing a genuine regex only risks miscounting braces INSIDE a regex literal,
+ * which is rare in app code; corrupting JSX is not. So we bias hard against regex.
+ */
 function regexAllowedAfter(prev: string): boolean {
-  return prev === "" || "(,=:[!&|?{};+-*%~^<>".includes(prev) || /[a-z]/.test(prev) === false;
+  return prev === "" || "(,=:[!&|?{;".includes(prev);
 }
 
 /**
