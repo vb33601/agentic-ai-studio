@@ -86,9 +86,13 @@ build arbitrary stacks itself:
   an ephemeral Vercel Sandbox before deploy, with the bounded auto-fix → retry loop
   (`DEFAULT_AUTO_FIXERS` + `matchKnownFix`), plus a **run/smoke tier** that boots the
   app and HTTP-probes it on its `.vercel.run` domain (soft signal — reports `runOk`/
-  `runWarning`, never false-blocks). Per-stack recipes (`recipeFor`): node/static
-  (native), python (native), **.NET** and **Go** (toolchain installed in a node VM);
-  others additive. `vercel-sandbox-runner.ts` is the real adapter — **auth follows
+  `runWarning`, never false-blocks). Per-stack recipes (`recipeFor`) cover **all 40
+  stacks** in two tiers: a RELIABLE blocking tier (node/static/python/.NET/Go/Rust/
+  C++/Java/Ruby/PHP/Deno — toolchain dependably available; the build blocks on
+  failure, e.g. `ruby -c`/`php -l` catch truncation) and a BEST-EFFORT tier (the
+  rest — toolchain install attempted in the node sandbox; if the Amazon-Linux repo
+  lacks it the `setup` phase FAIL-OPENS and skips, so it never false-blocks and the
+  remote Docker build verifies instead). `vercel-sandbox-runner.ts` is the real adapter — **auth follows
   the deploy path**: `inferScope({ token })` creates/reuses a sandbox project from
   `VERCEL_TOKEN` alone (no fixed team/project ids). `@vercel/sandbox` is a real dep
   in `serverExternalPackages` (never bundled). `sandboxGate()` is wired into the

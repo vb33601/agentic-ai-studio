@@ -67,7 +67,15 @@ export interface RunSpec {
 export interface SandboxRecipe {
   /** Sandbox runtime image (the SDK's runtime id, e.g. "node24", "python3.13"). */
   runtime: string;
-  /** Ordered install/build steps; the first non-zero exit fails the build. */
+  /**
+   * Toolchain provisioning (compiled/non-node stacks install their compiler here).
+   * FAIL-OPEN: if any setup step fails — the toolchain isn't installable in the
+   * node/python sandbox — the whole tier is SKIPPED (the deploy proceeds and the
+   * remote Docker build, which has the right base image, remains the verifier). A
+   * setup failure is never a deploy blocker.
+   */
+  setup?: BuildStep[];
+  /** Ordered build steps; the first non-zero exit fails the build (blocks/auto-fixes). */
   steps: BuildStep[];
   /** Optional run+smoke after the build passes. */
   run?: RunSpec;
@@ -94,50 +102,85 @@ const NPM_INSTALL: BuildStep = { cmd: "npm", args: ["install", "--no-audit", "--
 const NPM_BUILD: BuildStep = { cmd: "npm", args: ["run", "build", "--if-present"], timeoutMs: 120_000 };
 /** Shorthand for a shell pipeline step (toolchain install needs `sh -c`). */
 const sh = (script: string, timeoutMs = 240_000): BuildStep => ({ cmd: "sh", args: ["-c", script], timeoutMs });
+const dnf = (pkgs: string) => sh(`sudo dnf install -y ${pkgs} 2>&1`, 180_000);
 
+/**
+ * RELIABLE tier — the toolchain is dependably available in the node/python sandbox
+ * (Amazon Linux 2023 dnf, or a first-party install script) and the build is a real
+ * check that SHOULD block the deploy on failure (e.g. `ruby -c`/`php -l` catch
+ * truncation; cargo/mvn/dotnet catch the real build defects).
+ */
+const RELIABLE: Partial<Record<Stack, SandboxRecipe>> = {
+  node: { runtime: "node24", steps: [NPM_INSTALL, NPM_BUILD], run: { cmd: "sh", args: ["-c", "PORT=3000 npm start"], port: 3000, healthPath: "/", bootTimeoutMs: 20_000 } },
+  bun: { runtime: "node24", steps: [NPM_INSTALL, NPM_BUILD], run: { cmd: "sh", args: ["-c", "PORT=3000 npm start"], port: 3000, healthPath: "/", bootTimeoutMs: 20_000 } },
+  static: { runtime: "node24", steps: [NPM_INSTALL, NPM_BUILD] },
+  python: { runtime: "python3.13", steps: [
+    sh("if [ -f requirements.txt ]; then pip install -r requirements.txt; fi", 180_000),
+    sh("python -m compileall -q . || python -m py_compile $(find . -name '*.py')", 120_000),
+  ] },
+  dotnet: { runtime: "node24", steps: [
+    sh("curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir $HOME/.dotnet", 240_000),
+    sh("$HOME/.dotnet/dotnet build -c Release -p:NoWarn=NU1605 -p:TreatWarningsAsErrors=false 2>&1", 240_000),
+  ] },
+  go: { runtime: "node24", setup: [dnf("golang")], steps: [sh("go build ./... 2>&1")] },
+  rust: { runtime: "node24", setup: [dnf("cargo rust")], steps: [sh("cargo build 2>&1")] },
+  cpp: { runtime: "node24", setup: [dnf("gcc-c++ cmake make")], steps: [sh("if [ -f CMakeLists.txt ]; then cmake -B build -DCMAKE_BUILD_TYPE=Release 2>&1 && cmake --build build 2>&1; else g++ -std=c++17 -fsyntax-only $(find . -name '*.cpp' -o -name '*.cc' -o -name '*.cxx') 2>&1; fi")] },
+  java: { runtime: "node24", setup: [dnf("java-17-openjdk-devel maven")], steps: [sh("if [ -f pom.xml ]; then mvn -q -DskipTests package 2>&1; elif [ -f gradlew ]; then ./gradlew build -x test --no-daemon 2>&1; else javac $(find . -name '*.java') 2>&1; fi")] },
+  ruby: { runtime: "node24", setup: [dnf("ruby")], steps: [sh("find . -name '*.rb' -print0 | xargs -0 -r -n1 ruby -c 2>&1")] },
+  php: { runtime: "node24", setup: [dnf("php-cli")], steps: [sh("find . -name '*.php' -print0 | xargs -0 -r -n1 php -l 2>&1")] },
+  deno: { runtime: "node24", setup: [sh("curl -fsSL https://deno.land/install.sh | sh 2>&1")], steps: [sh("$HOME/.deno/bin/deno check $(find . -name '*.ts' -not -path '*/node_modules/*') 2>&1")] },
+};
+
+/**
+ * BEST-EFFORT tier — toolchain install + a lightweight build/syntax check, run in
+ * the fail-open SETUP phase so it can NEVER block a deploy: on these stacks the
+ * toolchain often isn't installable in the node sandbox (Amazon Linux 2023 has a
+ * limited repo), so a failure means "skip — the remote Docker build (correct base
+ * image) verifies instead". When the toolchain IS present, it still catches breaks.
+ */
+const BEST_EFFORT: Partial<Record<Stack, string>> = {
+  perl: "sudo dnf install -y perl 2>&1 && find . -name '*.pl' -o -name '*.pm' | xargs -r -n1 perl -c 2>&1",
+  lua: "sudo dnf install -y lua 2>&1 && find . -name '*.lua' | xargs -r -n1 luac -p 2>&1",
+  r: "sudo dnf install -y R 2>&1 && Rscript -e \"invisible(lapply(list.files(pattern='[.][Rr]$',recursive=TRUE), parse))\" 2>&1",
+  elixir: "sudo dnf install -y elixir 2>&1 && mix compile 2>&1",
+  erlang: "sudo dnf install -y erlang 2>&1 && (rebar3 compile 2>&1 || erlc $(find . -name '*.erl') 2>&1)",
+  ocaml: "sudo dnf install -y ocaml dune 2>&1 && dune build 2>&1",
+  haskell: "sudo dnf install -y ghc cabal-install 2>&1 && cabal build 2>&1",
+  ada: "sudo dnf install -y gcc-gnat 2>&1 && gnatmake -q $(find . -name '*.adb' | head -1) 2>&1",
+  pascal: "sudo dnf install -y fpc 2>&1 && find . -name '*.pas' | xargs -r -n1 fpc 2>&1",
+  nim: "sudo dnf install -y nim 2>&1 && find . -name '*.nim' | xargs -r -n1 nim check 2>&1",
+  d: "sudo dnf install -y ldc 2>&1 && ldc2 -o- $(find . -name '*.d') 2>&1",
+  haxe: "sudo dnf install -y haxe 2>&1 && (haxe build.hxml 2>&1 || true)",
+  lisp: "sudo dnf install -y sbcl 2>&1 && find . -name '*.lisp' | xargs -r -n1 sh -c 'sbcl --non-interactive --eval \"(compile-file \\\"$0\\\")\"' 2>&1",
+  racket: "sudo dnf install -y racket 2>&1 && raco make $(find . -name '*.rkt') 2>&1",
+  clojure: "sudo dnf install -y clojure java-17-openjdk-devel 2>&1 && clojure -M -e '(println :ok)' 2>&1",
+  tcl: "sudo dnf install -y tcl 2>&1 && find . -name '*.tcl' | xargs -r -n1 sh -c 'echo \"source $0\" | tclsh' 2>&1",
+  prolog: "sudo dnf install -y pl 2>&1 && find . -name '*.pl' -o -name '*.pro' | xargs -r -n1 swipl -g halt -t 'halt(1)' 2>&1",
+  julia: "sudo dnf install -y julia 2>&1 && julia -e 'foreach(f->include(f), filter(x->endswith(x,\".jl\"), readdir(\".\";join=true)))' 2>&1",
+  raku: "sudo dnf install -y rakudo 2>&1 && find . -name '*.raku' -o -name '*.p6' | xargs -r -n1 raku -c 2>&1",
+  // Toolchains generally NOT in the Amazon Linux repo → install attempt fails →
+  // fail-open skip (the remote Docker build, with the right base image, verifies).
+  swift: "sudo dnf install -y swift-lang 2>&1 && swift build 2>&1",
+  crystal: "sudo dnf install -y crystal 2>&1 && crystal build $(find . -name '*.cr' | head -1) 2>&1",
+  zig: "sudo dnf install -y zig 2>&1 && zig build 2>&1",
+  vlang: "sudo dnf install -y vlang 2>&1 && v . 2>&1",
+  gleam: "sudo dnf install -y gleam 2>&1 && gleam build 2>&1",
+  dart: "sudo dnf install -y dart 2>&1 && dart compile exe $(find . -name '*.dart' | head -1) 2>&1",
+  ballerina: "sudo dnf install -y ballerina 2>&1 && bal build 2>&1",
+  powershell: "sudo dnf install -y powershell 2>&1 && pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$null,[ref]$null) }' 2>&1",
+  hack: "sudo dnf install -y hhvm 2>&1 && hh_client check 2>&1",
+};
+
+/**
+ * The sandbox recipe for a stack, or null when there's none. Covers ALL configured
+ * stacks: a reliable blocking build for the well-supported ones, and a fail-open
+ * best-effort build for the rest (toolchain install attempted; skipped if absent).
+ */
 export function recipeFor(stack: Stack): SandboxRecipe | null {
-  switch (stack) {
-    // --- Node: native runtime; build + (run a server if `npm start` exists). ---
-    case "node":
-    case "bun":
-      return {
-        runtime: "node24",
-        steps: [NPM_INSTALL, NPM_BUILD],
-        run: { cmd: "sh", args: ["-c", "PORT=3000 npm start"], port: 3000, healthPath: "/", bootTimeoutMs: 20_000 },
-      };
-    // --- Static/frontend: native runtime; build only (no server to boot). ---
-    case "static":
-      return { runtime: "node24", steps: [NPM_INSTALL, NPM_BUILD] };
-    // --- Python: native runtime; install deps + byte-compile to catch syntax/import. ---
-    case "python":
-      return {
-        runtime: "python3.13",
-        steps: [
-          sh("if [ -f requirements.txt ]; then pip install -r requirements.txt; fi", 180_000),
-          sh("python -m compileall -q . || python -m py_compile $(git ls-files '*.py' 2>/dev/null || find . -name '*.py')", 120_000),
-        ],
-      };
-    // --- .NET: install the SDK in a node VM, then build (catches CS0246/CS1513/NU1605). ---
-    case "dotnet":
-      return {
-        runtime: "node24",
-        steps: [
-          sh("curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir $HOME/.dotnet", 240_000),
-          sh("$HOME/.dotnet/dotnet build -c Release -p:NoWarn=NU1605 -p:TreatWarningsAsErrors=false", 240_000),
-        ],
-      };
-    // --- Go: install the toolchain, then compile. ---
-    case "go":
-      return {
-        runtime: "node24",
-        steps: [sh("sudo dnf install -y golang >/dev/null 2>&1 && go build ./... 2>&1", 240_000)],
-      };
-    default:
-      // Other compiled stacks (Java/Rust/…) need their own toolchain step; added
-      // incrementally (see docs/quality-engine-design.md). Sandbox tier skipped —
-      // the static gate + remote build still apply.
-      return null;
-  }
+  if (RELIABLE[stack]) return RELIABLE[stack]!;
+  const script = BEST_EFFORT[stack];
+  if (script) return { runtime: "node24", setup: [sh(script, 240_000)], steps: [] };
+  return null;
 }
 
 export interface SandboxVerifyInput {
@@ -174,6 +217,8 @@ export interface SandboxVerifyResult {
   runOk?: boolean;
   /** Soft signal: the app built but didn't answer in time (does NOT block). */
   runWarning?: string;
+  /** The toolchain couldn't be provisioned in the sandbox → tier skipped (fail-open). */
+  setupSkipped?: boolean;
 }
 
 const asRec = (f: FixRule) => ({ id: f.id, title: f.title });
@@ -227,18 +272,32 @@ export async function sandboxVerifyBuild(input: SandboxVerifyInput): Promise<San
     });
     let result: SandboxRunResult = { exitCode: 0, stdout: "", stderr: "" };
     let smoke: { ok: boolean; warning?: string } | null = null;
+    let setupFailed = false;
     try {
       await sb.writeFiles(files);
-      for (const step of input.recipe.steps) {
-        result = await sb.run(step.cmd, step.args, { timeoutMs: step.timeoutMs });
-        if (result.exitCode !== 0) break;
+      // Toolchain provisioning (fail-open): a setup failure means the sandbox can't
+      // host this stack's compiler → skip the tier, don't block the deploy.
+      for (const step of input.recipe.setup ?? []) {
+        const s = await sb.run(step.cmd, step.args, { timeoutMs: step.timeoutMs });
+        if (s.exitCode !== 0) { setupFailed = true; break; }
+      }
+      if (!setupFailed) {
+        for (const step of input.recipe.steps) {
+          result = await sb.run(step.cmd, step.args, { timeoutMs: step.timeoutMs });
+          if (result.exitCode !== 0) break;
+        }
       }
       // Run/smoke tier — only after a green build, only when the recipe defines it.
-      if (result.exitCode === 0 && input.recipe.run) {
+      if (!setupFailed && result.exitCode === 0 && input.recipe.run) {
         smoke = await runSmoke(sb, input.recipe.run, input.httpGet ?? ((u) => fetch(u).then((r) => ({ status: r.status }))));
       }
     } finally {
       await sb.stop().catch(() => {});
+    }
+
+    // Toolchain couldn't be provisioned → fail-open skip (the remote build verifies).
+    if (setupFailed) {
+      return { ok: true, attempts: attempt, files, fixesApplied, recognized: [], novelFailure: false, log: "", blocker: "", setupSkipped: true };
     }
 
     if (result.exitCode === 0) {

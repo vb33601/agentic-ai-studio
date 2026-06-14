@@ -38,15 +38,17 @@ for (const p of universal) {
 
 // ── Layer 3a: sandbox build-tier coverage ────────────────────────────────────
 const withRecipe = stacks.filter((s) => recipeFor(s) !== null);
-console.log(`\n  sandbox build-tier recipes: ${withRecipe.length}/${stacks.length} stacks (${withRecipe.join(", ")})`);
-check("sandbox covers the JS + key compiled stacks", ["node", "static", "python", "dotnet", "go"].every((s) => recipeFor(s as never) !== null));
+console.log(`\n  sandbox build-tier recipes: ${withRecipe.length}/${stacks.length} stacks`);
+check("sandbox recipe exists for ALL configured stacks", withRecipe.length === stacks.length, `missing: ${stacks.filter((s) => !recipeFor(s)).join(",")}`);
+check("sandbox covers the JS + key compiled stacks", ["node", "static", "python", "dotnet", "go", "rust", "java", "ruby", "php"].every((s) => recipeFor(s as never) !== null));
 
 // ── Per-stack coverage matrix (printed) ──────────────────────────────────────
 console.log("\n  stack            | universal-trunc | sandbox | registry-fixes");
 console.log("  " + "-".repeat(68));
 for (const s of stacks) {
   const uni = hardeningPassesFor(s).includes("repair-truncated-source") ? "yes" : "NO";
-  const sb = recipeFor(s) ? "build" + (recipeFor(s)!.run ? "+run" : "") : "-";
+  const r = recipeFor(s);
+  const sb = !r ? "-" : r.steps.length ? "build" + (r.run ? "+run" : "") : "best-effort";
   const nFixes = fixesForStack(s).length;
   console.log(`  ${s.padEnd(16)} | ${uni.padEnd(15)} | ${sb.padEnd(7)} | ${nFixes}`);
 }

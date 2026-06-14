@@ -85,13 +85,21 @@ const httpDown = async () => { throw new Error("conn refused"); };
   check("blocker includes the build log tail", /libmystery/.test(r.blocker));
 }
 
+// 4b) Toolchain (setup) failure → fail-open SKIP, never a deploy block.
+{
+  const f = makeFactory([{ failOnStep: "dnf install", log: "No match for argument: ruby" }]);
+  const r = await sandboxVerifyBuild({ files: [{ path: "a.rb", content: "puts 1" }], recipe: recipeFor("ruby")!, factory: f.factory });
+  check("toolchain-unavailable setup fail-opens (skip, not block)", r.ok && r.setupSkipped === true);
+}
+
 // 5) recipeFor coverage (node/static/python native; dotnet/go via toolchain install).
 check("recipeFor(node) → node24 + run spec", recipeFor("node")?.runtime === "node24" && !!recipeFor("node")?.run);
 check("recipeFor(static) → build only (no run)", recipeFor("static")?.runtime === "node24" && !recipeFor("static")?.run);
 check("recipeFor(python) → python3.13", recipeFor("python")?.runtime === "python3.13");
 check("recipeFor(dotnet) installs the SDK then builds", recipeFor("dotnet")?.steps.some((s) => s.args.join(" ").includes("dotnet-install")) === true);
 check("recipeFor(go) builds via the go toolchain", recipeFor("go")?.steps.some((s) => s.args.join(" ").includes("go build")) === true);
-check("recipeFor(rust) is null (sandbox tier skipped)", recipeFor("rust") === null);
+check("recipeFor(rust) is a reliable blocking recipe", (recipeFor("rust")?.steps.length ?? 0) > 0);
+check("recipeFor(crystal) is best-effort (setup-only, fail-open)", recipeFor("crystal")?.steps.length === 0 && (recipeFor("crystal")?.setup?.length ?? 0) > 0);
 
 console.log("-".repeat(60));
 console.log(fails === 0 ? "ALL SANDBOX-VERIFY TESTS PASSED" : `${fails} TEST(S) FAILED`);
