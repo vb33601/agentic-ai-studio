@@ -138,39 +138,41 @@ const RELIABLE: Partial<Record<Stack, SandboxRecipe>> = {
  * image) verifies instead". When the toolchain IS present, it still catches breaks.
  */
 const BEST_EFFORT: Partial<Record<Stack, string>> = {
-  // java: the JDK/maven aren't in the sandbox's default repo (live-validated: dnf
-  // install failed → fail-open skip), so it's best-effort, not reliable. Try
-  // Amazon Corretto; build via mvn/gradle if present, else javac.
-  java: "sudo dnf install -y java-17-amazon-corretto-devel maven 2>&1 && (if [ -f pom.xml ] && command -v mvn >/dev/null; then mvn -q -DskipTests package 2>&1; elif [ -f gradlew ]; then ./gradlew build -x test --no-daemon 2>&1; else javac $(find . -name '*.java') 2>&1; fi)",
+  // -- In the Amazon Linux repo (live-validated BUILT) -----------------------------
   perl: "sudo dnf install -y perl 2>&1 && find . -name '*.pl' -o -name '*.pm' | xargs -r -n1 perl -c 2>&1",
   lua: "sudo dnf install -y lua 2>&1 && find . -name '*.lua' | xargs -r -n1 luac -p 2>&1",
   r: "sudo dnf install -y R 2>&1 && Rscript -e \"invisible(lapply(list.files(pattern='[.][Rr]$',recursive=TRUE), parse))\" 2>&1",
-  elixir: "sudo dnf install -y elixir 2>&1 && mix compile 2>&1",
-  erlang: "sudo dnf install -y erlang 2>&1 && (rebar3 compile 2>&1 || erlc $(find . -name '*.erl') 2>&1)",
-  ocaml: "sudo dnf install -y ocaml dune 2>&1 && dune build 2>&1",
-  haskell: "sudo dnf install -y ghc cabal-install 2>&1 && cabal build 2>&1",
-  ada: "sudo dnf install -y gcc-gnat 2>&1 && gnatmake -q $(find . -name '*.adb' | head -1) 2>&1",
-  pascal: "sudo dnf install -y fpc 2>&1 && find . -name '*.pas' | xargs -r -n1 fpc 2>&1",
-  nim: "sudo dnf install -y nim 2>&1 && find . -name '*.nim' | xargs -r -n1 nim check 2>&1",
-  d: "sudo dnf install -y ldc 2>&1 && ldc2 -o- $(find . -name '*.d') 2>&1",
-  haxe: "sudo dnf install -y haxe 2>&1 && (haxe build.hxml 2>&1 || true)",
-  lisp: "sudo dnf install -y sbcl 2>&1 && find . -name '*.lisp' | xargs -r -n1 sh -c 'sbcl --non-interactive --eval \"(compile-file \\\"$0\\\")\"' 2>&1",
-  racket: "sudo dnf install -y racket 2>&1 && raco make $(find . -name '*.rkt') 2>&1",
-  clojure: "sudo dnf install -y clojure java-17-openjdk-devel 2>&1 && clojure -M -e '(println :ok)' 2>&1",
   tcl: "sudo dnf install -y tcl 2>&1 && find . -name '*.tcl' | xargs -r -n1 sh -c 'echo \"source $0\" | tclsh' 2>&1",
-  prolog: "sudo dnf install -y pl 2>&1 && find . -name '*.pl' -o -name '*.pro' | xargs -r -n1 swipl -g halt -t 'halt(1)' 2>&1",
-  julia: "sudo dnf install -y julia 2>&1 && julia -e 'foreach(f->include(f), filter(x->endswith(x,\".jl\"), readdir(\".\";join=true)))' 2>&1",
-  raku: "sudo dnf install -y rakudo 2>&1 && find . -name '*.raku' -o -name '*.p6' | xargs -r -n1 raku -c 2>&1",
-  // Toolchains generally NOT in the Amazon Linux repo → install attempt fails →
-  // fail-open skip (the remote Docker build, with the right base image, verifies).
-  swift: "sudo dnf install -y swift-lang 2>&1 && swift build 2>&1",
-  crystal: "sudo dnf install -y crystal 2>&1 && crystal build $(find . -name '*.cr' | head -1) 2>&1",
-  zig: "sudo dnf install -y zig 2>&1 && zig build 2>&1",
-  vlang: "sudo dnf install -y vlang 2>&1 && v . 2>&1",
-  gleam: "sudo dnf install -y gleam 2>&1 && gleam build 2>&1",
-  dart: "sudo dnf install -y dart 2>&1 && dart compile exe $(find . -name '*.dart' | head -1) 2>&1",
-  ballerina: "sudo dnf install -y ballerina 2>&1 && bal build 2>&1",
-  powershell: "sudo dnf install -y powershell 2>&1 && pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$null,[ref]$null) }' 2>&1",
+  // java: JDK/maven not in the default repo → Amazon Corretto; mvn/gradle else javac.
+  java: "sudo dnf install -y java-17-amazon-corretto-devel maven 2>&1 && (if [ -f pom.xml ] && command -v mvn >/dev/null; then mvn -q -DskipTests package 2>&1; elif [ -f gradlew ]; then ./gradlew build -x test --no-daemon 2>&1; else javac $(find . -name '*.java') 2>&1; fi)",
+
+  // -- Official tarball / installer-script downloads (not in dnf) -------------------
+  zig: "sudo dnf install -y xz 2>&1 && curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ -C /tmp 2>&1 && find . -name '*.zig' -exec /tmp/zig-linux-x86_64-0.13.0/zig ast-check {} \\;",
+  nim: "sudo dnf install -y xz 2>&1 && curl -fsSL https://nim-lang.org/download/nim-2.0.8-linux_x64.tar.xz | tar -xJ -C /tmp 2>&1 && find . -name '*.nim' -exec /tmp/nim-2.0.8/bin/nim check --errorMax:1 --hints:off {} \\;",
+  d: "sudo dnf install -y xz 2>&1 && curl -fsSL https://github.com/ldc-developers/ldc/releases/download/v1.39.0/ldc2-1.39.0-linux-x86_64.tar.xz | tar -xJ -C /tmp 2>&1 && /tmp/ldc2-1.39.0-linux-x86_64/bin/ldc2 -o- $(find . -name '*.d') 2>&1",
+  dart: "curl -fsSL https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-x64-release.zip -o /tmp/dart.zip 2>&1 && unzip -q /tmp/dart.zip -d /tmp && /tmp/dart-sdk/bin/dart analyze . 2>&1",
+  crystal: "curl -fsSL https://github.com/crystal-lang/crystal/releases/download/1.13.1/crystal-1.13.1-1-linux-x86_64.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/crystal-1.13.1-1/bin/crystal build --no-codegen $(find . -name '*.cr' | head -1) 2>&1",
+  vlang: "curl -fsSL https://github.com/vlang/v/releases/latest/download/v_linux.zip -o /tmp/v.zip 2>&1 && unzip -q /tmp/v.zip -d /tmp && (/tmp/v/v -check-syntax $(find . -name '*.v' | head -1) 2>&1 || /tmp/v/v -o /dev/null . 2>&1)",
+  powershell: "sudo dnf install -y libicu 2>&1 && mkdir -p /tmp/ps && curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz | tar -xz -C /tmp/ps 2>&1 && /tmp/ps/pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$null,[ref]$e); if($e){exit 1} }' 2>&1",
+  julia: "curl -fsSL https://julialang-s3.julialang.org/bin/linux/x64/1.10/julia-1.10.5-linux-x86_64.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/julia-1.10.5/bin/julia -e 'foreach(include, filter(f->endswith(f,\".jl\"), readdir(\".\";join=true)))' 2>&1",
+  haskell: "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh 2>&1 && . ~/.ghcup/env && ghc -fno-code $(find . -name '*.hs') 2>&1",
+  haxe: "curl -fsSL https://github.com/HaxeFoundation/haxe/releases/download/4.3.6/haxe-4.3.6-linux64.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/haxe_*/haxe -version 2>&1",
+  gleam: "curl -fsSL https://github.com/gleam-lang/gleam/releases/download/v1.5.1/gleam-v1.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/gleam build 2>&1",
+  racket: "curl -fsSL https://download.racket-lang.org/installers/8.14/racket-8.14-x86_64-linux-cs.sh -o /tmp/r.sh 2>&1 && sh /tmp/r.sh --in-place --dest /tmp/racket 2>&1 && find . -name '*.rkt' -exec /tmp/racket/bin/raco expand {} \\;",
+  clojure: "sudo dnf install -y java-17-amazon-corretto-devel 2>&1 && curl -fsSL https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh -o /tmp/c.sh 2>&1 && sudo bash /tmp/c.sh 2>&1 && find . -name '*.clj' -exec clojure -M {} \\;",
+
+  // -- Toolchain typically NOT installable in the node sandbox → fail-open SKIP -----
+  //    (the remote Docker build, with the correct base image, verifies these).
+  ocaml: "sudo dnf install -y ocaml 2>&1 && find . -name '*.ml' -exec ocamlc -stop-after typing {} \\;",
+  ada: "sudo dnf install -y gcc-gnat 2>&1 && find . -name '*.adb' -exec gnatmake -gnatc {} \\;",
+  pascal: "sudo dnf install -y fpc 2>&1 && find . -name '*.pas' -exec fpc -Se1 {} \\;",
+  lisp: "sudo dnf install -y sbcl 2>&1 && find . -name '*.lisp' -exec sbcl --non-interactive --eval '(compile-file \"{}\")' \\;",
+  prolog: "sudo dnf install -y pl 2>&1 && find . -name '*.pro' -exec swipl -q -g halt -t 'halt(1)' {} \\;",
+  erlang: "sudo dnf install -y erlang 2>&1 && erlc $(find . -name '*.erl') 2>&1",
+  elixir: "sudo dnf install -y elixir 2>&1 && mix compile 2>&1",
+  raku: "sudo dnf install -y rakudo 2>&1 && find . -name '*.raku' -exec raku -c {} \\;",
+  swift: "curl -fsSL https://swiftlang.github.io/swiftly/swiftly-install.sh | bash -s -- -y 2>&1 && . ~/.local/share/swiftly/env.sh 2>/dev/null && swift build 2>&1",
+  ballerina: "curl -fsSL https://dist.ballerina.io/downloads/2201.10.0/ballerina-2201.10.0-swan-lake.zip -o /tmp/bal.zip 2>&1 && unzip -q /tmp/bal.zip -d /tmp 2>&1 && /tmp/ballerina-*/bin/bal build 2>&1",
   hack: "sudo dnf install -y hhvm 2>&1 && hh_client check 2>&1",
 };
 

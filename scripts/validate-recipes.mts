@@ -57,7 +57,8 @@ const APPS: Partial<Record<Stack, F[]>> = {
   hack: [{ path: "m.hack", content: "<?hh\nfunction main(): void {}\n" }],
 };
 
-const allStacks = Object.keys(APPS) as Stack[];
+const filter = (process.env.STACKS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const allStacks = (Object.keys(APPS) as Stack[]).filter((s) => filter.length === 0 || filter.includes(s));
 const results: Array<{ stack: string; verdict: string; secs: number; note: string }> = [];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
