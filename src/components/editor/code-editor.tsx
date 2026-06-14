@@ -5,11 +5,13 @@ import { FileText, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/workspace";
 import { Badge } from "@/components/ui/badge";
+import { useTheme } from "next-themes";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 export function CodeEditor() {
   const { files, activeFileId, setActiveFileId, updateFile } = useWorkspaceStore();
+  const { resolvedTheme } = useTheme();
   const activeFile = files.find((f) => f.id === activeFileId);
 
   // Editor is controlled directly from the store; no local mirror state needed.
@@ -67,7 +69,7 @@ export function CodeEditor() {
             </div>
           </div>
           {activeFile.language === "image" ? (
-            <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-zinc-900 p-6">
+            <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-muted p-6">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={activeFile.content} alt={activeFile.name} className="max-w-full max-h-full object-contain rounded-lg border" />
             </div>
@@ -79,7 +81,7 @@ export function CodeEditor() {
               language={activeFile.language}
               value={activeFile.content}
               onChange={handleChange}
-              theme="vs-dark"
+              theme={resolvedTheme === "light" ? "light" : "vs-dark"}
               options={{
                 minimap: { enabled: false },
                 fontSize: 13,

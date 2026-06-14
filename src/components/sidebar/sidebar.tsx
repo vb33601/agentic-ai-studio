@@ -11,6 +11,7 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { cn } from "@/lib/utils";
 import { apiListChats, apiCreateChat, apiDeleteChat } from "@/lib/api/chats";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export function Sidebar() {
   const { sessions, activeChatId, setActiveChatId, setSessions, addSession, removeSession, selectedModel, setSidebarOpen } =
@@ -83,6 +84,7 @@ export function Sidebar() {
           </div>
           <span className="font-semibold text-sm">AI Platform</span>
         </div>
+        <ThemeToggle className="h-7 w-7" />
         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={newChat} title="New chat">
           <Plus className="h-4 w-4" />
         </Button>

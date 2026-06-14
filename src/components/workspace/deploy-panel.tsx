@@ -704,14 +704,14 @@ export function DeployPanel() {
       {buildLog.length > 0 && (
         <div className="p-4 border-b">
           <p className="text-xs font-medium mb-2">Build Log</p>
-          <div className="bg-zinc-950 rounded-lg p-3 font-mono text-xs space-y-1 max-h-32 overflow-y-auto">
+          <div className="bg-muted rounded-lg p-3 font-mono text-xs space-y-1 max-h-32 overflow-y-auto">
             {buildLog.map((line, i) => (
-              <div key={i} className="text-green-400">
-                <span className="text-zinc-500">$ </span>
+              <div key={i} className="text-green-600 dark:text-green-400">
+                <span className="text-muted-foreground">$ </span>
                 {line}
               </div>
             ))}
-            {deploying && <div className="text-zinc-400 animate-pulse">…</div>}
+            {deploying && <div className="text-muted-foreground animate-pulse">…</div>}
           </div>
         </div>
       )}

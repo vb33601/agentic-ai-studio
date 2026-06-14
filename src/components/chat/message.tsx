@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UIMessage } from "ai";
-import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench } from "lucide-react";
+import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,8 @@ function isImageOutput(output: unknown): output is { url: string; prompt?: strin
 export function ChatMessage({ message, isStreaming }: MessageProps) {
   const [copied, setCopied] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [magicOpen, setMagicOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
 
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
@@ -40,6 +42,14 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
 
   // Tools arrive as either `tool-<name>` (typed) or `dynamic-tool` parts.
   const toolParts = getToolParts(message);
+
+  // Quality-engine stream parts: the "magic prompt" + the implementation plan.
+  const magicPrompt = (message.parts ?? []).find((p) => p.type === "data-magicPrompt") as
+    | { data?: { original?: string; enhanced?: string; rewritten?: boolean; source?: string } }
+    | undefined;
+  const implPlan = (message.parts ?? []).find((p) => p.type === "data-plan") as
+    | { data?: { plan?: string } }
+    | undefined;
 
   const generatedImages = toolParts
     // Only once the tool call has settled — during input streaming the prompt
@@ -78,6 +88,40 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
       </div>
 
       <div className={cn("flex min-w-0 flex-col gap-2 max-w-[85%]", isUser && "items-end")}>
+        {magicPrompt?.data && (
+          <div className="w-full">
+            <button
+              onClick={() => setMagicOpen(!magicOpen)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Sparkles className="h-3 w-3 text-violet-500" />
+              <span>Magic prompt{magicPrompt.data.source ? ` · ${magicPrompt.data.source}` : ""}</span>
+              {magicOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </button>
+            {magicOpen && (
+              <div className="mt-1 rounded-md border bg-muted/40 p-2 text-xs text-foreground whitespace-pre-wrap">
+                {magicPrompt.data.enhanced || magicPrompt.data.original}
+              </div>
+            )}
+          </div>
+        )}
+        {implPlan?.data?.plan && (
+          <div className="w-full">
+            <button
+              onClick={() => setPlanOpen(!planOpen)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ListChecks className="h-3 w-3 text-emerald-500" />
+              <span>Implementation plan</span>
+              {planOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </button>
+            {planOpen && (
+              <div className="mt-1 rounded-md border bg-muted/40 p-2 text-xs">
+                <MessageContent content={implPlan.data.plan} />
+              </div>
+            )}
+          </div>
+        )}
         {toolParts.length > 0 && (
           <div className="w-full">
             <button
@@ -273,15 +317,15 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   };
 
   return (
-    <div className="my-2 rounded-lg border overflow-hidden bg-zinc-950">
-      <div className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800">
-        <span className="text-xs text-zinc-400 font-mono">{language || "code"}</span>
-        <button onClick={copy} className="text-xs text-zinc-400 hover:text-white transition-colors flex items-center gap-1">
+    <div className="my-2 rounded-lg border overflow-hidden bg-muted">
+      <div className="flex items-center justify-between px-4 py-2 bg-muted/60 border-b">
+        <span className="text-xs text-muted-foreground font-mono">{language || "code"}</span>
+        <button onClick={copy} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre className="p-4 overflow-x-auto text-xs text-zinc-100 leading-relaxed">
+      <pre className="p-4 overflow-x-auto text-xs text-foreground leading-relaxed">
         <code>{code}</code>
       </pre>
     </div>

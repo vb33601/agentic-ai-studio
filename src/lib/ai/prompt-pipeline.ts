@@ -247,6 +247,47 @@ async function rewritePrompt(text: string, agentType: string): Promise<string> {
   return out;
 }
 
+const PLAN_SYSTEM = `You are a senior engineer. From the build request, produce a SHORT end-to-end implementation plan a coding agent will follow.
+Rules:
+- Output 4-8 concise, ordered bullet steps (start each with "- ").
+- Cover: the stack + entry/start file, the key screens/modules/endpoints, the data/state, and how the pieces connect end-to-end (so the app actually works as a whole).
+- No code, no preamble, no closing remarks — output ONLY the bullet list.`;
+
+/**
+ * Generate a short end-to-end implementation plan for a build request. Used to (a)
+ * surface the plan in the UI alongside tool calls and (b) check, after generation
+ * and around deploy, that what was built matches the plan. Fail-open: returns null
+ * on any error / non-builder agent, so it can never break a chat.
+ */
+export async function generateImplementationPlan(text: string, agentType: string): Promise<string | null> {
+  if (!isArtifactAgent(agentType) || !text.trim()) return null;
+  try {
+    const { text: out } = await withTimeout(
+      generateText({ model: getEnhancementModel(), temperature: 0.3, system: PLAN_SYSTEM, prompt: text, maxOutputTokens: 800 }),
+      8000,
+    );
+    const clean = (out || "").trim();
+    return clean.length > 15 ? clean : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The text of the last user message (the possibly-rewritten "magic prompt"). */
+export function lastUserText(messages: ModelMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    if (typeof m.content === "string") return m.content;
+    if (Array.isArray(m.content)) {
+      const t = m.content.find((p) => (p as { type?: string }).type === "text") as { text?: string } | undefined;
+      return t?.text ?? "";
+    }
+    return "";
+  }
+  return "";
+}
+
 /** Replace the text of the last user message (keeps any non-text/file parts). */
 function replaceLastUserText(messages: ModelMessage[], newText: string): ModelMessage[] {
   const copy = [...messages];

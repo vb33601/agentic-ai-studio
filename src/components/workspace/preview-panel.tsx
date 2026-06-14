@@ -210,9 +210,9 @@ export function PreviewPanel() {
       )}
 
       {logsOpen && (
-        <div className="border-b bg-zinc-950 px-3 py-2 max-h-40 overflow-y-auto font-mono text-[11px] text-zinc-300 whitespace-pre-wrap">
+        <div className="border-b bg-muted px-3 py-2 max-h-40 overflow-y-auto font-mono text-[11px] text-foreground whitespace-pre-wrap">
           {logs.length === 0 ? (
-            <span className="text-zinc-500">Logs from npm install / dev server will appear here…</span>
+            <span className="text-muted-foreground">Logs from npm install / dev server will appear here…</span>
           ) : (
             logs.join("")
           )}

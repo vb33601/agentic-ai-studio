@@ -18,6 +18,8 @@ import {
   REPAIR_SYSTEM,
   ModelUnavailableError,
   isArtifactAgent,
+  generateImplementationPlan,
+  lastUserText,
 } from "@/lib/ai/prompt-pipeline";
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
 
@@ -137,6 +139,8 @@ Provide every file the project needs as its own labeled code block. Do not abbre
     }
 
     const finalSystem = agentSystem + pre.systemAugmentation + qualityDirectives + FILE_OUTPUT_SUFFIX;
+    // The "magic prompt": the (possibly rewritten) request the model actually receives.
+    const magicPromptText = lastUserText(pre.modelMessages) || lastText;
 
     console.log(`[chat] agent=${resolvedAgentType} model=${modelId} tools=${Object.keys(activeTools ?? {}).join(",")} temp=${temperature} enhance=${enhancePrompt} didRewrite=${pre.didRewrite} quality=${qualityMeta}`);
 
@@ -150,6 +154,22 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       // Surface the real error text to the client (the SDK masks it by default).
       onError: (error) => (error instanceof Error ? error.message : String(error)),
       execute: async ({ writer }) => {
+        // Quality engine (phase 2): surface the "magic prompt" and a generated
+        // end-to-end implementation plan as stream parts — rendered in the UI
+        // alongside tool calls. Best-effort: the plan is an LLM call that fails open.
+        if (isArtifactAgent(resolvedAgentType)) {
+          writer.write({
+            type: "data-magicPrompt",
+            id: "magic-prompt",
+            data: { original: lastText, enhanced: magicPromptText, rewritten: pre.didRewrite, source: qualityMeta },
+          } as never);
+          try {
+            const plan = await generateImplementationPlan(magicPromptText, resolvedAgentType);
+            if (plan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan } } as never);
+          } catch {
+            /* fail-open: no plan part */
+          }
+        }
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
           const cand = candidates[i];
