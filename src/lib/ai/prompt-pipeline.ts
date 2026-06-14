@@ -273,6 +273,50 @@ export async function generateImplementationPlan(text: string, agentType: string
   }
 }
 
+const MAGIC_PROMPT_SYSTEM = `You are a principal product engineer and prompt architect. Expand the user's short build request into ONE comprehensive, self-contained implementation brief that a coding agent will follow to build the app end-to-end.
+
+Write 500-1000 words of dense, concrete specification. Preserve the user's core intent and LANGUAGE. Never write code and never answer the request — produce ONLY the brief.
+
+Cover, in this order, every detail that matters:
+- Overview & goal: a tight paragraph on what the app is and who it is for.
+- Tech stack & entry point: the concrete stack, framework, key libraries, and the start/entry file.
+- Features & user flows: enumerate EVERY screen/page/module and the primary user journeys, step by step.
+- Data & state: the data model (entities + key fields), where state lives, and how data flows through the app.
+- UI/UX: layout, navigation, visual style (modern, polished, responsive, accessible), and the key components.
+- Edge cases & states: empty, loading, error, and success states; input validation; sensible defaults and sample data.
+- Quality bar: complete runnable code, no placeholders or TODOs, sensible file/module structure.
+- End-to-end wiring: how all the pieces connect so the app actually works as a whole.
+
+Be specific and exhaustive about the minute details, but stay realistic and in-scope for a single build — do NOT invent niche features, and do NOT fabricate specific facts, names, numbers, or URLs the user did not imply. Output ONLY the brief — no preamble, no section headings, no labels like "Brief:", and no surrounding quotes.`;
+
+/**
+ * Expand a short build request into a detailed 500-1000 word implementation brief
+ * — the "magic prompt" the model actually builds from (and the plan + verification
+ * derive from). Fail-open: returns null on any error / non-builder agent / when the
+ * expansion isn't a meaningful improvement, so the caller keeps the original prompt.
+ */
+export async function generateMagicPrompt(text: string, agentType: string): Promise<string | null> {
+  if (!isArtifactAgent(agentType) || !text.trim()) return null;
+  try {
+    const { text: out } = await withTimeout(
+      generateText({
+        model: getEnhancementModel(),
+        temperature: 0.4,
+        system: MAGIC_PROMPT_SYSTEM,
+        prompt: text,
+        // ~1000 words of brief; keep the upfront credit reservation bounded.
+        maxOutputTokens: 2500,
+      }),
+      15000,
+    );
+    const clean = (out || "").trim();
+    // Only adopt it if it's a real expansion over the original request.
+    return clean.length > Math.max(200, text.length * 2) ? clean : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The text of the last user message (the possibly-rewritten "magic prompt"). */
 export function lastUserText(messages: ModelMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -289,7 +333,7 @@ export function lastUserText(messages: ModelMessage[]): string {
 }
 
 /** Replace the text of the last user message (keeps any non-text/file parts). */
-function replaceLastUserText(messages: ModelMessage[], newText: string): ModelMessage[] {
+export function replaceLastUserText(messages: ModelMessage[], newText: string): ModelMessage[] {
   const copy = [...messages];
   for (let i = copy.length - 1; i >= 0; i--) {
     const m = copy[i];

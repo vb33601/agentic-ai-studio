@@ -111,7 +111,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
               {magicOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
             </button>
             {magicOpen && (
-              <div className="mt-1 rounded-md border bg-muted/40 p-2 text-xs text-foreground whitespace-pre-wrap">
+              <div className="mt-1 max-h-72 overflow-auto rounded-md border bg-muted/40 p-2 text-xs text-foreground whitespace-pre-wrap">
                 {magicPrompt.data.enhanced || magicPrompt.data.original}
               </div>
             )}

@@ -19,7 +19,9 @@ import {
   ModelUnavailableError,
   isArtifactAgent,
   generateImplementationPlan,
+  generateMagicPrompt,
   lastUserText,
+  replaceLastUserText,
 } from "@/lib/ai/prompt-pipeline";
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
 import { verifyAgainstPlan } from "@/lib/quality/plan-verify";
@@ -159,14 +161,32 @@ Provide every file the project needs as its own labeled code block. Do not abbre
         // end-to-end implementation plan as stream parts — rendered in the UI
         // alongside tool calls. Best-effort: the plan is an LLM call that fails open.
         let implPlan: string | null = null;
+        // The messages the model actually builds from — swapped to the expanded
+        // magic prompt below for builder agents.
+        let implMessages = pre.modelMessages;
+        let magicText = magicPromptText;
         if (isArtifactAgent(resolvedAgentType)) {
+          // Magic prompt: expand the request into a detailed 500-1000 word brief
+          // that the model builds from (and the plan + verification derive from).
+          // Fail-open: on any error / weak expansion we keep the original prompt.
+          if (!pre.analysis.hasInjection && !pre.analysis.looksLikeCode) {
+            try {
+              const expanded = await generateMagicPrompt(magicText, resolvedAgentType);
+              if (expanded) {
+                magicText = expanded;
+                implMessages = replaceLastUserText(pre.modelMessages, expanded);
+              }
+            } catch {
+              /* fail-open: keep the original prompt */
+            }
+          }
           writer.write({
             type: "data-magicPrompt",
             id: "magic-prompt",
-            data: { original: lastText, enhanced: magicPromptText, rewritten: pre.didRewrite, source: qualityMeta },
+            data: { original: lastText, enhanced: magicText, rewritten: magicText !== lastText, source: qualityMeta },
           } as never);
           try {
-            implPlan = await generateImplementationPlan(magicPromptText, resolvedAgentType);
+            implPlan = await generateImplementationPlan(magicText, resolvedAgentType);
             if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
           } catch {
             /* fail-open: no plan part */
@@ -179,7 +199,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           const result = streamText({
             model,
             system: finalSystem,
-            messages: pre.modelMessages,
+            messages: implMessages,
             tools: activeTools,
             stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
             temperature,
