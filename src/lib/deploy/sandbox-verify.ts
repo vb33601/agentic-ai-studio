@@ -125,7 +125,6 @@ const RELIABLE: Partial<Record<Stack, SandboxRecipe>> = {
   go: { runtime: "node24", setup: [dnf("golang")], steps: [sh("go build ./... 2>&1")] },
   rust: { runtime: "node24", setup: [dnf("cargo rust")], steps: [sh("cargo build 2>&1")] },
   cpp: { runtime: "node24", setup: [dnf("gcc-c++ cmake make")], steps: [sh("if [ -f CMakeLists.txt ]; then cmake -B build -DCMAKE_BUILD_TYPE=Release 2>&1 && cmake --build build 2>&1; else g++ -std=c++17 -fsyntax-only $(find . -name '*.cpp' -o -name '*.cc' -o -name '*.cxx') 2>&1; fi")] },
-  java: { runtime: "node24", setup: [dnf("java-17-openjdk-devel maven")], steps: [sh("if [ -f pom.xml ]; then mvn -q -DskipTests package 2>&1; elif [ -f gradlew ]; then ./gradlew build -x test --no-daemon 2>&1; else javac $(find . -name '*.java') 2>&1; fi")] },
   ruby: { runtime: "node24", setup: [dnf("ruby")], steps: [sh("find . -name '*.rb' -print0 | xargs -0 -r -n1 ruby -c 2>&1")] },
   php: { runtime: "node24", setup: [dnf("php-cli")], steps: [sh("find . -name '*.php' -print0 | xargs -0 -r -n1 php -l 2>&1")] },
   deno: { runtime: "node24", setup: [sh("curl -fsSL https://deno.land/install.sh | sh 2>&1")], steps: [sh("$HOME/.deno/bin/deno check $(find . -name '*.ts' -not -path '*/node_modules/*') 2>&1")] },
@@ -139,6 +138,10 @@ const RELIABLE: Partial<Record<Stack, SandboxRecipe>> = {
  * image) verifies instead". When the toolchain IS present, it still catches breaks.
  */
 const BEST_EFFORT: Partial<Record<Stack, string>> = {
+  // java: the JDK/maven aren't in the sandbox's default repo (live-validated: dnf
+  // install failed → fail-open skip), so it's best-effort, not reliable. Try
+  // Amazon Corretto; build via mvn/gradle if present, else javac.
+  java: "sudo dnf install -y java-17-amazon-corretto-devel maven 2>&1 && (if [ -f pom.xml ] && command -v mvn >/dev/null; then mvn -q -DskipTests package 2>&1; elif [ -f gradlew ]; then ./gradlew build -x test --no-daemon 2>&1; else javac $(find . -name '*.java') 2>&1; fi)",
   perl: "sudo dnf install -y perl 2>&1 && find . -name '*.pl' -o -name '*.pm' | xargs -r -n1 perl -c 2>&1",
   lua: "sudo dnf install -y lua 2>&1 && find . -name '*.lua' | xargs -r -n1 luac -p 2>&1",
   r: "sudo dnf install -y R 2>&1 && Rscript -e \"invisible(lapply(list.files(pattern='[.][Rr]$',recursive=TRUE), parse))\" 2>&1",

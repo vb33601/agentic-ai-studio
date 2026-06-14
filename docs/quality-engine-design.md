@@ -103,6 +103,13 @@ build arbitrary stacks itself:
   - **Live-verified:** an Express app builds in the sandbox AND boots + answers the
     HTTP probe (`ok:true, runOk:true`) with token-only auth (inferScope created the
     project on the go).
+  - **Live validation (`scripts/validate-recipes.mts`, all 40 stacks):** 14 BUILT
+    (toolchain installed + a valid app built: bun, static, python, dotnet, go, rust,
+    cpp, ruby, php, deno, perl, lua, r, tcl) + node (validated separately; rate-
+    limited in the batch); 25 fail-open SKIP (toolchain not in the sandbox repo —
+    correct, the remote Docker build verifies them); **0 BLOCK** (no recipe ever
+    false-blocks a valid app — the key safety property). java was demoted reliable →
+    best-effort after the run showed its JDK/maven aren't in the default repo.
   - **Remaining (Phase 3c):** browser-level flow smoke (agent-browser snapshot
     pattern) for richer UI verification; Java/Rust recipes; promote learned fixes
     via `learn.ts`; sandbox snapshots for faster startup.
