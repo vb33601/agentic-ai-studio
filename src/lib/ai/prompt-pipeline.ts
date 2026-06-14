@@ -38,6 +38,18 @@ export function getEnhancementModel() {
   return resolveModel(id, "openrouter");
 }
 
+// Magic prompt + implementation plan generation limits (env-overridable). By
+// default both are unlimited in length (no maxOutputTokens cap → the model's own
+// ceiling) and allowed up to 10 minutes. NOTE: the actual usable window is capped
+// by the route's maxDuration (60s on Vercel Hobby; raise MAX_DURATION on Render).
+const TEN_MINUTES_MS = 600_000;
+const MAGIC_PROMPT_TIMEOUT_MS = Number(process.env.MAGIC_PROMPT_TIMEOUT_MS) || TEN_MINUTES_MS;
+const MAGIC_PROMPT_MAX_TOKENS = process.env.MAGIC_PROMPT_MAX_TOKENS
+  ? Number(process.env.MAGIC_PROMPT_MAX_TOKENS)
+  : undefined;
+const PLAN_TIMEOUT_MS = Number(process.env.PLAN_TIMEOUT_MS) || TEN_MINUTES_MS;
+const PLAN_MAX_TOKENS = process.env.PLAN_MAX_TOKENS ? Number(process.env.PLAN_MAX_TOKENS) : undefined;
+
 // ---------------------------------------------------------------------------
 // input analysis (deterministic — covers positive AND negative cases)
 // ---------------------------------------------------------------------------
@@ -247,10 +259,10 @@ async function rewritePrompt(text: string, agentType: string): Promise<string> {
   return out;
 }
 
-const PLAN_SYSTEM = `You are a senior engineer. From the build request, produce a SHORT end-to-end implementation plan a coding agent will follow.
+const PLAN_SYSTEM = `You are a senior engineer. From the build request, produce a thorough, end-to-end implementation plan a coding agent will follow.
 Rules:
-- Output 4-8 concise, ordered bullet steps (start each with "- ").
-- Cover: the stack + entry/start file, the key screens/modules/endpoints, the data/state, and how the pieces connect end-to-end (so the app actually works as a whole).
+- Output an ordered list of steps (start each with "- "). Use as many steps as the build genuinely needs — be exhaustive for complex apps; there is no upper limit.
+- Cover: the stack + entry/start file, every key screen/module/endpoint, the data model/state, and how all the pieces connect end-to-end (so the app actually works as a whole). Sub-bullets are fine for detail.
 - No code, no preamble, no closing remarks — output ONLY the bullet list.`;
 
 /**
@@ -263,8 +275,8 @@ export async function generateImplementationPlan(text: string, agentType: string
   if (!isArtifactAgent(agentType) || !text.trim()) return null;
   try {
     const { text: out } = await withTimeout(
-      generateText({ model: getEnhancementModel(), temperature: 0.3, system: PLAN_SYSTEM, prompt: text, maxOutputTokens: 800 }),
-      8000,
+      generateText({ model: getEnhancementModel(), temperature: 0.3, system: PLAN_SYSTEM, prompt: text, maxOutputTokens: PLAN_MAX_TOKENS }),
+      PLAN_TIMEOUT_MS,
     );
     const clean = (out || "").trim();
     return clean.length > 15 ? clean : null;
@@ -275,7 +287,7 @@ export async function generateImplementationPlan(text: string, agentType: string
 
 const MAGIC_PROMPT_SYSTEM = `You are a principal product engineer and prompt architect. Expand the user's short build request into ONE comprehensive, self-contained implementation brief that a coding agent will follow to build the app end-to-end.
 
-Write 500-1000 words of dense, concrete specification. Preserve the user's core intent and LANGUAGE. Never write code and never answer the request — produce ONLY the brief.
+Write a thorough, exhaustive brief — at least 500-1000 words of dense, concrete specification, and as long as the request truly warrants (go longer for complex or multi-feature apps; there is no upper limit). Preserve the user's core intent and LANGUAGE. Never write code and never answer the request — produce ONLY the brief.
 
 Cover, in this order, every detail that matters:
 - Overview & goal: a tight paragraph on what the app is and who it is for.
@@ -304,12 +316,14 @@ export async function generateMagicPrompt(text: string, agentType: string): Prom
         temperature: 0.4,
         system: MAGIC_PROMPT_SYSTEM,
         prompt: text,
-        // ~1000 words of brief; keep the upfront credit reservation bounded.
-        maxOutputTokens: 2500,
+        // Unlimited brief length by default: no maxOutputTokens cap (the model
+        // uses its own ceiling). Set MAGIC_PROMPT_MAX_TOKENS to bound the upfront
+        // OpenRouter credit reservation if needed.
+        maxOutputTokens: MAGIC_PROMPT_MAX_TOKENS,
       }),
-      // A 500-1000 word brief takes ~10-16s to generate; 15s timed out
-      // intermittently and fell back to the original prompt. Give it real room.
-      30000,
+      // Up to 10 minutes by default (env-overridable). A long brief can take a
+      // while; only deploys with a high route maxDuration can use the full window.
+      MAGIC_PROMPT_TIMEOUT_MS,
     );
     const clean = (out || "").trim();
     // Adopt the brief whenever the model returned something substantial (a real

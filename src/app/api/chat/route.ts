@@ -26,7 +26,10 @@ import {
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
 import { verifyAgainstPlan } from "@/lib/quality/plan-verify";
 
-export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
+// Vercel Hobby caps function duration at 60s, so default to 60 (a higher value
+// fails the Vercel build). On Render/Docker (no cap) set MAX_DURATION=600 to give
+// the magic-prompt + plan passes their full 10-minute window.
+export const maxDuration = Number(process.env.MAX_DURATION) || 60;
 
 // Cap output tokens per model call. OpenRouter reserves credits for the FULL
 // max_tokens up front, so an unbounded request (their 16k default) gets a 402
