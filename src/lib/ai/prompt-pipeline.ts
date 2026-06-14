@@ -33,15 +33,26 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /** A cheap, fast model for the enhance/refine passes (env-overridable). */
+// The magic-prompt / plan / rewrite passes run on the AI/ML API rather than
+// OpenRouter: AI/ML API doesn't reserve credits for the full maxOutputTokens up
+// front, so these can run unlimited-length (see *_MAX_TOKENS above) without the
+// 402 "requires more credits" that was silently dropping the magic prompt and plan
+// back to the original input. Override the model/provider via env.
 export function getEnhancementModel() {
-  const id = process.env.PROMPT_ENHANCER_MODEL || "google/gemini-2.5-flash";
-  return resolveModel(id, "openrouter");
+  const id = process.env.PROMPT_ENHANCER_MODEL || "gpt-5.1-chat-latest";
+  const provider = process.env.PROMPT_ENHANCER_PROVIDER || "aimlapi";
+  return resolveModel(id, provider);
 }
 
-// Magic prompt + implementation plan generation limits (env-overridable). By
-// default both are unlimited in length (no maxOutputTokens cap → the model's own
-// ceiling) and allowed up to 10 minutes. NOTE: the actual usable window is capped
-// by the route's maxDuration (60s on Vercel Hobby; raise MAX_DURATION on Render).
+// Magic prompt + implementation plan generation limits (env-overridable, up to a
+// 10-minute window). Both run UNLIMITED in length by default (no maxOutputTokens →
+// the model's own ceiling). This is safe because the enhancement model runs on the
+// AI/ML API (see getEnhancementModel), which — unlike OpenRouter — does NOT reserve
+// credits for the full maxOutputTokens up front, so an uncapped request can't 402
+// "requires more credits" and silently drop the magic prompt / plan back to the
+// input. Set MAGIC_PROMPT_MAX_TOKENS / PLAN_MAX_TOKENS to bound them if ever needed.
+// NOTE: the usable window is also capped by the route's maxDuration (60s on Vercel
+// Hobby; MAX_DURATION raised on Render).
 const TEN_MINUTES_MS = 600_000;
 const MAGIC_PROMPT_TIMEOUT_MS = Number(process.env.MAGIC_PROMPT_TIMEOUT_MS) || TEN_MINUTES_MS;
 const MAGIC_PROMPT_MAX_TOKENS = process.env.MAGIC_PROMPT_MAX_TOKENS
@@ -280,7 +291,8 @@ export async function generateImplementationPlan(text: string, agentType: string
     );
     const clean = (out || "").trim();
     return clean.length > 15 ? clean : null;
-  } catch {
+  } catch (err) {
+    console.warn(`[plan] generation failed, falling back to no plan:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -331,7 +343,8 @@ export async function generateMagicPrompt(text: string, agentType: string): Prom
     // NOT require it to be ~2x the original — that rejected expansions of longer,
     // already-detailed prompts and left the magic prompt showing the input text.
     return clean.length >= 350 && clean.length >= text.trim().length ? clean : null;
-  } catch {
+  } catch (err) {
+    console.warn(`[magic-prompt] expansion failed, falling back to original:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
