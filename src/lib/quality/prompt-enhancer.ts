@@ -39,6 +39,15 @@ export interface EnhanceOptions {
   /** Injectable search (defaults to searchWeb) — for tests/offline. */
   search?: SearchFn;
   maxResults?: number;
+  /** Hard cap on the web lookup; on timeout we fall back to library-only (default 6000ms). */
+  timeoutMs?: number;
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("enhance-search-timeout")), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
 }
 
 export interface EnhanceResult {
@@ -99,7 +108,7 @@ export async function enhancePrompt(raw: string, opts: EnhanceOptions = {}): Pro
   let extras: string[] = [];
   let sources: string[] = [];
   try {
-    const results = await search(`required features and best practices to build: ${prompt}`, opts.maxResults ?? 5);
+    const results = await withTimeout(search(`required features and best practices to build: ${prompt}`, opts.maxResults ?? 5), opts.timeoutMs ?? 6000);
     extras = distill(results);
     sources = results.map((r) => r.url).filter(Boolean).slice(0, 5);
     if (extras.length) researchCache.set(key, extras);

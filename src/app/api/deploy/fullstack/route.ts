@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type RenderEnvVar } from "@/lib/deploy/render";
 import { prepareBackendForRender, appDatabaseUrl, containerDatabaseUrl } from "@/lib/deploy/render-prepare";
 import { prepareForContainer, findBackendRoot } from "@/lib/deploy/universal-prepare";
+import { verifyForDeploy } from "@/lib/deploy/verify-gate";
 import { detectStack } from "@/lib/deploy/dockerfile";
 import { prepareFrontendForVercel } from "@/lib/deploy/frontend-prepare";
 import { prepareForDeploy } from "@/lib/deploy/prepare";
@@ -131,8 +132,13 @@ export async function POST(req: NextRequest) {
           ];
           if (backendPrep.usesPrisma && dbUrl) { envVars.push({ key: "DATABASE_URL", value: appDatabaseUrl(dbUrl, backendName) }); dbWired = true; }
           const nodeFiles = (await applyStoredFixes(backendPrep.files, "node")).files;
+          // Pre-deploy verification gate (the Node path has no container prepare to
+          // gate it): repair truncated source, and BLOCK with a precise error if a
+          // file is still truncated — don't push a build that's certain to fail.
+          const gate = verifyForDeploy({ files: nodeFiles });
+          if (!gate.ok) throw new Error(`Backend deploy blocked: ${gate.blockers.join("; ")}`);
           const r = await deployContainer({
-            githubToken: token, name: backendName, files: nodeFiles, runtime: "node",
+            githubToken: token, name: backendName, files: gate.files, runtime: "node",
             buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars, provider,
             description: "Backend from agentic-ai-studio",
           });

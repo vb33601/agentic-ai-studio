@@ -17,7 +17,9 @@ import {
   buildRepairPrompt,
   REPAIR_SYSTEM,
   ModelUnavailableError,
+  isArtifactAgent,
 } from "@/lib/ai/prompt-pipeline";
+import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
@@ -116,9 +118,27 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       modelMessages: rawModelMessages,
     });
 
-    const finalSystem = agentSystem + pre.systemAugmentation + FILE_OUTPUT_SUFFIX;
+    // Quality engine (phase 2): for app builders, append web-grounded high-quality
+    // build directives (library-first; cached web search only on an intent miss).
+    // Bounded + fail-open: a slow/absent search degrades to the curated library, and
+    // any error leaves the system prompt unchanged.
+    let qualityDirectives = "";
+    let qualityMeta = "off";
+    if (enhancePrompt && isArtifactAgent(resolvedAgentType) && !pre.analysis.hasInjection && !pre.analysis.looksLikeCode) {
+      try {
+        const q = await enhanceBuildDirectives(lastText, { useSearch: true, timeoutMs: 5000 });
+        if (q.enhanced) {
+          qualityDirectives = "\n\n" + q.enhanced;
+          qualityMeta = q.matchedIntent ? "library" : q.fromCache ? "cache" : q.usedSearch ? "web" : "library";
+        }
+      } catch {
+        /* fail-open: no directives */
+      }
+    }
 
-    console.log(`[chat] agent=${resolvedAgentType} model=${modelId} tools=${Object.keys(activeTools ?? {}).join(",")} temp=${temperature} enhance=${enhancePrompt} didRewrite=${pre.didRewrite}`);
+    const finalSystem = agentSystem + pre.systemAugmentation + qualityDirectives + FILE_OUTPUT_SUFFIX;
+
+    console.log(`[chat] agent=${resolvedAgentType} model=${modelId} tools=${Object.keys(activeTools ?? {}).join(",")} temp=${temperature} enhance=${enhancePrompt} didRewrite=${pre.didRewrite} quality=${qualityMeta}`);
 
     // Buffered (replace) output is only safe when no file/image tool parts must
     // reach the client — otherwise we must stream live so the workspace and
