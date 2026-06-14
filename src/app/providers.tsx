@@ -9,9 +9,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
-    // Dark by default (the app's original look); users can switch to light or
-    // follow the system. `class` strategy matches globals.css (.dark overrides).
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+    // Light by default; users can switch to dark or follow the system. `class`
+    // strategy matches globals.css (.dark overrides the light base).
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>{children}</TooltipProvider>
       </QueryClientProvider>
