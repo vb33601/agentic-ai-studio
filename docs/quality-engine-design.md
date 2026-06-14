@@ -103,15 +103,16 @@ build arbitrary stacks itself:
   - **Live-verified:** an Express app builds in the sandbox AND boots + answers the
     HTTP probe (`ok:true, runOk:true`) with token-only auth (inferScope created the
     project on the go).
-  - **Live validation (`scripts/validate-recipes.mts`, all 40 stacks):** **~21
-    BUILT** — the dnf-available set (bun, static, python, dotnet, go, rust, cpp,
-    ruby, php, deno, perl, lua, r, tcl) plus node, AND the exotic stacks wired to
-    official tarball/installer downloads: **nim, d, zig** (`.tar.xz` + an `xz`
-    install — the sandbox lacks it), **julia, crystal, vlang, dart**. The remaining
-    stacks fail-open SKIP (toolchain not installable here — the remote Docker build
-    verifies them); **0 BLOCK** across all 40 (no recipe ever false-blocks a valid
-    app — the key safety property). java was demoted reliable → best-effort
-    (Corretto) after the run showed its JDK/maven aren't in the default repo.
+  - **Live validation (`scripts/validate-recipes.mts`, all 40 stacks):** **~27
+    BUILT** in the sandbox — dnf set (bun, static, python, dotnet, go, rust, cpp,
+    ruby, php, deno, perl, lua, r, tcl, java[Corretto], ocaml) + node, + official
+    downloads (nim/d/zig via `.tar.xz`+`xz`, julia/crystal/vlang/dart, haxe, lisp[SBCL
+    binary], racket). The remaining ~13 fail-open SKIP — their toolchain isn't
+    feasible in a node microVM: **erlang/elixir/gleam** (no Erlang in the AL2023 repo),
+    **ada/pascal/prolog** (no gnat/fpc/swipl), **haskell** (ghcup too heavy),
+    **clojure/swift/ballerina/raku** (heavy/uncertain installs), **powershell** (runtime
+    deps), **hack** (HHVM is Debian/Ubuntu-only) — all verified by the remote Docker
+    build instead. **0 BLOCK** across all 40, every run (the key safety property).
   - **Remaining (Phase 3c):** browser-level flow smoke (agent-browser snapshot
     pattern) for richer UI verification; Java/Rust recipes; promote learned fixes
     via `learn.ts`; sandbox snapshots for faster startup.

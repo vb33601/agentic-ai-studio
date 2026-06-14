@@ -155,18 +155,18 @@ const BEST_EFFORT: Partial<Record<Stack, string>> = {
   vlang: "curl -fsSL https://github.com/vlang/v/releases/latest/download/v_linux.zip -o /tmp/v.zip 2>&1 && unzip -q /tmp/v.zip -d /tmp && (/tmp/v/v -check-syntax $(find . -name '*.v' | head -1) 2>&1 || /tmp/v/v -o /dev/null . 2>&1)",
   powershell: "sudo dnf install -y libicu 2>&1 && mkdir -p /tmp/ps && curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz | tar -xz -C /tmp/ps 2>&1 && /tmp/ps/pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$null,[ref]$e); if($e){exit 1} }' 2>&1",
   julia: "curl -fsSL https://julialang-s3.julialang.org/bin/linux/x64/1.10/julia-1.10.5-linux-x86_64.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/julia-1.10.5/bin/julia -e 'foreach(include, filter(f->endswith(f,\".jl\"), readdir(\".\";join=true)))' 2>&1",
-  haskell: "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh 2>&1 && . ~/.ghcup/env && ghc -fno-code $(find . -name '*.hs') 2>&1",
+  haskell: "sudo dnf install -y gcc make gmp-devel ncurses-devel xz 2>&1 && curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh 2>&1 && . ~/.ghcup/env && ghc -fno-code $(find . -name '*.hs') 2>&1",
   haxe: "curl -fsSL https://github.com/HaxeFoundation/haxe/releases/download/4.3.6/haxe-4.3.6-linux64.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/haxe_*/haxe -version 2>&1",
   gleam: "curl -fsSL https://github.com/gleam-lang/gleam/releases/download/v1.5.1/gleam-v1.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp 2>&1 && /tmp/gleam build 2>&1",
   racket: "curl -fsSL https://download.racket-lang.org/installers/8.14/racket-8.14-x86_64-linux-cs.sh -o /tmp/r.sh 2>&1 && sh /tmp/r.sh --in-place --dest /tmp/racket 2>&1 && find . -name '*.rkt' -exec /tmp/racket/bin/raco expand {} \\;",
-  clojure: "sudo dnf install -y java-17-amazon-corretto-devel 2>&1 && curl -fsSL https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh -o /tmp/c.sh 2>&1 && sudo bash /tmp/c.sh 2>&1 && find . -name '*.clj' -exec clojure -M {} \\;",
+  clojure: "sudo dnf install -y java-17-amazon-corretto-devel rlwrap 2>&1 && curl -fsSL https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh -o /tmp/c.sh 2>&1 && sudo bash /tmp/c.sh 2>&1 && find . -name '*.clj' -exec clojure -M {} \\;",
 
   // -- Toolchain typically NOT installable in the node sandbox → fail-open SKIP -----
   //    (the remote Docker build, with the correct base image, verifies these).
   ocaml: "sudo dnf install -y ocaml 2>&1 && find . -name '*.ml' -exec ocamlc -stop-after typing {} \\;",
   ada: "sudo dnf install -y gcc-gnat 2>&1 && find . -name '*.adb' -exec gnatmake -gnatc {} \\;",
   pascal: "sudo dnf install -y fpc 2>&1 && find . -name '*.pas' -exec fpc -Se1 {} \\;",
-  lisp: "sudo dnf install -y sbcl 2>&1 && find . -name '*.lisp' -exec sbcl --non-interactive --eval '(compile-file \"{}\")' \\;",
+  lisp: "sudo dnf install -y bzip2 2>&1 && curl -fsSL -o /tmp/sbcl.tar.bz2 'https://downloads.sourceforge.net/project/sbcl/sbcl/2.4.9/sbcl-2.4.9-x86-64-linux-binary.tar.bz2' 2>&1 && tar -xj -C /tmp -f /tmp/sbcl.tar.bz2 2>&1 && (cd /tmp/sbcl-2.4.9-x86-64-linux && sudo bash install.sh) 2>&1 && find . -name '*.lisp' -exec sbcl --non-interactive --eval '(compile-file \"{}\")' \\;",
   prolog: "sudo dnf install -y pl 2>&1 && find . -name '*.pro' -exec swipl -q -g halt -t 'halt(1)' {} \\;",
   erlang: "sudo dnf install -y erlang 2>&1 && erlc $(find . -name '*.erl') 2>&1",
   elixir: "sudo dnf install -y elixir 2>&1 && mix compile 2>&1",
