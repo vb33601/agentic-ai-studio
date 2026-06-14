@@ -4,7 +4,8 @@ import { resolveModel } from "@/lib/ai/providers";
 import { ALL_TOOLS } from "@/lib/ai/tools";
 import { getAgentConfig, detectAgentType } from "@/lib/ai/agents";
 
-export const maxDuration = 120;
+// Vercel Hobby caps function duration at 60s; a higher value fails the build.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
