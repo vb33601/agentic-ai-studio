@@ -19,6 +19,9 @@ interface WorkspaceStore {
   projectId: string | null;
   /** Selected app folder for preview/deploy when a chat has multiple apps. */
   selectedAppDir: string | null;
+  /** The end-to-end implementation plan for the current build (from the prompt
+   *  engine), kept so the deploy flow can verify the app against it. */
+  implementationPlan: string | null;
   isBuilding: boolean;
   buildLog: string[];
 
@@ -26,6 +29,7 @@ interface WorkspaceStore {
   setActiveFileId: (id: string | null) => void;
   setPreviewUrl: (url: string | null) => void;
   setSelectedAppDir: (dir: string | null) => void;
+  setImplementationPlan: (plan: string | null) => void;
   setProjectId: (id: string | null) => void;
   setIsBuilding: (building: boolean) => void;
   addBuildLog: (line: string) => void;
@@ -43,6 +47,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   previewUrl: null,
   projectId: null,
   selectedAppDir: null,
+  implementationPlan: null,
   isBuilding: false,
   buildLog: [],
 
@@ -50,6 +55,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setActiveFileId: (id) => set({ activeFileId: id }),
   setPreviewUrl: (url) => set({ previewUrl: url }),
   setSelectedAppDir: (dir) => set({ selectedAppDir: dir }),
+  setImplementationPlan: (plan) => set({ implementationPlan: plan }),
   setProjectId: (id) => set({ projectId: id }),
   setIsBuilding: (building) => set({ isBuilding: building }),
   addBuildLog: (line) => set((s) => ({ buildLog: [...s.buildLog, line] })),

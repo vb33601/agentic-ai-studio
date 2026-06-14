@@ -22,6 +22,7 @@ import {
   lastUserText,
 } from "@/lib/ai/prompt-pipeline";
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
+import { verifyAgainstPlan } from "@/lib/quality/plan-verify";
 
 export const maxDuration = 60; // Vercel Hobby caps function duration at 60s
 
@@ -157,6 +158,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
         // Quality engine (phase 2): surface the "magic prompt" and a generated
         // end-to-end implementation plan as stream parts — rendered in the UI
         // alongside tool calls. Best-effort: the plan is an LLM call that fails open.
+        let implPlan: string | null = null;
         if (isArtifactAgent(resolvedAgentType)) {
           writer.write({
             type: "data-magicPrompt",
@@ -164,8 +166,8 @@ Provide every file the project needs as its own labeled code block. Do not abbre
             data: { original: lastText, enhanced: magicPromptText, rewritten: pre.didRewrite, source: qualityMeta },
           } as never);
           try {
-            const plan = await generateImplementationPlan(magicPromptText, resolvedAgentType);
-            if (plan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan } } as never);
+            implPlan = await generateImplementationPlan(magicPromptText, resolvedAgentType);
+            if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
           } catch {
             /* fail-open: no plan part */
           }
@@ -221,6 +223,29 @@ Provide every file the project needs as its own labeled code block. Do not abbre
                   }
                 : undefined,
             });
+
+            // Subsystem D — post-generation end-to-end check: verify the files
+            // the model actually produced against the implementation plan, and
+            // surface the verdict as a stream part (rendered in the UI alongside
+            // the magic prompt, plan, and tool calls). Fail-open: best-effort.
+            if (implPlan && producesArtifacts) {
+              try {
+                const artifacts = extractArtifacts(await result.steps);
+                if (artifacts.length) {
+                  const report = await verifyAgainstPlan({
+                    plan: implPlan,
+                    files: artifacts,
+                    phase: "post-generation",
+                  });
+                  if (report.checked) {
+                    writer.write({ type: "data-verification", id: "plan-verify", data: report } as never);
+                    console.log(`[chat] plan-verify ok=${report.ok} score=${report.score.toFixed(2)} gaps=${report.gaps.length}`);
+                  }
+                }
+              } catch {
+                /* fail-open: no verification part */
+              }
+            }
             return; // succeeded (or partial content already streamed)
           } catch (err) {
             // Retry the next candidate only when the model failed before any

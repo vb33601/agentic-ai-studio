@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UIMessage } from "ai";
-import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks } from "lucide-react";
+import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks, ShieldCheck, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [magicOpen, setMagicOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
@@ -49,6 +50,17 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
     | undefined;
   const implPlan = (message.parts ?? []).find((p) => p.type === "data-plan") as
     | { data?: { plan?: string } }
+    | undefined;
+  const verification = (message.parts ?? []).find((p) => p.type === "data-verification") as
+    | {
+        data?: {
+          ok?: boolean;
+          score?: number;
+          summary?: string;
+          gaps?: string[];
+          steps?: { step: string; status: "done" | "partial" | "missing"; note?: string }[];
+        };
+      }
     | undefined;
 
   const generatedImages = toolParts
@@ -118,6 +130,54 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
             {planOpen && (
               <div className="mt-1 rounded-md border bg-muted/40 p-2 text-xs">
                 <MessageContent content={implPlan.data.plan} />
+              </div>
+            )}
+          </div>
+        )}
+        {verification?.data && (
+          <div className="w-full">
+            <button
+              onClick={() => setVerifyOpen(!verifyOpen)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {verification.data.ok ? (
+                <ShieldCheck className="h-3 w-3 text-emerald-500" />
+              ) : (
+                <ShieldAlert className="h-3 w-3 text-amber-500" />
+              )}
+              <span>
+                End-to-end check ·{" "}
+                {verification.data.ok ? "passed" : `${verification.data.gaps?.length ?? 0} gap${(verification.data.gaps?.length ?? 0) === 1 ? "" : "s"}`}
+              </span>
+              {verifyOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </button>
+            {verifyOpen && (
+              <div className="mt-1 rounded-md border bg-muted/40 p-2 text-xs space-y-1.5">
+                {verification.data.summary && (
+                  <p className="text-foreground">{verification.data.summary}</p>
+                )}
+                {(verification.data.steps ?? []).length > 0 && (
+                  <ul className="space-y-1">
+                    {verification.data.steps!.map((s, i) => (
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span
+                          className={cn(
+                            "mt-0.5 shrink-0",
+                            s.status === "done" && "text-emerald-500",
+                            s.status === "partial" && "text-amber-500",
+                            s.status === "missing" && "text-red-500",
+                          )}
+                        >
+                          {s.status === "done" ? "✓" : s.status === "partial" ? "◐" : "✗"}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="text-foreground">{s.step}</span>
+                          {s.note && <span className="text-muted-foreground"> — {s.note}</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </div>

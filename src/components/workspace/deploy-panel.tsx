@@ -69,6 +69,16 @@ const PROVIDERS = [
   { id: "github", name: "GitHub Pages", description: "Free static hosting", logo: "◉", configured: false, kind: "frontend" as const },
 ];
 
+/** Plan-based end-to-end verification verdict (Subsystem D). */
+interface PlanReport {
+  ok: boolean;
+  checked: boolean;
+  score: number;
+  summary: string;
+  gaps: string[];
+  steps?: { step: string; status: "done" | "partial" | "missing"; note?: string }[];
+}
+
 interface Deployment {
   id: string;
   provider: string;
@@ -85,11 +95,14 @@ interface Deployment {
   backendHealthy?: boolean | null;
   /** Frontend smoke verdict (renders + no console/API/CORS errors). */
   frontendSmoke?: { ok: boolean; issues: string[] } | null;
+  /** Plan-based end-to-end verification before/after the deploy. */
+  planPre?: PlanReport | null;
+  planPost?: PlanReport | null;
   timestamp: Date;
 }
 
 export function DeployPanel() {
-  const { files, addBuildLog, buildLog, clearBuildLog, selectedAppDir, updateFile, addFile } = useWorkspaceStore();
+  const { files, addBuildLog, buildLog, clearBuildLog, selectedAppDir, updateFile, addFile, implementationPlan } = useWorkspaceStore();
   // Deploy/download the selected app only (re-rooted), so a multi-app chat
   // ships one clean project instead of all apps mixed together.
   const groups = useMemo(() => detectAppGroups(files), [files]);
@@ -158,6 +171,50 @@ export function DeployPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(o),
     }).catch(() => {});
+  };
+
+  // Plan-based end-to-end verification (Subsystem D). Runs the SAME check used
+  // after generation, now around the deploy: BEFORE (over the prepared files —
+  // "is it built correctly end-to-end?") and AFTER (with the live URL + smoke/
+  // health signals — "is it working end-to-end as per the plan?"). Fail-open: a
+  // missing plan or unavailable verifier never blocks or fails the deploy.
+  const runPlanCheck = async (
+    phase: "pre-deploy" | "post-deploy",
+    opts: {
+      liveUrl?: string | null;
+      smoke?: { ok: boolean; issues: string[] } | null;
+      health?: { healthy: boolean; status: number | null } | null;
+    } = {},
+  ): Promise<PlanReport | null> => {
+    if (!implementationPlan) return null;
+    addBuildLog(
+      phase === "pre-deploy"
+        ? "Verifying the build against the implementation plan (end-to-end)…"
+        : "Verifying the deployed app against the implementation plan (end-to-end)…",
+    );
+    try {
+      const r: PlanReport | null = await fetch("/api/verify/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: implementationPlan, files: appFiles, phase, ...opts }),
+      })
+        .then((res) => res.json())
+        .catch(() => null);
+      if (!r || r.checked === false) {
+        addBuildLog("  Plan check skipped (no verdict available).");
+        return r;
+      }
+      if (r.ok) {
+        addBuildLog(`✓ PLAN CHECK ${phase === "pre-deploy" ? "(pre-deploy)" : "(post-deploy)"} PASSED — ${r.summary || "all steps implemented end-to-end"}`);
+      } else {
+        addBuildLog(`⚠ PLAN CHECK ${phase === "pre-deploy" ? "(pre-deploy)" : "(post-deploy)"}: ${r.summary || "gaps found"}`);
+        for (const g of (r.gaps || []).slice(0, 5)) addBuildLog(`  · ${g}`);
+      }
+      return r;
+    } catch (e) {
+      addBuildLog(`  Plan check unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
   };
 
   // Poll a Vercel deployment to a terminal state.
@@ -388,6 +445,9 @@ export function DeployPanel() {
     clearBuildLog();
     setDeployments((prev) => [{ id: deployId, provider: "fullstack", status: "building", timestamp: new Date() }, ...prev]);
     try {
+      // Pre-deploy end-to-end check: confirm the app is built per the plan.
+      const pre = await runPlanCheck("pre-deploy");
+      if (pre) update(deployId, { planPre: pre });
       addBuildLog(`Deploying full app — backend → ${backendName}, frontend → Vercel…`);
       const res = await fetch("/api/deploy/fullstack", {
         method: "POST",
@@ -483,11 +543,21 @@ export function DeployPanel() {
 
       // Final layer: smoke-test the live frontend (now that the backend is
       // settled, so the CORS/API check is meaningful).
+      let smokeResult: { ok: boolean; issues: string[] } | null = null;
       if (liveFrontendUrl) {
-        const smoke = await runFrontendSmoke(liveFrontendUrl, data.backendUrl ?? null);
-        update(deployId, { frontendSmoke: smoke });
-        reportOutcome({ tech: "frontend", ruleId: "frontend-smoke", action: "smoke", success: !!smoke.ok, phase: "smoke" });
+        smokeResult = await runFrontendSmoke(liveFrontendUrl, data.backendUrl ?? null);
+        update(deployId, { frontendSmoke: smokeResult });
+        reportOutcome({ tech: "frontend", ruleId: "frontend-smoke", action: "smoke", success: !!smokeResult.ok, phase: "smoke" });
       }
+
+      // Post-deploy end-to-end check: verify the LIVE app against the plan,
+      // folding in the runtime smoke/health signals.
+      const post = await runPlanCheck("post-deploy", {
+        liveUrl: liveFrontendUrl || data.backendUrl || null,
+        smoke: smokeResult,
+        health: bh ? { healthy: bh.healthy, status: bh.status } : null,
+      });
+      if (post) update(deployId, { planPost: post });
     } catch (e) {
       addBuildLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
       update(deployId, { status: "failed" });
@@ -509,6 +579,8 @@ export function DeployPanel() {
     clearBuildLog();
     setDeployments((prev) => [{ id: deployId, provider, status: "building", timestamp: new Date() }, ...prev]);
     try {
+      const pre = await runPlanCheck("pre-deploy");
+      if (pre) update(deployId, { planPre: pre });
       const target = provider === "render" ? "Render" : provider === "fly" ? "Fly.io" : "Railway";
       addBuildLog(`Pushing ${appFiles.length} files to GitHub and deploying to ${target}…`);
       const res = await fetch("/api/deploy/render", {
@@ -545,6 +617,12 @@ export function DeployPanel() {
           addBuildLog(`  Check logs: ${data.dashboardUrl || "the provider dashboard"}`);
           update(deployId, { status: "failed", backendHealthy: false });
         }
+        // Post-deploy end-to-end check against the plan (with the health signal).
+        const post = await runPlanCheck("post-deploy", {
+          liveUrl: data.url,
+          health: { healthy: bh.healthy, status: bh.status },
+        });
+        if (post) update(deployId, { planPost: post });
       } else {
         update(deployId, { status: "deployed" });
       }
@@ -577,6 +655,8 @@ export function DeployPanel() {
     }
 
     try {
+      const pre = await runPlanCheck("pre-deploy");
+      if (pre) update(deployId, { planPre: pre });
       addBuildLog(`Uploading ${appFiles.length} files to Vercel…`);
       const res = await fetch("/api/deploy", {
         method: "POST",
@@ -598,10 +678,13 @@ export function DeployPanel() {
         const liveUrl = outcome.url || data.url;
         addBuildLog("✓ Deployment is live!");
         update(deployId, { status: "deployed", url: liveUrl });
+        let smoke: { ok: boolean; issues: string[] } | null = null;
         if (liveUrl) {
-          const smoke = await runFrontendSmoke(liveUrl);
+          smoke = await runFrontendSmoke(liveUrl);
           update(deployId, { frontendSmoke: smoke });
         }
+        const post = await runPlanCheck("post-deploy", { liveUrl, smoke });
+        if (post) update(deployId, { planPost: post });
       } else if (outcome.status === "building") {
         addBuildLog("Still building — opening the URL will show progress.");
         update(deployId, { status: "deployed", url: data.url });
@@ -774,6 +857,21 @@ export function DeployPanel() {
                         </p>
                       )
                     )}
+                    {(() => {
+                      // Show the most meaningful plan verdict (post-deploy wins).
+                      const pv = d.planPost?.checked ? d.planPost : d.planPre?.checked ? d.planPre : null;
+                      if (!pv) return null;
+                      const label = d.planPost?.checked ? "Plan (live)" : "Plan";
+                      return pv.ok ? (
+                        <p className="text-[10px] text-green-500" title={pv.summary}>
+                          {label}: end-to-end ✓
+                        </p>
+                      ) : (
+                        <p className="text-[10px] text-amber-500 truncate" title={[pv.summary, ...pv.gaps].join(" — ")}>
+                          {label}: {pv.gaps[0] || pv.summary || "gaps found"} ⚠
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

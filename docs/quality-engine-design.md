@@ -50,6 +50,39 @@ set in the prompt library (`stack-quality` entries) + an LLM refinement pass reu
 `prompt-pipeline` postprocess/repair. Fail-open: if refinement times out, the
 original app deploys.
 
+## Subsystem D — Plan-based end-to-end verification (`plan-verify.ts`)
+
+The prompt engine already produces a short **end-to-end implementation plan** for
+every build (`generateImplementationPlan` in `prompt-pipeline.ts`) and streams it to
+the UI. Subsystem D makes that plan *load-bearing*: it is the single backbone that
+**checks the actual app against the plan** at three lifecycle points, so the same
+"is it really built and wired end-to-end?" verdict is produced everywhere.
+
+- **Engine (`src/lib/quality/plan-verify.ts`):** `verifyAgainstPlan({ plan, files,
+  phase, liveUrl?, smoke?, health? })`. Splits the plan into steps, then an
+  **LLM-as-judge** (`generateObject`, cheap model) scores each step `done` /
+  `partial` / `missing` against a size-capped file manifest, returning
+  `{ ok, score, steps[], gaps[], summary, checked }`. The judge is **injectable**
+  (so it runs offline in tests), and falls back to a **deterministic keyword-coverage
+  heuristic** when no model is configured or it times out. FAIL-OPEN: no plan / no
+  files / model down ⇒ `checked:false, ok:true`, which can never block.
+- **Three phases (the user-visible flow):**
+  1. **post-generation** — the chat route (`/api/chat`) runs it over the generated
+     `createFile` artifacts right after streaming and emits a `data-verification`
+     stream part, rendered in the message UI next to the magic prompt, plan, and
+     tool calls.
+  2. **pre-deploy** — the deploy panel calls `/api/verify/plan` over the prepared
+     app files *before* shipping ("built correctly end-to-end?").
+  3. **post-deploy** — the same call runs again with the **live URL + smoke/health
+     signals folded in**, so a broken runtime forces `ok:false` even if the code
+     looks complete ("working end-to-end as per the plan?").
+- **Plan persistence:** the streamed plan is captured into the workspace store
+  (`implementationPlan`) so the deploy flow can verify against the exact plan the
+  build was generated from.
+- **Tests:** `scripts/test-plan-verify.mts` (`npm run test:plan-verify`) covers step
+  parsing, the heuristic fallback, missing-step blocking, and runtime-signal folding
+  — all offline via the injected judge.
+
 ## Subsystem C — Pre-deploy build → run → verify → fix loop
 
 Two tiers, because the deploy server is serverless (no Docker/flyctl) and cannot

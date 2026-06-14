@@ -67,6 +67,15 @@ export function ChatWindow() {
       .join("\n");
     if (fullText) extractFilesFromText(fullText);
 
+    // Capture the implementation plan (streamed by the prompt engine) so the
+    // deploy flow can verify the app end-to-end against it.
+    const planPart = (message.parts ?? []).find((p) => p.type === "data-plan") as
+      | { data?: { plan?: string } }
+      | undefined;
+    if (planPart?.data?.plan) {
+      useWorkspaceStore.getState().setImplementationPlan(planPart.data.plan);
+    }
+
     // createFile tool outputs (parts are `tool-createFile` or `dynamic-tool`).
     const toolParts = getToolParts(message);
 
@@ -144,8 +153,9 @@ export function ChatWindow() {
     // had scrolled up in the previous session.
     pinnedRef.current = true;
     // Reset the workspace; files repopulate from the loaded chat's messages
-    // via the re-scan effect below.
+    // via the re-scan effect below (which also re-captures the plan).
     useWorkspaceStore.getState().setFiles([]);
+    useWorkspaceStore.getState().setImplementationPlan(null);
     if (!activeChatId) {
       setMessages([]);
       return;
@@ -228,6 +238,7 @@ export function ChatWindow() {
       loadedIdRef.current = id;
       // Fresh chat starts with a clean workspace.
       useWorkspaceStore.getState().setFiles([]);
+      useWorkspaceStore.getState().setImplementationPlan(null);
     }
 
     // Split attachments: images go as multimodal parts, documents get parsed
