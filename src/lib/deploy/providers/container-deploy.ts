@@ -53,6 +53,8 @@ export interface ContainerDeployResult {
   fallbacksTried: string[];
   /** Post-deploy release verification, when `input.verify` was requested. */
   verification?: ReleaseStatus;
+  /** Provider advisories (e.g. Fly falling back to the push trigger). */
+  notes?: string[];
 }
 
 const BACKEND_ORDER: ProviderId[] = ["render", "railway", "fly"];
@@ -142,7 +144,7 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
           branch: repo.branch, name: input.name, envVars: input.envVars, port,
         });
         return await finalize(
-          { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures },
+          { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures, notes: r.notes },
           { provider: "fly", appName: r.appName },
         );
       }

@@ -243,6 +243,43 @@ export interface FlyDeployResult {
   dashboardUrl: string;
   actionsUrl: string;
   org: string;
+  /** How the deploy workflow was kicked off. */
+  triggeredVia: "workflow_dispatch" | "push";
+  /** Non-fatal advisories (e.g. why it fell back to the push trigger). */
+  notes: string[];
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Explicitly fire the deploy workflow via the API — a DETERMINISTIC trigger,
+ * instead of trusting the `push` event from committing the workflow to fire it
+ * (which left apps created-but-never-built, stuck `pending` with no machine).
+ *
+ * Returns true if dispatched. Best-effort: needs the token's `Actions: write`
+ * permission, and there's a brief race where a just-committed workflow isn't yet
+ * registered (404), so we retry a few times. When the token simply lacks Actions
+ * (403), we return false and let the push trigger (already in place) carry it.
+ */
+async function dispatchFlyWorkflow(githubToken: string, owner: string, repo: string, branch: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await gh(githubToken, `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
+        method: "POST",
+        body: JSON.stringify({ ref: branch }),
+      });
+      return true;
+    } catch (e) {
+      const msg = String(e);
+      if (/403|not accessible/i.test(msg)) return false; // token lacks Actions: write → push fallback
+      if (/404|not found|does not have/i.test(msg) && attempt < 3) {
+        await sleep(1500); // workflow not registered yet — wait and retry
+        continue;
+      }
+      return false; // any other hiccup: don't fail the deploy; push trigger remains
+    }
+  }
+  return false;
 }
 
 /** A Fly app name must be globally unique and DNS-safe; suffix with random hex. */
@@ -301,11 +338,25 @@ export async function deployToFly(input: FlyDeployInput): Promise<FlyDeployResul
     throw e;
   }
 
+  // Deterministically fire the workflow instead of trusting the commit's push
+  // event to do it (the silent-`pending` failure was a build that never ran).
+  const dispatched = await dispatchFlyWorkflow(githubToken, repoOwner, repoName, branch);
+  const notes = dispatched
+    ? []
+    : [
+        "Couldn't workflow_dispatch the deploy (the GITHUB_TOKEN lacks 'Actions: write'), " +
+          "so it relies on the commit's push trigger. Add Actions: Read and write to the token " +
+          "for a deterministic trigger. Verify the release at /api/deploy/verify?provider=fly&appName=" +
+          appName + " (or watch the Actions tab).",
+      ];
+
   return {
     appName,
     url: `https://${appName}.fly.dev`,
     dashboardUrl: `https://fly.io/apps/${appName}`,
     actionsUrl: `https://github.com/${repoOwner}/${repoName}/actions/workflows/${WORKFLOW_FILE}`,
     org: org.slug,
+    triggeredVia: dispatched ? "workflow_dispatch" : "push",
+    notes,
   };
 }
