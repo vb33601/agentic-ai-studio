@@ -238,6 +238,21 @@ export const FIX_REGISTRY: FixRule[] = [
     phase: "runtime",
     pass: "laravel-datasource-postgres",
   },
+  {
+    id: "sqlalchemy-datasource-postgres",
+    title: "SQLAlchemy: route a hard-coded sqlite engine URL through DATABASE_URL",
+    symptom:
+      "A generated FastAPI/Flask/SQLAlchemy app hard-codes create_engine(\"sqlite:///…\") / SQLALCHEMY_DATABASE_URI and never reads DATABASE_URL, so the managed Postgres is ignored — writes go to ephemeral SQLite (lost on redeploy) or the file is read-only and 500s.",
+    signatures: [
+      /sqlalchemy\.exc\.OperationalError/i,
+      /sqlite3\.OperationalError: (?:unable to open database file|attempt to write a readonly database)/i,
+      /create_engine\(["']sqlite:\/\//i,
+    ],
+    appliesTo: ["fastapi", "flask", "python"],
+    module: "datasource/sqlalchemy.ts",
+    phase: "runtime",
+    pass: "sqlalchemy-datasource-postgres",
+  },
 
   // ─────────────────────── Cross-stack CORS ───────────────────────
   {

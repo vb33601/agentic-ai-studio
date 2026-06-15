@@ -68,6 +68,7 @@ const samples: Array<[string, string]> = [
   ["rails-datasource-postgres", "Please install the postgresql adapter: `gem install activerecord-postgresql-adapter` (could not load 'pg')"],
   ["django-datasource-postgres", "django.db.utils.OperationalError: attempt to write a readonly database (django.db.backends.sqlite3)"],
   ["laravel-datasource-postgres", "Illuminate\\Database\\QueryException: Database (database.sqlite) does not exist."],
+  ["sqlalchemy-datasource-postgres", "sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open database file"],
 ];
 for (const [expectId, log] of samples) {
   check(`recognizes ${expectId}`, matchKnownFix(log).some((f) => f.id === expectId), matchKnownFix(log).map((f) => f.id).join(","));

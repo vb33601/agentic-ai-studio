@@ -53,6 +53,7 @@ check("dotnet-datasource-postgres only on dotnet", JSON.stringify(stacksWith("do
 check("rails-datasource-postgres only on ruby", JSON.stringify(stacksWith("rails-datasource-postgres")) === JSON.stringify(["ruby"]), stacksWith("rails-datasource-postgres").join(","));
 check("django-datasource-postgres only on python", JSON.stringify(stacksWith("django-datasource-postgres")) === JSON.stringify(["python"]), stacksWith("django-datasource-postgres").join(","));
 check("laravel-datasource-postgres only on php", JSON.stringify(stacksWith("laravel-datasource-postgres")) === JSON.stringify(["php"]), stacksWith("laravel-datasource-postgres").join(","));
+check("sqlalchemy-datasource-postgres only on python", JSON.stringify(stacksWith("sqlalchemy-datasource-postgres")) === JSON.stringify(["python"]), stacksWith("sqlalchemy-datasource-postgres").join(","));
 
 // hardeningPassesFor is total.
 check("hardeningPassesFor returns passes for a known stack", hardeningPassesFor("rust").includes("strip-broken-files"));

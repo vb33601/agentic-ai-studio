@@ -110,6 +110,34 @@ const get = (files: F[], match: RegExp) => files.find((f) => match.test(f.path))
   check("laravel db-env sets discrete DB_HOST/DB_DATABASE", env.some((e) => e.key === "DB_HOST" && e.value === "host") && env.some((e) => e.key === "DB_DATABASE" && e.value === "appdb"));
 }
 
+// ── SQLAlchemy (FastAPI/Flask): hard-coded sqlite engine URL → DATABASE_URL ──
+{
+  const r = run("fastapi", "python", [
+    { path: "app/db.py", content: 'from sqlalchemy import create_engine\nengine = create_engine("sqlite:///./app.db", connect_args={})\n' },
+  ]);
+  const db = get(r.files, /db\.py/).content;
+  check("sqlalchemy wraps create_engine with DATABASE_URL", /create_engine\(os\.environ\.get\("DATABASE_URL", "sqlite:\/\/\/\.\/app\.db"\)/.test(db));
+  check("sqlalchemy keeps the sqlite fallback", /"sqlite:\/\/\/\.\/app\.db"/.test(db));
+  check("sqlalchemy ensures import os", /^import os$/m.test(db));
+  // Idempotence: re-running doesn't double-wrap.
+  const again = run("fastapi", "python", r.files);
+  check("sqlalchemy is idempotent", (get(again.files, /db\.py/).content.match(/os\.environ\.get\("DATABASE_URL"/g) || []).length === 1);
+
+  // Flask config-key form + a __future__ import (insert os AFTER it, not before).
+  const flask = run("flask", "python", [
+    { path: "config.py", content: 'from __future__ import annotations\nimport flask\nclass C:\n    SQLALCHEMY_DATABASE_URI = "sqlite:///data.db"\n' },
+  ]);
+  const cfg = get(flask.files, /config\.py/).content;
+  check("flask wraps SQLALCHEMY_DATABASE_URI", /SQLALCHEMY_DATABASE_URI = os\.environ\.get\("DATABASE_URL", "sqlite:\/\/\/data\.db"\)/.test(cfg));
+  check("flask keeps __future__ import first", /^from __future__ import annotations\n/.test(cfg));
+
+  // No false positive on an unrelated sqlite string.
+  const noop = run("fastapi", "python", [
+    { path: "util.py", content: 'PATH = "sqlite:///notes.db"  # just a label, no engine\n' },
+  ]);
+  check("sqlalchemy ignores an unrelated sqlite string", get(noop.files, /util\.py/).content === 'PATH = "sqlite:///notes.db"  # just a label, no engine\n');
+}
+
 // ── The GATE: needsDatabase=false → no coercion at all (embedded-SQLite apps) ──
 {
   const files: F[] = [{ path: "prisma/schema.prisma", content: 'datasource db {\n  provider = "sqlite"\n}\n' }];

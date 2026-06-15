@@ -45,6 +45,7 @@ export type HardeningPass =
   | "rails-datasource-postgres"  // Rails: database.yml adapter sqlite3 → postgresql + the pg gem
   | "django-datasource-postgres" // Django: settings.py honors DATABASE_URL (dj-database-url) instead of hard-coded SQLite
   | "laravel-datasource-postgres" // Laravel: DB_CONNECTION sqlite → pgsql + discrete DB_* env
+  | "sqlalchemy-datasource-postgres" // FastAPI/Flask/SQLAlchemy: route a hard-coded sqlite engine URL through DATABASE_URL
   | "cors";                     // other web frameworks: idiomatic open CORS (FastAPI/Flask/Django/Express)
 
 export interface StackHardening {
@@ -69,7 +70,7 @@ export const HARDENING_MATRIX: Record<Stack, StackHardening> = {
   },
 
   // --- Interpreted/dynamic: install only declared deps → reconcile manifest ---
-  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors", "django-datasource-postgres"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb, and its settings are coerced to honor the managed Postgres DATABASE_URL instead of hard-coded SQLite. FastAPI/Flask/Django get idiomatic CORS for the split frontend." },
+  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors", "django-datasource-postgres", "sqlalchemy-datasource-postgres"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb and its settings are coerced to honor the managed Postgres DATABASE_URL; FastAPI/Flask/SQLAlchemy apps get their hard-coded sqlite engine URL routed through DATABASE_URL. FastAPI/Flask/Django get idiomatic CORS for the split frontend." },
   node:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors", "prisma-datasource-postgres"], context: "npm installs only declared deps; an undeclared import throws 'Cannot find module'. Prisma pushes the schema (db push) instead of migrating, and its datasource provider is switched sqlite → postgresql to accept the managed URL. Express gets cors() middleware for the split frontend." },
   bun:    { passes: [STRIP, "dep-reconcile"], context: "Bun installs only declared deps; undeclared imports crash at runtime." },
   ruby:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "rails-datasource-postgres"], context: "Bundler installs only gems in the Gemfile; an undeclared require is a LoadError. Rails loads schema directly (db:schema:load), and its database.yml adapter is coerced sqlite3 → postgresql (with the pg gem) to match the managed Postgres." },

@@ -6,6 +6,7 @@ import { deployToRailway } from "./railway";
 import { deployToFly } from "./fly";
 import { isConfigured } from "./registry";
 import type { ProviderId } from "./types";
+import { verifyRelease, type ReleaseStatus, type VerifyRef, type PollOptions } from "../verify-release";
 
 /**
  * Container-deploy orchestrator — the runtime side of the provider router.
@@ -35,6 +36,12 @@ export interface ContainerDeployInput {
    * Fly — errors surface instead of silently landing on Render).
    */
   provider?: ProviderId;
+  /**
+   * When set, poll the chosen provider after triggering the deploy until the
+   * release goes live / fails / times out, and attach the result. Best-effort —
+   * a verification problem never fails the deploy. Omit to skip (fire-and-forget).
+   */
+  verify?: PollOptions;
 }
 
 export interface ContainerDeployResult {
@@ -44,6 +51,8 @@ export interface ContainerDeployResult {
   repoUrl: string;
   /** Providers that were tried and failed before this one succeeded. */
   fallbacksTried: string[];
+  /** Post-deploy release verification, when `input.verify` was requested. */
+  verification?: ReleaseStatus;
 }
 
 const BACKEND_ORDER: ProviderId[] = ["render", "railway", "fly"];
@@ -95,6 +104,11 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
     description: input.description || "Deployed from agentic-ai-studio",
   });
 
+  // Attach post-deploy release verification (best-effort) before returning, so a
+  // deploy that builds-then-dies isn't reported as success and silently strands.
+  const finalize = async (result: ContainerDeployResult, ref: VerifyRef): Promise<ContainerDeployResult> =>
+    input.verify ? { ...result, verification: await verifyRelease(ref, input.verify) } : result;
+
   const failures: string[] = [];
   for (const provider of candidates) {
     try {
@@ -104,13 +118,19 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
           runtime: input.runtime, buildCommand: input.buildCommand, startCommand: input.startCommand,
           dockerfilePath: input.dockerfilePath, envVars: input.envVars,
         });
-        return { provider, url: svc.url, dashboardUrl: svc.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures };
+        return await finalize(
+          { provider, url: svc.url, dashboardUrl: svc.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures },
+          { provider: "render", serviceId: svc.id, deployId: svc.deployId },
+        );
       }
       if (provider === "railway") {
         const r = await deployToRailway({
           repo: `${repo.owner}/${repo.repo}`, branch: repo.branch, name: input.name, envVars: input.envVars,
         });
-        return { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures };
+        return await finalize(
+          { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures },
+          { provider: "railway", serviceId: r.serviceId },
+        );
       }
       if (provider === "fly") {
         // Fly builds via a remote-build GitHub Actions workflow (no Docker here);
@@ -121,7 +141,10 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
           githubToken: input.githubToken, repoOwner: repo.owner, repoName: repo.repo,
           branch: repo.branch, name: input.name, envVars: input.envVars, port,
         });
-        return { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures };
+        return await finalize(
+          { provider, url: r.url, dashboardUrl: r.dashboardUrl, repoUrl: repo.htmlUrl, fallbacksTried: failures },
+          { provider: "fly", appName: r.appName },
+        );
       }
     } catch (e) {
       failures.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
