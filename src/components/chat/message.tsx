@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UIMessage } from "ai";
-import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks, ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +65,9 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   const degraded = (message.parts ?? []).find((p) => p.type === "data-degraded") as
     | { data?: { reason?: string; model?: string; message?: string } }
     | undefined;
+  const buildStatus = (message.parts ?? []).find((p) => p.type === "data-status") as
+    | { data?: { text?: string } }
+    | undefined;
 
   const generatedImages = toolParts
     // Only once the tool call has settled — during input streaming the prompt
@@ -113,6 +116,12 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
                 {degraded.data.model ? ` (${degraded.data.model})` : ""}
               </p>
             </div>
+          </div>
+        )}
+        {buildStatus?.data?.text && (
+          <div className="w-full flex items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
+            <span>{buildStatus.data.text}</span>
           </div>
         )}
         {magicPrompt?.data && (

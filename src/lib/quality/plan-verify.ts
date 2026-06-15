@@ -222,6 +222,27 @@ export function judgeHeuristic(steps: string[], files: PlanVerifyFile[]): PlanSt
   });
 }
 
+/**
+ * DETERMINISTIC (no-model) plan-coverage gaps — drives the continue-until-complete
+ * loop even on free models where the LLM judge can't run. Reuses the keyword
+ * heuristic to find plan steps not yet evidenced in the files. Coarser than the
+ * LLM judge, but enough to keep the build going past the binary component gate
+ * for a large multi-module app (the failure mode where generation stopped after
+ * the frontend and the loop wrongly considered "backend exists" = done).
+ */
+export function deterministicPlanGaps(
+  plan: string | null | undefined,
+  files: PlanVerifyFile[],
+): string[] {
+  const p = (plan || "").trim();
+  if (!p || !files.length) return [];
+  const steps = parsePlanSteps(p);
+  if (!steps.length) return [];
+  return judgeHeuristic(steps, files)
+    .filter((c) => c.status !== "done")
+    .map((c) => `Plan item not yet fully built: "${c.step}" — build it completely and wire it in.`);
+}
+
 function scoreOf(steps: PlanStepCheck[]): number {
   if (steps.length === 0) return 1;
   const sum = steps.reduce((acc, s) => acc + (s.status === "done" ? 1 : s.status === "partial" ? 0.5 : 0), 0);

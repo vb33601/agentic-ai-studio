@@ -8,6 +8,7 @@ import {
 } from "ai";
 import { NextRequest } from "next/server";
 import { resolveModel, modelCandidates, primaryAnchor } from "@/lib/ai/providers";
+import { samplingFor } from "@/lib/ai/hyperparams";
 import { ALL_TOOLS } from "@/lib/ai/tools";
 import { getAgentConfig, detectAgentType } from "@/lib/ai/agents";
 import {
@@ -16,11 +17,6 @@ import {
   extractArtifacts,
   buildRepairPrompt,
   REPAIR_SYSTEM,
-  PLAN_REPAIR_SYSTEM,
-  buildPlanRepairPrompt,
-  detectComponentGaps,
-  detectArtifactFlags,
-  detectTruncatedArtifacts,
   analyzePrompt,
   ModelUnavailableError,
   type Artifact,
@@ -31,21 +27,22 @@ import {
   replaceLastUserText,
 } from "@/lib/ai/prompt-pipeline";
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
-import { verifyAgainstPlan } from "@/lib/quality/plan-verify";
-import { ensureScaffold } from "@/lib/ai/scaffold";
+import { enforceCompleteness } from "@/lib/ai/completeness";
 import { extractFilesFromMarkdown } from "@/lib/ai/extract-files";
-import { getLanguageFromPath } from "@/lib/utils";
 
 // Route segment config exports MUST be statically-analyzable literals — Next.js
 // rejects runtime expressions (e.g. `Number(process.env.X)`) with "Invalid segment
 // configuration export detected", failing the build. This is the Render branch
 // (Docker, no duration cap), so give the magic-prompt + plan passes their full
 // 10-minute window. The Vercel branch (main) keeps its own ≤Hobby-safe literal.
-// 60 minutes: free fallback models (kilo-auto/free, HF) are very slow/verbose and
-// can take ~20+ min to emit every file plus the repair rounds. This is the Render
-// branch (Docker, no platform duration cap), so give the full hour so a free-model
-// build can finish producing ALL files instead of being cut off. (The Vercel branch
-// keeps its own ≤Hobby-safe literal — Vercel enforces a much lower ceiling.)
+// 60-minute budget for ALL models (free AND paid). This is a route-level limit
+// that applies to every request regardless of which candidate model handles it —
+// not model-specific. Paid models (Claude) typically finish in ~3-4 min and never
+// approach it; the headroom exists for the slow/verbose free fallbacks
+// (kilo-auto/free, HF), which can take ~20+ min to emit every file plus the repair
+// rounds — so a build always has time to produce ALL files instead of being cut
+// off. This is the Render branch (Docker, no platform duration cap). (The Vercel
+// branch keeps its own ≤Hobby-safe literal — Vercel enforces a much lower ceiling.)
 export const maxDuration = 3600;
 
 // Cap output tokens per model call. The generation anchor is now Claude (via
@@ -198,6 +195,23 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       // Surface the real error text to the client (the SDK masks it by default).
       onError: (error) => (error instanceof Error ? error.message : String(error)),
       execute: async ({ writer }) => {
+        // Keep-alive heartbeat. Free fallback models (and the magic-prompt / plan /
+        // verify / continue-build passes) have long stretches where NO bytes flow to
+        // the client. A browser/proxy can drop such an idle streaming connection
+        // (the app "stops early" even though the server is still working) — whereas a
+        // curl with a long total timeout survives because it has no idle limit. Emit
+        // a tiny transient part every 10s so the connection never goes idle, making
+        // the app behave like that curl. Fixed id + transient → invisible, not saved.
+        const heartbeat = setInterval(() => {
+          try { writer.write({ type: "data-heartbeat", id: "hb", data: { t: Date.now() }, transient: true } as never); } catch { /* writer closed */ }
+        }, 10000);
+        // Live status line (shared id with enforceCompleteness, which updates &
+        // clears it) so the initial silent gap (magic-prompt + plan on a slow free
+        // model) and the build phases give the user visible feedback.
+        const status = (text: string) => {
+          try { writer.write({ type: "data-status", id: "build-status", data: { text } } as never); } catch { /* writer closed */ }
+        };
+        try {
         // Quality engine (phase 2): surface the "magic prompt" and a generated
         // end-to-end implementation plan as stream parts — rendered in the UI
         // alongside tool calls. Best-effort: the plan is an LLM call that fails open.
@@ -207,6 +221,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
         let implMessages = pre.modelMessages;
         let magicText = magicPromptText;
         if (isArtifactAgent(resolvedAgentType)) {
+          status("Understanding your request and planning the app…");
           // Magic prompt: expand the request into a detailed 500-1000 word brief
           // that the model builds from (and verification derives from). The plan
           // is generated CONCURRENTLY from the original request so the two LLM
@@ -231,23 +246,24 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           implPlan = plan;
           if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
         }
+        if (producesArtifacts) status("Generating your application…");
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
           const cand = candidates[i];
           const model = resolveModel(cand.id, cand.provider);
-          // Free/low-balance candidates cap output lower so they actually run
-          // instead of being rejected for reserving the full default up front.
-          const callMaxTokens = cand.maxOutputTokens ?? MAX_OUTPUT_TOKENS;
+          // Per-candidate sampling: free/low-balance models cap output lower (so they
+          // run) and get a repetition penalty (to curb runaway verbosity); code
+          // builds get a lower temperature. Tuned profiles override the heuristic.
+          const sampling = samplingFor(cand, { baseTemperature: temperature, baseMaxTokens: MAX_OUTPUT_TOKENS, isCodeBuild: producesArtifacts });
           const result = streamText({
             model,
             system: finalSystem,
             messages: implMessages,
             tools: activeTools,
             stopWhen: hasTools ? stepCountIs(maxSteps) : undefined,
-            temperature,
-            maxOutputTokens: callMaxTokens,
+            ...sampling,
             onFinish: async ({ usage, finishReason }) => {
-              console.log(`[chat] finished model=${cand.id} reason=${finishReason} tokens=${usage?.totalTokens}`);
+              console.log(`[chat] finished model=${cand.id} reason=${finishReason} tokens=${usage?.totalTokens} temp=${sampling.temperature} freqPen=${sampling.frequencyPenalty ?? 0}`);
             },
           });
 
@@ -286,8 +302,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
                       prompt: buildRepairPrompt(artifacts, flags),
                       tools: activeTools,
                       stopWhen: stepCountIs(1000),
-                      temperature,
-                      maxOutputTokens: callMaxTokens,
+                      ...sampling,
                     });
                     // Same message: don't re-send start, keep it open for the footer.
                     writer.merge(repair.toUIMessageStream({ sendStart: false, sendFinish: false }));
@@ -297,121 +312,26 @@ Provide every file the project needs as its own labeled code block. Do not abbre
                 : undefined,
             });
 
-            // Degraded-mode banner: when the build landed on a no-cost FREE
-            // fallback (every paid account was unavailable), tell the user the
-            // output may be incomplete and how to restore full quality.
-            if (cand.free) {
-              writer.write({
-                type: "data-degraded",
-                id: "degraded-mode",
-                data: {
-                  reason: "free-model-fallback",
-                  model: `${cand.provider}/${cand.id}`,
-                  message: "Running on a free fallback model — all premium model accounts are out of credits, so this build may be slower and less complete. Add credits (Anthropic, Kilo Code, or OpenRouter) to restore full Claude-quality generation.",
-                },
-              } as never);
-              console.log(`[chat] degraded-mode: ran on free model ${cand.provider}/${cand.id}`);
-            }
-
-            // Post-generation CLOSED LOOP — completeness enforcement for BOTH paid
-            // and free models. Gaps come from two sources, either of which drives a
-            // bounded build+re-check loop:
-            //  1. A DETERMINISTIC gate (detectComponentGaps) — model-independent, so
-            //     it works even on free-only mode where the LLM judge can't run. It
-            //     catches a whole missing component (e.g. backend or frontend built,
-            //     the other skipped — the exact free-model failure).
-            //  2. The LLM judge (verifyAgainstPlan) — finer plan-step gaps, when a
-            //     plan exists and the judge model is reachable.
-            // Fail-open: best-effort, never blocks the response.
+            // Post-generation completeness pipeline (degraded banner +
+            // continue-until-complete loop + deterministic scaffold), shared with the
+            // agent route so the SAME guarantees apply everywhere — for ALL models
+            // (free and paid) and ALL technologies.
             if (producesArtifacts) {
-              try {
-                let artifacts = await gatherArtifacts();
-                if (artifacts.length) {
-                  const planContext = implPlan || magicText || lastText;
-                  let report = implPlan
-                    ? await verifyAgainstPlan({ plan: implPlan, files: artifacts, phase: "post-generation", build: { modelId: effModelId, provider: effProvider } })
-                    : null;
-                  // Enforce ALL error classes to closure, not just plan steps:
-                  //  - detectComponentGaps: a whole missing component (model-free)
-                  //  - detectArtifactFlags: broken imports, missing entry/server,
-                  //    empty required files, package.json start→missing file
-                  //  - judge gaps: finer plan-step gaps (when the judge can run)
-                  // This is what lets even a FREE model's output end up complete and
-                  // runnable — the loop keeps building until these deterministic
-                  // error checks clear (or a round makes no progress).
-                  const currentGaps = () => {
-                    const judge = report?.checked && !report.ok ? report.gaps : [];
-                    return [
-                      ...detectComponentGaps(artifacts, lastText),
-                      ...detectTruncatedArtifacts(artifacts),
-                      ...detectArtifactFlags(artifacts),
-                      ...judge,
-                    ];
-                  };
-
-                  let gaps = currentGaps();
-                  // Free models are weaker per pass, so allow more repair rounds.
-                  const maxRounds = Number(process.env.PLAN_REPAIR_ROUNDS) || (cand.free ? 4 : 2);
-                  for (let round = 0; canRepair && gaps.length > 0 && round < maxRounds; round++) {
-                    console.log(`[chat] plan-repair round=${round + 1}/${maxRounds} gaps=${gaps.length}`);
-                    const fix = streamText({
-                      model,
-                      system: PLAN_REPAIR_SYSTEM,
-                      prompt: buildPlanRepairPrompt(artifacts, gaps, planContext),
-                      tools: activeTools,
-                      stopWhen: stepCountIs(maxSteps),
-                      temperature,
-                      maxOutputTokens: callMaxTokens,
-                    });
-                    // Same message: keep it open; stream the new files live.
-                    writer.merge(fix.toUIMessageStream({ sendStart: false, sendFinish: false }));
-                    await fix.text;
-                    const added = await (async () => {
-                      const m = new Map<string, Artifact>();
-                      try { for (const f of extractFilesFromMarkdown(await fix.text)) m.set(f.path, { path: f.path, content: f.content }); } catch { /* ignore */ }
-                      for (const f of extractArtifacts(await fix.steps)) m.set(f.path, f);
-                      return [...m.values()];
-                    })();
-                    if (added.length === 0) break; // model built nothing → stop
-
-                    // New/changed files overwrite by path; the rest are preserved.
-                    const byPath = new Map(artifacts.map((a) => [a.path, a]));
-                    for (const a of added) byPath.set(a.path, a);
-                    artifacts = [...byPath.values()];
-
-                    if (implPlan) {
-                      report = await verifyAgainstPlan({ plan: implPlan, files: artifacts, phase: "post-generation", build: { modelId: effModelId, provider: effProvider } });
-                    }
-                    const nextGaps = currentGaps();
-                    if (nextGaps.length >= gaps.length) { gaps = nextGaps; break; } // no progress → stop
-                    gaps = nextGaps;
-                  }
-
-                  if (report?.checked) {
-                    writer.write({ type: "data-verification", id: "plan-verify", data: report } as never);
-                    console.log(`[chat] plan-verify ok=${report.ok} score=${report.score.toFixed(2)} gaps=${report.gaps.length}`);
-                  }
-                }
-
-                // FINAL deterministic guarantee (NO model): fill any still-missing
-                // stack-standard boilerplate (entry/config/bootstrap) so the app
-                // BOOTS regardless of model quality — even on free models or when
-                // the model produced nothing. Emitted as labeled code blocks, which
-                // the client ingests into the workspace exactly like generated files.
-                const scaffolded = ensureScaffold(artifacts, lastText);
-                if (scaffolded.length) {
-                  const block = scaffolded
-                    .map((f) => "```" + (getLanguageFromPath(f.path) || "") + " " + f.path + "\n" + f.content + "\n```")
-                    .join("\n\n");
-                  const id = `scaffold-${Math.random().toString(36).slice(2)}`;
-                  writer.write({ type: "text-start", id } as never);
-                  writer.write({ type: "text-delta", id, delta: `\n\n**Scaffolded ${scaffolded.length} missing file(s)** so the app runs:\n\n${block}` } as never);
-                  writer.write({ type: "text-end", id } as never);
-                  console.log(`[chat] scaffold: added ${scaffolded.length} files: ${scaffolded.map((f) => f.path).join(", ")}`);
-                }
-              } catch {
-                /* fail-open: no verification/repair/scaffold */
-              }
+              await enforceCompleteness({
+                writer,
+                result,
+                model,
+                tools: activeTools,
+                maxSteps,
+                sampling,
+                requestText: lastText,
+                plan: implPlan,
+                planContext: implPlan || magicText || lastText,
+                build: { modelId: effModelId, provider: effProvider },
+                canRepair,
+                free: cand.free,
+                freeModelLabel: `${cand.provider}/${cand.id}`,
+              });
             }
             return; // succeeded (or partial content already streamed)
           } catch (err) {
@@ -426,6 +346,10 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           }
         }
         if (lastError) throw lastError;
+        } finally {
+          clearInterval(heartbeat);
+          status(""); // always clear the status line when the turn ends
+        }
       },
     });
 

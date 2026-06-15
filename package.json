@@ -29,7 +29,8 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "test:coverage": "tsx scripts/test-coverage.mts"
+    "test:coverage": "tsx scripts/test-coverage.mts",
+    "tune": "tsx scripts/tune-hyperparams.mts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.81",
