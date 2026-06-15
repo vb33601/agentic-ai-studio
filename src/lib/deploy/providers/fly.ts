@@ -261,25 +261,36 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * registered (404), so we retry a few times. When the token simply lacks Actions
  * (403), we return false and let the push trigger (already in place) carry it.
  */
-async function dispatchFlyWorkflow(githubToken: string, owner: string, repo: string, branch: string): Promise<boolean> {
+type DispatchOutcome = "dispatched" | "forbidden" | "unavailable";
+
+async function dispatchFlyWorkflow(
+  githubToken: string,
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<DispatchOutcome> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       await gh(githubToken, `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
         method: "POST",
         body: JSON.stringify({ ref: branch }),
       });
-      return true;
+      return "dispatched";
     } catch (e) {
       const msg = String(e);
-      if (/403|not accessible/i.test(msg)) return false; // token lacks Actions: write → push fallback
+      // 403 = the token has no Actions permission. The `push` event from committing
+      // the workflow does NOT reliably start a run for a PAT lacking Actions, which
+      // is exactly what leaves the app created-but-never-built, stuck `pending`. Treat
+      // it as a hard configuration error rather than a silent hang.
+      if (/403|not accessible/i.test(msg)) return "forbidden";
       if (/404|not found|does not have/i.test(msg) && attempt < 3) {
         await sleep(1500); // workflow not registered yet — wait and retry
         continue;
       }
-      return false; // any other hiccup: don't fail the deploy; push trigger remains
+      return "unavailable"; // transient hiccup: fall back to the push trigger
     }
   }
-  return false;
+  return "unavailable";
 }
 
 /** A Fly app name must be globally unique and DNS-safe; suffix with random hex. */
@@ -340,15 +351,29 @@ export async function deployToFly(input: FlyDeployInput): Promise<FlyDeployResul
 
   // Deterministically fire the workflow instead of trusting the commit's push
   // event to do it (the silent-`pending` failure was a build that never ran).
-  const dispatched = await dispatchFlyWorkflow(githubToken, repoOwner, repoName, branch);
-  const notes = dispatched
-    ? []
-    : [
-        "Couldn't workflow_dispatch the deploy (the GITHUB_TOKEN lacks 'Actions: write'), " +
-          "so it relies on the commit's push trigger. Add Actions: Read and write to the token " +
-          "for a deterministic trigger. Verify the release at /api/deploy/verify?provider=fly&appName=" +
-          appName + " (or watch the Actions tab).",
-      ];
+  const outcome = await dispatchFlyWorkflow(githubToken, repoOwner, repoName, branch);
+  if (outcome === "forbidden") {
+    // The Fly app + workflow + secret are all in place, but nothing can START the
+    // build: the token can't workflow_dispatch and a PAT without Actions doesn't
+    // reliably fire the push trigger either — so the app would sit `pending` forever.
+    // Fail loudly with the exact remediation instead of returning a dead URL.
+    throw new Error(
+      "Fly deploy can't start the build: the GITHUB_TOKEN lacks the 'Actions' permission, so the " +
+        "deploy workflow can't be dispatched (and a token without Actions doesn't reliably trigger it on " +
+        "push — the app would stay 'pending' with no release). Regenerate the token with 'Actions: Read and " +
+        "write' (fine-grained PAT) or the `workflow` scope (classic), then redeploy. " +
+        `Already-created resources: app ${appName}, workflow ${WORKFLOW_FILE}. ` +
+        `You can also start it manually from https://github.com/${repoOwner}/${repoName}/actions/workflows/${WORKFLOW_FILE} (Run workflow).`,
+    );
+  }
+  const notes =
+    outcome === "dispatched"
+      ? []
+      : [
+          "Couldn't workflow_dispatch the deploy, so it relies on the commit's push trigger. " +
+            "Verify the release at /api/deploy/verify?provider=fly&appName=" +
+            appName + " (or watch the Actions tab).",
+        ];
 
   return {
     appName,
@@ -356,7 +381,7 @@ export async function deployToFly(input: FlyDeployInput): Promise<FlyDeployResul
     dashboardUrl: `https://fly.io/apps/${appName}`,
     actionsUrl: `https://github.com/${repoOwner}/${repoName}/actions/workflows/${WORKFLOW_FILE}`,
     org: org.slug,
-    triggeredVia: dispatched ? "workflow_dispatch" : "push",
+    triggeredVia: outcome === "dispatched" ? "workflow_dispatch" : "push",
     notes,
   };
 }

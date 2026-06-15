@@ -1,6 +1,7 @@
 import type { WorkspaceFile } from "@/store/workspace";
 import { slugify } from "@/lib/utils";
 import { requireServerToken, serverToken } from "./env";
+import { repairDependencyVersions } from "./npm-versions";
 
 const VERCEL_API = "https://api.vercel.com";
 
@@ -45,6 +46,25 @@ export async function deployToVercel(
 ): Promise<DeployResult> {
   const token = requireServerToken("VERCEL_TOKEN");
   if (files.length === 0) throw new Error("No files to deploy.");
+
+  // Last line of defence before the build: pin any hallucinated dependency
+  // version (e.g. `date-fns@^2.30.1`, which doesn't exist) to a real published
+  // one. An invented version makes `npm install` abort with ETARGET and fails the
+  // whole Vercel build deterministically — this runs on EVERY Vercel deploy (incl.
+  // the auto-repair redeploy) so the bad pin never ships. Fail-open: a registry
+  // hiccup leaves the manifest untouched.
+  try {
+    const repaired = await repairDependencyVersions(files.map((f) => ({ path: f.path, content: f.content })));
+    if (repaired.repairs.length) {
+      const byPath = new Map(repaired.files.map((f) => [f.path, f.content] as const));
+      files = files.map((f) => (byPath.has(f.path) ? { ...f, content: byPath.get(f.path)! } : f));
+      for (const r of repaired.repairs) {
+        console.warn(`[deploy] pinned ${r.pkg} ${r.from} → ${r.to} in ${r.file} (no matching version on npm)`);
+      }
+    }
+  } catch (e) {
+    console.warn("[deploy] dependency-version repair skipped:", e instanceof Error ? e.message : String(e));
+  }
 
   const name = projectName(opts.name);
   const projectSettings: Record<string, unknown> = {
