@@ -175,21 +175,32 @@ export type VerifyRef =
   | { provider: "vercel"; deploymentId: string };
 
 /**
- * Verify a freshly-triggered deploy actually reaches a live release. Best-effort:
- * any network/credential problem resolves to `unknown` rather than throwing, so
- * verification never turns a healthy deploy into a failure.
+ * A SINGLE point-in-time status check for a deploy — one provider API call, no
+ * polling. This is what a client-driven poll endpoint uses (the client sets the
+ * cadence, so the HTTP route stays well under its time budget). Best-effort: any
+ * network/credential problem resolves to `unknown` rather than throwing.
+ */
+export async function releaseSnapshot(ref: VerifyRef): Promise<ReleaseStatus> {
+  try {
+    switch (ref.provider) {
+      case "fly": return await flyStatus(ref.appName);
+      case "render": return await renderStatus(ref.serviceId, ref.deployId);
+      case "railway": return await railwayStatus(ref.serviceId);
+      case "vercel": return await vercelStatus(ref.deploymentId);
+    }
+  } catch (e) {
+    return unknown(ref.provider, `verification error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Verify a freshly-triggered deploy actually reaches a live release by polling
+ * until a terminal state (server-side / background use — NOT for a short-budget
+ * HTTP route; use releaseSnapshot there). Best-effort, like releaseSnapshot.
  */
 export async function verifyRelease(ref: VerifyRef, opts: PollOptions = {}): Promise<ReleaseStatus> {
-  const fetchStatus = (): Promise<ReleaseStatus> => {
-    switch (ref.provider) {
-      case "fly": return flyStatus(ref.appName);
-      case "render": return renderStatus(ref.serviceId, ref.deployId);
-      case "railway": return railwayStatus(ref.serviceId);
-      case "vercel": return vercelStatus(ref.deploymentId);
-    }
-  };
   try {
-    return await pollUntilLive(fetchStatus, opts);
+    return await pollUntilLive(() => releaseSnapshot(ref), opts);
   } catch (e) {
     return unknown(ref.provider, `verification error: ${e instanceof Error ? e.message : String(e)}`);
   }
