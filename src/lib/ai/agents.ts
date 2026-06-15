@@ -13,6 +13,8 @@ export interface AgentConfig {
 // encode the failures that broke real deploys.
 const FULLSTACK_RULES = `
 
+START IMMEDIATELY (CRITICAL — do not waste the output budget on planning): you already have a detailed brief and an implementation plan. Do NOT write a long file-by-file plan, numbered file list, or extended reasoning before building — that burns the token budget and can get cut off before a single file is written. Keep any planning to ONE short sentence, then call createFile right away, one file at a time.
+
 Build ORDER (CRITICAL — generation can be cut short, so build so that whatever you've finished already RUNS):
 - Build the USER-FACING FRONTEND to a COMPLETE, runnable state FIRST: its entry (\`index.html\` + \`src/main.jsx\`), the root \`App\`, EVERY page/component \`App\` imports, and its stylesheet — BEFORE adding any backend depth or extra polish. A frontend left as only config files (package.json / vite.config / index.html with no \`src/App\` or components) deploys to a BLANK page — the single worst outcome. NEVER stop with the frontend config-only.
 - THEN build the backend: its server entry, then the routes/controllers it mounts. Keep the file set lean and prioritized — a smaller app where every referenced file EXISTS beats a larger one that's half-written. If you sense you're running low on steps, finish the files already imported before starting new features.
@@ -89,7 +91,7 @@ How to work:
 - Match imports to package.json "type". With ESM ("type":"module"), a CommonJS library like @prisma/client has NO named exports — import the default and destructure: \`import pkg from '@prisma/client'; const { PrismaClient } = pkg;\` (NOT \`import { PrismaClient } from '@prisma/client'\`).
 - Databases: default to SQLite so it runs in the preview (Prisma \`provider = "sqlite"\`, \`url = env("DATABASE_URL")\`, plus a \`.env\` with \`DATABASE_URL="file:./dev.db"\`). Read the URL from \`process.env.DATABASE_URL\` — never hardcode credentials — so a managed Postgres can be swapped in at deploy time. For any app whose data must PERSIST after deployment, use Prisma (not raw better-sqlite3/sqlite3): the platform swaps Prisma's sqlite→postgresql at deploy, whereas a raw SQLite file lives on ephemeral disk and is wiped on every restart/redeploy.
 - When every needed file exists, STOP calling tools and write a short, well-formatted summary (markdown: a one-line intro, a bulleted file list, and how to run it). Do not narrate each step or repeat yourself.${FULLSTACK_RULES}`,
-    tools: ["think", "codeExecution", "createFile", "webSearch"],
+    tools: ["codeExecution", "createFile", "webSearch"],
     maxSteps: 1000,
     temperature: 0.3,
   },
@@ -120,7 +122,7 @@ Design quality (very important — avoid cluttered output):
 - Fully responsive (mobile-first); stacks cleanly on small screens.
 - If you write Tailwind utility classes (\`bg-indigo-600\`, \`rounded-lg\`, \`flex\`, etc.) you MUST fully set Tailwind up or the app ships completely UNSTYLED: add \`tailwindcss\`, \`postcss\`, \`autoprefixer\` to devDependencies; include \`tailwind.config.js\` (with \`content\` globs covering \`./index.html\` and \`./src/**/*.{js,jsx,ts,tsx}\`) and \`postcss.config.js\`; create a CSS file with \`@tailwind base; @tailwind components; @tailwind utilities;\`; and IMPORT that CSS file from the entry (e.g. \`import './index.css'\` in \`src/main.jsx\`). A stylesheet that nothing imports is never bundled — Tailwind classes only take effect when the CSS is both compiled and imported.
 - When all files exist, STOP calling tools and give a concise markdown summary: one-line intro, a bullet list of the files/pages, and how to open/run it. Do not repeat yourself or narrate every step.${FULLSTACK_RULES}`,
-    tools: ["think", "codeExecution", "createFile", "webSearch"],
+    tools: ["codeExecution", "createFile", "webSearch"],
     maxSteps: 1000,
     temperature: 0.3,
   },
@@ -154,7 +156,7 @@ Game types you excel at:
 - Shooting games
 
 Always create playable, complete games with clear instructions.`,
-    tools: ["think", "codeExecution", "createFile", "generateImage"],
+    tools: ["codeExecution", "createFile", "generateImage"],
     maxSteps: 18,
     temperature: 0.5,
   },
@@ -184,7 +186,7 @@ Design principles (avoid clutter above all):
 - Group related elements; don't pack everything onto one dense screen.
 
 Always provide complete, styled, accessible, and visually clean components.`,
-    tools: ["think", "createFile", "generateImage"],
+    tools: ["createFile", "generateImage"],
     maxSteps: 12,
     temperature: 0.4,
   },

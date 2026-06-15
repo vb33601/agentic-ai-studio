@@ -501,18 +501,29 @@ export async function runProject(files: WorkspaceFile[], handlers: RunHandlers):
     procs.push(await installAndStart(wc, bg, files, h));
   }
 
-  // Start the preview app. If it fails to install/build, try ONE web-search
-  // auto-fix (patch the mounted FS) and restart it once; otherwise surface the
-  // original error. This never loops and never runs on a healthy preview.
-  try {
-    procs.push(await installAndStart(wc, plan.preview, files, h));
-  } catch (err) {
-    h.onLog(`\n[preview] start failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    const patched = await attemptWebSearchFix(wc, files, logBuffer, h);
-    if (!patched) throw err;
-    h.onStatus("Retrying the preview with the patched code…");
-    const plan2 = planRun(detectApps(patched)) ?? plan;
-    procs.push(await installAndStart(wc, plan2.preview, patched, h));
+  // Start the preview app. If it fails to install/build, iteratively run the
+  // web-search auto-fix (patch the mounted FS) and restart — up to a few rounds,
+  // since a free-model build can have SEVERAL distinct errors that surface one at
+  // a time. The loop stops as soon as it starts, when auto-fix finds no further
+  // fix (returns null), or after the attempt cap; a healthy preview never loops.
+  const MAX_FIX_ATTEMPTS = 3;
+  let curFiles = files;
+  let curPlan = plan;
+  let started = false;
+  for (let attempt = 0; !started; attempt++) {
+    try {
+      procs.push(await installAndStart(wc, curPlan.preview, curFiles, h));
+      started = true;
+    } catch (err) {
+      h.onLog(`\n[preview] start failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      if (attempt >= MAX_FIX_ATTEMPTS) throw err;
+      const patched = await attemptWebSearchFix(wc, curFiles, logBuffer, h);
+      if (!patched) throw err; // no known fix → surface the original error
+      h.onStatus(`Retrying the preview with the patched code… (fix ${attempt + 1}/${MAX_FIX_ATTEMPTS})`);
+      curFiles = patched;
+      curPlan = planRun(detectApps(patched)) ?? curPlan;
+      logBuffer = ""; // fresh buffer so the next failure's signature is clean
+    }
   }
 
   setTimeout(() => {

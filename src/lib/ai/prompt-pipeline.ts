@@ -50,6 +50,7 @@ export interface EnhancerCandidate {
 // each (Qwen2.5-72B on the HF/AIML routers; Claude 3.5 Haiku on the OpenRouter-
 // style gateways). Env override: PROMPT_ENHANCER_MODEL / PROMPT_ENHANCER_PROVIDER.
 const ENHANCER_MODEL_BY_PROVIDER: Record<string, string> = {
+  anthropic: "claude-haiku-4-5-20251001",
   kilocode: "anthropic/claude-3.5-haiku",
   openrouter: "anthropic/claude-3.5-haiku",
   huggingface: "Qwen/Qwen2.5-72B-Instruct",
@@ -58,6 +59,7 @@ const ENHANCER_MODEL_BY_PROVIDER: Record<string, string> = {
 
 function enhancerKeyPresent(provider: string): boolean {
   switch (provider) {
+    case "anthropic": return !!process.env.ANTHROPIC_API_KEY;
     case "kilocode": return !!process.env.KILOCODE_API_KEY;
     case "huggingface": return !!process.env.HUGGINGFACE_API_KEY;
     case "aimlapi": return !!process.env.AIMLAPI_API_KEY;
@@ -88,8 +90,9 @@ export function getEnhancementCandidates(build?: BuildContext): EnhancerCandidat
   add(process.env.PROMPT_ENHANCER_MODEL, process.env.PROMPT_ENHANCER_PROVIDER);
   // 2. The gateway the user is building with — ride the key we know works.
   if (build?.provider) add(ENHANCER_MODEL_BY_PROVIDER[build.provider], build.provider);
-  // 3. HF default, then the remaining gateways.
-  for (const provider of ["huggingface", "kilocode", "openrouter", "aimlapi"]) {
+  // 3. Anthropic-direct (cheap, reliable structured output) when keyed, then the
+  //    HF default and the remaining gateways.
+  for (const provider of ["anthropic", "huggingface", "kilocode", "openrouter", "aimlapi"]) {
     add(ENHANCER_MODEL_BY_PROVIDER[provider], provider);
   }
   return out;
@@ -650,7 +653,17 @@ function buildFooter(flags: string[]): string {
   return `\n\n---\n\n**⚠️ Verification**\n\n${flags.map((f) => `- ${f}`).join("\n")}\n\n_Auto-checked. Verify time-sensitive facts against primary sources._`;
 }
 
-const PLACEHOLDER = /\b(TODO|FIXME|lorem ipsum|your (code|content|logic|markup) here|rest of (the )?code|implement (this|me)|add (your )?code here|coming soon|placeholder)\b/i;
+// NOTE: deliberately does NOT include a bare "placeholder" — it collides with
+// legitimate code (an input's `placeholder="…"` attribute, the CSS `::placeholder`
+// pseudo-class, Tailwind's `placeholder:` utilities), which caused false "contains
+// placeholder text" flags on complete form components and triggered needless,
+// risky repair passes. The remaining tokens are unambiguous filler markers.
+const PLACEHOLDER = /\b(TODO|FIXME|lorem ipsum|your (code|content|logic|markup) here|rest of (the )?code|implement (this|me)|add (your )?code here|coming soon)\b/i;
+
+// Files that are conventionally (and correctly) empty — flagging these as
+// "empty — needs content" is a false positive that fires on every Python/Django
+// build (empty `__init__.py` marks a package) and triggers wasted repair passes.
+const ALLOWED_EMPTY = /(^|\/)(__init__\.py|py\.typed|\.gitkeep|\.gitignore|\.npmignore|\.dockerignore|\.env(\.[\w.]+)?)$/i;
 
 /**
  * Deterministic build-quality QA over generated files. High-precision checks
@@ -662,7 +675,9 @@ export function detectArtifactFlags(artifacts: Artifact[]): string[] {
   for (const a of artifacts) {
     const c = a.content || "";
     if (!c.trim()) {
-      flags.push(`\`${a.path}\` is empty — it needs real content.`);
+      if (!ALLOWED_EMPTY.test(a.path)) {
+        flags.push(`\`${a.path}\` is empty — it needs real content.`);
+      }
       continue;
     }
     if (PLACEHOLDER.test(c)) {
@@ -833,6 +848,135 @@ export function buildRepairPrompt(artifacts: Artifact[], flags: string[]): strin
     return `File: ${a.path}\nIssues:\n${issues.map((i) => `- ${i}`).join("\n")}\n\nCurrent content:\n\`\`\`\n${a.content}\n\`\`\``;
   });
   return `The following generated files have issues. Fix each one by calling createFile again with the same path and the complete corrected content.\n\n${blocks.join("\n\n")}`;
+}
+
+// ---------------------------------------------------------------------------
+// plan-gap completion (closes the verify→repair loop — builds what's MISSING)
+// ---------------------------------------------------------------------------
+
+export const PLAN_REPAIR_SYSTEM = `You are completing a partially-built application so it fully matches its implementation plan and RUNS end-to-end. You are given the plan, the specific GAPS (plan steps that are missing or only partially built), and the files that already exist.
+
+For EACH gap, make it real by calling the createFile tool:
+- CREATE any missing page/component/route/screen/module/server file with COMPLETE, runnable code — never placeholders, TODOs, stubs, or "rest of code here".
+- COMPLETE any partial/stubbed file by calling createFile again with its SAME path and the full corrected content (a real submit handler, real state/data wiring, real markup — not an empty shell).
+- WIRE everything together so the new code is actually reachable: register new pages/routes in the router or entry, mount new backend routers on the server, add the imports. Dead, unreferenced code does not count as done.
+- Create EVERY file you import or reference. Match the EXISTING project's stack, framework, file conventions, paths, and package.json — do not introduce a different toolchain.
+- Preserve files that are already correct: do not rename or delete them, and do not regenerate a file just to restate it unchanged.
+- Write defensive, runnable code (guard against missing data) and keep the app launchable at every step.
+
+When the gaps are addressed, give a one-line summary of what you added/completed. No long narration.`;
+
+/** A compact, size-capped manifest of the current file set: full content for
+ *  small files, a head for large ones, plus the complete path list — enough for
+ *  the model to see conventions and wire new code in without blowing the budget. */
+export function buildFileManifest(artifacts: Artifact[], budget = 24000): string {
+  const paths = artifacts.map((a) => a.path).join("\n");
+  let out = `EXISTING FILES (${artifacts.length}):\n${paths}\n\n`;
+  const remaining = Math.max(0, budget - out.length);
+  const perFile = Math.max(400, Math.floor(remaining / Math.max(artifacts.length, 1)));
+  const bodies: string[] = [];
+  let used = 0;
+  for (const a of artifacts) {
+    if (used >= remaining) break;
+    const content = a.content || "";
+    const head = content.slice(0, perFile);
+    const block = `--- ${a.path} ---\n${head}${content.length > head.length ? "\n…(truncated)" : ""}\n`;
+    bodies.push(block);
+    used += block.length;
+  }
+  out += bodies.join("\n");
+  return out.slice(0, budget);
+}
+
+/**
+ * DETERMINISTIC completeness gate — model-independent, so it works even when the
+ * LLM judge can't run (free-only mode). From the user's request it infers which
+ * MAJOR components were asked for (frontend / backend / database) and flags any
+ * that are entirely absent from the generated files. This catches the exact
+ * free-model failure where the model builds only one half of a full-stack app.
+ * These gaps feed the same plan-repair loop, so the missing component gets built.
+ */
+export function detectComponentGaps(artifacts: Artifact[], requestText: string): string[] {
+  if (!artifacts.length) return [];
+  const req = (requestText || "").toLowerCase();
+  const paths = artifacts.map((a) => a.path.toLowerCase());
+  const hasPath = (re: RegExp) => paths.some((p) => re.test(p));
+  const hasContent = (re: RegExp) => artifacts.some((a) => re.test(a.content || ""));
+
+  const wantsBackend = /\b(back-?end|api|server|endpoints?|rest|spring|django|\.net|asp\.?net|express|fastapi|flask|rails|laravel|nest|gin|micro-?service)\b/.test(req);
+  const wantsFrontend = /\b(front-?end|react|vue|svelte|angular|\bui\b|client|web ?app|web ?page|\bpage\b|vite|next\.?js|tailwind)\b/.test(req);
+  const wantsDb = /\b(database|\bdb\b|postgres|postgresql|mysql|sqlite|mongo|mongodb|prisma|jpa|hibernate|\bsql\b|persist|persistence|entity ?framework|ef ?core|sqlalchemy|datasource)\b/.test(req);
+
+  const hasFrontend =
+    hasPath(/\/frontend\/|\.(jsx|tsx|vue|svelte)$/) ||
+    (hasPath(/(^|\/)index\.html$/) && hasContent(/<script[^>]+type=["']module["']/i));
+  const hasBackend =
+    hasPath(/\/backend\/|(^|\/)(program\.cs|manage\.py|main\.go|app\.py|server\.[jt]s)$|\.csproj$|(^|\/)pom\.xml$|application\.(properties|yml|yaml)$|(^|\/)requirements\.txt$/) ||
+    hasPath(/controller|(^|\/)routes?\//) ||
+    hasContent(/@(RestController|RequestMapping)|app\.(get|post|put|delete)\(|@app\.route|ApiController|express\(\)/);
+  const hasDb =
+    hasPath(/(^|\/)schema\.prisma$|\/migrations?\/|\.sql$|models?\.py$|(^|\/)models?\//) ||
+    hasContent(/@Entity|spring\.datasource|DATABASES\s*[:=]|new DbContext|PrismaClient|create_engine|mongoose\.|jdbc:|DATABASE_URL/i);
+
+  const gaps: string[] = [];
+  if (wantsBackend && !hasBackend)
+    gaps.push("The requested BACKEND/API was not generated — no server, controller, or backend project files exist. Build the backend end-to-end: its entry/bootstrap file that starts the server, the REST routes/controllers the frontend calls (mounted at the matching /api/... paths), and wire it so it runs.");
+  if (wantsFrontend && !hasFrontend)
+    gaps.push("The requested FRONTEND was not generated — no UI/component files exist. Build the frontend end-to-end: its entry (e.g. index.html + main), the root App, every page/component, and the API client that calls the backend.");
+  if (wantsDb && !hasDb)
+    gaps.push("The requested DATABASE/persistence layer is missing — no models/entities, schema, migrations, or datasource config exist. Add persistence: the models/entities and a datasource that reads the connection string from an env var, and use it from the backend so data persists.");
+  return gaps;
+}
+
+// Brace/bracket-balanced languages — safe to use balance as a truncation signal
+// (NOT Python/YAML/etc. where braces are rare and indentation rules).
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|h|hpp|css|scss|less|json)$/i;
+
+/**
+ * Phase 3 — TRUNCATION detection. Free/low-cap models can stop mid-file
+ * (`finishReason: "length"`), leaving a cut-off, unparseable file that breaks the
+ * build. High-precision deterministic signals only, so we don't regenerate files
+ * that are actually fine:
+ *   - JSON that no longer parses,
+ *   - an odd number of ``` fences (an unclosed code block), or
+ *   - a brace-language file that is significantly unbalanced AND doesn't end on a
+ *     closing token (i.e. cut off mid-content, not just a brace inside a string).
+ * Flags feed the repair loop, which regenerates the COMPLETE file.
+ */
+export function detectTruncatedArtifacts(artifacts: Artifact[]): string[] {
+  const flags: string[] = [];
+  for (const a of artifacts) {
+    const c = a.content || "";
+    if (!c.trim()) continue; // empty is handled by detectArtifactFlags
+    let truncated = false;
+    if (((c.match(/```/g) || []).length) % 2 === 1) {
+      truncated = true;
+    } else if (/\.json$/i.test(a.path)) {
+      try { JSON.parse(c); } catch { truncated = true; }
+    } else if (BRACE_LANG.test(a.path)) {
+      const opens = (c.match(/[{[(]/g) || []).length;
+      const closes = (c.match(/[}\])]/g) || []).length;
+      const tail = c.trimEnd().slice(-1);
+      if (opens - closes >= 2 && !/[}\])>;]/.test(tail)) truncated = true;
+    }
+    if (truncated) {
+      flags.push(`\`${a.path}\` looks TRUNCATED (cut off mid-content) — regenerate the COMPLETE file by calling createFile again with the same path and the full, valid content.`);
+    }
+  }
+  return flags;
+}
+
+/** Build the instruction that asks the model to BUILD the missing/partial plan
+ *  steps into the existing app (the actionable form of a verification verdict). */
+export function buildPlanRepairPrompt(artifacts: Artifact[], gaps: string[], plan: string): string {
+  return (
+    `The application below is INCOMPLETE versus its implementation plan. ` +
+    `Complete it by calling createFile for the missing and partial pieces, wiring them into the existing app.\n\n` +
+    `IMPLEMENTATION PLAN:\n${plan.trim()}\n\n` +
+    `GAPS TO BUILD (each must end up working end-to-end):\n${gaps.map((g) => `- ${g}`).join("\n")}\n\n` +
+    `${buildFileManifest(artifacts)}\n\n` +
+    `Build the missing/partial pieces now. Only call createFile for files you add or change; leave the rest as-is.`
+  );
 }
 
 // ---------------------------------------------------------------------------

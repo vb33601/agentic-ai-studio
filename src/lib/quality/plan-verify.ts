@@ -65,6 +65,14 @@ export interface VerifyAgainstPlanInput {
   health?: { healthy: boolean; status: number | null } | null;
   timeoutMs?: number;
   /**
+   * Gateway to run the LLM judge on. Pin this to the funded build gateway (the
+   * same anchor generation uses) so the verdict reliably surfaces — the default
+   * enhancer chain can start on a free model that fails structured output and
+   * silently falls open to the coarse heuristic (checked:false), which then
+   * never triggers the verify→repair loop.
+   */
+  build?: { modelId?: string; provider?: string };
+  /**
    * Injectable judge (defaults to the LLM-as-judge). Lets the engine run fully
    * offline in tests and degrade to the heuristic when it returns null.
    */
@@ -167,7 +175,9 @@ Judge ONLY from the actual files — never assume code that isn't shown. Add a s
 const judgeWithModel: JudgeFn = async (steps, files, input) => {
   const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
   const { object } = await generateObject({
-    model: getEnhancementModel(),
+    // Run the judge on the funded build gateway when provided, so structured
+    // output is reliable and the verdict actually surfaces (and can drive repair).
+    model: getEnhancementModel(input.build),
     schema: JudgeSchema,
     temperature: 0,
     maxOutputTokens: 1200,

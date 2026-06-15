@@ -62,6 +62,9 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
         };
       }
     | undefined;
+  const degraded = (message.parts ?? []).find((p) => p.type === "data-degraded") as
+    | { data?: { reason?: string; model?: string; message?: string } }
+    | undefined;
 
   const generatedImages = toolParts
     // Only once the tool call has settled — during input streaming the prompt
@@ -100,6 +103,18 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
       </div>
 
       <div className={cn("flex min-w-0 flex-col gap-2 max-w-[85%]", isUser && "items-end")}>
+        {degraded?.data && (
+          <div className="w-full flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-700 dark:text-amber-300">
+            <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="font-medium">Running on a free fallback model — output may be incomplete</p>
+              <p className="mt-0.5 opacity-90">
+                {degraded.data.message || "All premium model accounts are out of credits."}
+                {degraded.data.model ? ` (${degraded.data.model})` : ""}
+              </p>
+            </div>
+          </div>
+        )}
         {magicPrompt?.data && (
           <div className="w-full">
             <button
