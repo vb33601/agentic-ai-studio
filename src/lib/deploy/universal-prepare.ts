@@ -2,7 +2,8 @@ import type { RepoFile } from "./github";
 import { detectStackPlan, type StackPlan } from "./dockerfile";
 import { checkDockerfileInvariants } from "./stack-invariants";
 import { prepareSchema } from "./schema";
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi } from "./dotnet";
+import { hardenDatasource } from "./datasource";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi, repairDotnetProgramBuilder } from "./dotnet";
 import { hardenRuntime } from "./runtime-harden";
 import { hardenCors } from "./cors-harden";
 import { hardeningPassesFor } from "./hardening-matrix";
@@ -200,6 +201,24 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   files = schema.files;
   let dockerfile = schema.dockerfile;
 
+  // Coerce a baked-in local-dev datasource (H2/SQLite/`DB_CONNECTION=sqlite`) to
+  // the managed Postgres the pipeline wires in — driver, provider, dialect, and
+  // the manifest dependency — so the injected DATABASE_URL/SPRING_DATASOURCE_* is
+  // actually accepted instead of being hijacked back to the local DB at boot.
+  // Gated on plan.needsDatabase, so SQLite-only apps are deliberately untouched.
+  // Each stack is a separate module under datasource/ (spring, dotnet, prisma,
+  // rails, django, laravel); see datasource/index.ts.
+  const datasource = hardenDatasource(plan, files, dockerfile);
+  files = datasource.files;
+  dockerfile = datasource.dockerfile;
+
+  // Strip a hallucinated `var app = builder.CreateBuilder(...)` from Program.cs
+  // (CreateBuilder is only the static WebApplication.CreateBuilder — calling it on
+  // the builder instance is CS1061). Left in, the publish fails to compile and the
+  // Fly deploy is stranded in 'pending' forever with no machine. See dotnet.ts.
+  const dotnetBuilder = repairDotnetProgramBuilder(files);
+  files = dotnetBuilder.files;
+
   // Resolve the .NET NU1605 package downgrade at the source (drop redundant
   // IdentityModel pins) so the build is conflict-free AND the version JwtBearer
   // was compiled against actually ships — otherwise the app builds but 500s on
@@ -249,7 +268,7 @@ export function prepareForContainer(input: RepoFile[]): UniversalPrep {
   const notes = [
     `Hardening passes for ${plan.stack}: ${hardeningPassesFor(plan.stack).join(", ")}.`,
     ...truncNotes,
-    ...plan.notes, ...schema.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...dotnetApi.notes, ...runtime.notes, ...cors.notes,
+    ...plan.notes, ...schema.notes, ...datasource.notes, ...dotnetBuilder.notes, ...dotnet.notes, ...dotnetDi.notes, ...dotnetPrune.notes, ...dotnetCors.notes, ...dotnetApi.notes, ...runtime.notes, ...cors.notes,
   ];
   if (!hasRootDockerfile(files)) {
     files = [...files, { path: "Dockerfile", content: bindDualStack(dockerfile) }];

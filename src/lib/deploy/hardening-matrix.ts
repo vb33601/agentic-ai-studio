@@ -36,7 +36,15 @@ export type HardeningPass =
   | "dotnet-package-conflict"   // .NET: resolve NU1605 downgrade at source
   | "dotnet-di-register"        // .NET: register injected-but-unregistered services
   | "dotnet-di-prune"           // .NET: drop registrations for undefined services
+  | "dotnet-program-builder"    // .NET: strip a hallucinated `builder.CreateBuilder()` (CS1061 that breaks the publish)
   | "dotnet-cors"               // .NET: open CORS so the split-deployed frontend can call the API
+  // datasource-coerce family: re-point a baked-in local-dev DB → the managed Postgres the pipeline injects
+  | "spring-datasource-postgres" // Spring/JVM: Postgres driver on the classpath + un-pin H2 driver/dialect
+  | "prisma-datasource-postgres" // Node/Prisma: datasource provider sqlite → postgresql
+  | "dotnet-datasource-postgres" // .NET/EF: UseSqlite() → UseNpgsql() so EF accepts the Postgres connection string
+  | "rails-datasource-postgres"  // Rails: database.yml adapter sqlite3 → postgresql + the pg gem
+  | "django-datasource-postgres" // Django: settings.py honors DATABASE_URL (dj-database-url) instead of hard-coded SQLite
+  | "laravel-datasource-postgres" // Laravel: DB_CONNECTION sqlite → pgsql + discrete DB_* env
   | "cors";                     // other web frameworks: idiomatic open CORS (FastAPI/Flask/Django/Express)
 
 export interface StackHardening {
@@ -56,24 +64,24 @@ const compiled = (lang: string): StackHardening => ({
 export const HARDENING_MATRIX: Record<Stack, StackHardening> = {
   // --- .NET: the only stack with all three .NET-specific defect classes ---
   dotnet: {
-    passes: [STRIP, "dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "dotnet-cors", "schema-autocreate"],
-    context: "Explicit DI registration, NuGet restore (NU1605 downgrades), EF migrations, and missing CORS — each a distinct compiles-but-fails defect, all auto-fixed.",
+    passes: [STRIP, "dotnet-program-builder", "dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "dotnet-cors", "schema-autocreate", "dotnet-datasource-postgres"],
+    context: "A hallucinated `builder.CreateBuilder()` (CS1061 that fails the publish and strands the deploy), explicit DI registration, NuGet restore (NU1605 downgrades), EF migrations, missing CORS, and a baked-in SQLite datasource (UseSqlite with the managed Postgres string throws) — each a distinct build/compiles-but-fails defect, all auto-fixed.",
   },
 
   // --- Interpreted/dynamic: install only declared deps → reconcile manifest ---
-  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb. FastAPI/Flask/Django get idiomatic CORS for the split frontend." },
-  node:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors"], context: "npm installs only declared deps; an undeclared import throws 'Cannot find module'. Prisma pushes the schema (db push) instead of migrating. Express gets cors() middleware for the split frontend." },
+  python: { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors", "django-datasource-postgres"], context: "pip installs only what requirements.txt lists; an undeclared import crashes with ModuleNotFoundError. Django builds the schema via migrate --run-syncdb, and its settings are coerced to honor the managed Postgres DATABASE_URL instead of hard-coded SQLite. FastAPI/Flask/Django get idiomatic CORS for the split frontend." },
+  node:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "cors", "prisma-datasource-postgres"], context: "npm installs only declared deps; an undeclared import throws 'Cannot find module'. Prisma pushes the schema (db push) instead of migrating, and its datasource provider is switched sqlite → postgresql to accept the managed URL. Express gets cors() middleware for the split frontend." },
   bun:    { passes: [STRIP, "dep-reconcile"], context: "Bun installs only declared deps; undeclared imports crash at runtime." },
-  ruby:   { passes: [STRIP, "dep-reconcile", "schema-autocreate"], context: "Bundler installs only gems in the Gemfile; an undeclared require is a LoadError. Rails loads schema directly (db:schema:load)." },
+  ruby:   { passes: [STRIP, "dep-reconcile", "schema-autocreate", "rails-datasource-postgres"], context: "Bundler installs only gems in the Gemfile; an undeclared require is a LoadError. Rails loads schema directly (db:schema:load), and its database.yml adapter is coerced sqlite3 → postgresql (with the pg gem) to match the managed Postgres." },
 
   // --- Go: compiler catches, and `go mod tidy` self-heals go.mod from source ---
   go: { passes: [STRIP, "go-mod-tidy"], context: "The compiler fails on undeclared imports; `go mod tidy` back-fills go.mod/go.sum from the source so they don't fail the build." },
 
   // --- PHP: Composer autoload; namespace→package mapping is unreliable to auto-add ---
-  php: { passes: [STRIP, "schema-autocreate"], context: "Composer resolves via PSR-4 autoload; import→package is not deterministic enough to auto-add safely. Laravel/Symfony run their own (framework-authored) migrations at start." },
+  php: { passes: [STRIP, "schema-autocreate", "laravel-datasource-postgres"], context: "Composer resolves via PSR-4 autoload; import→package is not deterministic enough to auto-add safely. Laravel/Symfony run their own (framework-authored) migrations at start, and Laravel's DB_CONNECTION is coerced sqlite → pgsql (with discrete DB_* env) to use the managed Postgres." },
 
   // --- JVM: Spring beans are annotation-scanned (no explicit-registration bug) ---
-  java: { passes: [STRIP, "schema-autocreate"], context: "Maven/Gradle resolve declared deps and the compiler catches the rest; Spring autowires beans by component-scan (no .NET-style 'unregistered service'). Hibernate builds the schema via ddl-auto=update." },
+  java: { passes: [STRIP, "schema-autocreate", "spring-datasource-postgres"], context: "Maven/Gradle resolve declared deps and the compiler catches the rest; Spring autowires beans by component-scan (no .NET-style 'unregistered service'). Hibernate builds the schema via ddl-auto=update. Generated apps ship an H2 dev datasource (driver pinned in application.properties, H2 the only DB dep), so the injected Postgres URL is rejected at boot unless the driver is on the classpath and the H2 pin is overridden — spring-datasource-postgres guarantees both." },
 
   // --- Compiled / build-is-the-guardrail ---
   rust: compiled("Cargo"),

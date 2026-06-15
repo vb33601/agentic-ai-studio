@@ -98,6 +98,21 @@ export const FIX_REGISTRY: FixRule[] = [
 
   // ─────────────────────── .NET-specific defect classes ───────────────────────
   {
+    id: "dotnet-program-builder",
+    title: "Strip a hallucinated `builder.CreateBuilder()` that fails the .NET publish",
+    symptom:
+      "Generated Program.cs emits a bogus `var app = builder.CreateBuilder();` (CreateBuilder is only the static WebApplication.CreateBuilder) → CS1061, the publish fails to compile, and on Fly the app is created but no release/machine ever appears: stuck 'pending' forever with zero deploy feedback.",
+    signatures: [
+      /does not contain a definition for 'CreateBuilder'/i,
+      /\bCS1061\b.*CreateBuilder/i,
+      /'WebApplicationBuilder'.*CreateBuilder/i,
+    ],
+    appliesTo: ["dotnet"],
+    module: "dotnet.ts",
+    phase: "build",
+    pass: "dotnet-program-builder",
+  },
+  {
     id: "dotnet-package-conflict",
     title: "Resolve .NET NU1605 package downgrade at the source",
     symptom: "Generated package pins downgrade a transitive dependency; restore aborts (NU1605), or the app 500s on a missing assembly.",
@@ -126,6 +141,102 @@ export const FIX_REGISTRY: FixRule[] = [
     module: "dotnet.ts",
     phase: "build",
     pass: "dotnet-di-prune",
+  },
+
+  // ─────────────────────── Datasource coercion (baked-in local DB → managed Postgres) ───────────────────────
+  // One class of defect across every ORM-bearing stack: the generator hard-codes a
+  // local-dev database (H2/SQLite/DB_CONNECTION=sqlite); the pipeline injects a
+  // managed Postgres URL but the baked-in driver/provider/dialect hijacks it, so the
+  // app deploys then dies at boot/first query. Each entry re-points it to Postgres.
+  {
+    id: "spring-datasource-postgres",
+    title: "Spring: bind the Postgres driver/dialect so a baked-in H2 datasource can't hijack the managed URL",
+    symptom:
+      "A generated Spring app ships an H2 dev datasource (driver pinned in application.properties, H2 the only DB dependency). The pipeline injects a Postgres jdbc URL but not the driver/dialect, so HikariCP boots with org.h2.Driver, rejects the jdbc:postgresql URL, and the whole context fails: entityManagerFactory → userRepository → app down (0 machines on Fly).",
+    signatures: [
+      /Driver org\.h2\.Driver claims to not accept jdbcUrl/i,
+      /claims to not accept jdbcUrl, *jdbc:postgresql/i,
+      /Unable to build Hibernate SessionFactory/i,
+    ],
+    appliesTo: ["spring"],
+    module: "datasource/spring.ts + db-env.ts",
+    phase: "deploy",
+    pass: "spring-datasource-postgres",
+  },
+  {
+    id: "prisma-datasource-postgres",
+    title: "Prisma: switch the datasource provider sqlite → postgresql",
+    symptom:
+      "A generated app's schema.prisma pins `provider = \"sqlite\"` (url file:./dev.db). The pipeline injects a Postgres DATABASE_URL, but Prisma refuses a postgres URL under a sqlite provider — `prisma db push`/client init errors 'the URL must start with the protocol file:' — so deploy or first query fails.",
+    signatures: [
+      /the URL must start with the protocol `?file:/i,
+      /provider.*sqlite.*does not match/i,
+      /datasource .* provider .* sqlite/i,
+    ],
+    appliesTo: ["node", "bun"],
+    module: "datasource/prisma.ts",
+    phase: "deploy",
+    pass: "prisma-datasource-postgres",
+  },
+  {
+    id: "dotnet-datasource-postgres",
+    title: ".NET/EF: swap UseSqlite() → UseNpgsql() for the managed Postgres",
+    symptom:
+      "Generated EF Core apps call `UseSqlite(connectionString)` in Program.cs. Fed the managed Postgres connection string, SQLite's parser throws 'keyword 'host' not supported' (or 'Format of the initialization string'), 500ing every request.",
+    signatures: [
+      /keyword 'host' not supported/i,
+      /SqliteConnection.*host/i,
+      /Format of the initialization string does not conform/i,
+    ],
+    appliesTo: ["dotnet"],
+    module: "datasource/dotnet.ts",
+    phase: "runtime",
+    pass: "dotnet-datasource-postgres",
+  },
+  {
+    id: "rails-datasource-postgres",
+    title: "Rails: re-point database.yml adapter sqlite3 → postgresql (+ pg gem)",
+    symptom:
+      "A generated Rails app's config/database.yml uses `adapter: sqlite3` for production and ships only the sqlite3 gem. With the managed Postgres DATABASE_URL it either loads the wrong adapter (LoadError: pg) or silently writes to ephemeral SQLite that resets every redeploy. (The pg gem is added to the Gemfile; the image's non-frozen `bundle install` resolves it without touching Gemfile.lock by hand.)",
+    signatures: [
+      /Please install the postgresql adapter/i,
+      /could not load .*['"]pg['"]/i,
+      /Specified 'sqlite3' for database adapter, but the gem is not loaded/i,
+    ],
+    appliesTo: ["rails"],
+    module: "datasource/rails.ts",
+    phase: "deploy",
+    pass: "rails-datasource-postgres",
+  },
+  {
+    id: "django-datasource-postgres",
+    title: "Django: honor the managed Postgres DATABASE_URL instead of hard-coded SQLite",
+    symptom:
+      "A generated Django settings.py hard-codes `ENGINE: django.db.backends.sqlite3` and never reads DATABASE_URL, so the injected Postgres is ignored and writes go to ephemeral SQLite (data lost on redeploy; or the sqlite file is read-only and 500s).",
+    signatures: [
+      /django\.db\.backends\.sqlite3/i,
+      /attempt to write a readonly database/i,
+      /unable to open database file/i,
+    ],
+    appliesTo: ["django"],
+    module: "datasource/django.ts",
+    phase: "runtime",
+    pass: "django-datasource-postgres",
+  },
+  {
+    id: "laravel-datasource-postgres",
+    title: "Laravel: set DB_CONNECTION=pgsql (+ discrete DB_*) for the managed Postgres",
+    symptom:
+      "A generated Laravel app defaults DB_CONNECTION to sqlite, so the managed Postgres is ignored — it writes to a local SQLite file (ephemeral, resets on redeploy) or 500s with 'database file does not exist'.",
+    signatures: [
+      /Database \(.*\.sqlite\) does not exist/i,
+      /could not find driver/i,
+      /SQLSTATE\[HY000\].*database/i,
+    ],
+    appliesTo: ["laravel"],
+    module: "datasource/laravel.ts + db-env.ts",
+    phase: "runtime",
+    pass: "laravel-datasource-postgres",
   },
 
   // ─────────────────────── Cross-stack CORS ───────────────────────

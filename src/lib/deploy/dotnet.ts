@@ -62,6 +62,48 @@ export function fixDotnetPackageConflicts(files: RepoFile[]): DotnetFixResult {
 }
 
 /**
+ * Strip a hallucinated `var x = builder.CreateBuilder(...)` statement from Program.cs.
+ *
+ * `CreateBuilder` exists ONLY as the static factory `WebApplication.CreateBuilder`.
+ * Generators sometimes emit a SECOND, bogus assignment that calls it on the builder
+ * INSTANCE — e.g. `var app = builder.CreateBuilder();` — right before the real
+ * `var webApp = builder.Build();`. That is a hard CS1061
+ * ('WebApplicationBuilder' does not contain a definition for 'CreateBuilder'), so
+ * `dotnet publish` fails to compile. On Fly that is invisible and fatal: the remote
+ * build dies, `flyctl deploy` never creates a release, and the app sits forever in
+ * `pending` with no machine (no compiler is run before deploy to catch it).
+ *
+ * The declared variable is a dead end (the app uses the real builder / Build()
+ * result), so we drop the line — but only when that variable is referenced nowhere
+ * else, so we can never turn a CS1061 into a CS0103 ("name does not exist").
+ */
+export function repairDotnetProgramBuilder(files: RepoFile[]): DotnetFixResult {
+  const notes: string[] = [];
+  const out = files.map((f) => {
+    if (!/\.cs$/.test(f.path) || !/WebApplication\.CreateBuilder/.test(f.content) || !/\.Build\s*\(\s*\)/.test(f.content)) {
+      return f;
+    }
+    const re = /^[ \t]*var\s+(\w+)\s*=\s*([A-Za-z_]\w*)\.CreateBuilder\s*\([^;]*\)\s*;[ \t]*\r?\n/gm;
+    const content = f.content.replace(re, (full, varName: string, receiver: string) => {
+      if (receiver === "WebApplication") return full; // the legitimate static factory
+      // Drop the line only if the declared variable is never USED as code elsewhere
+      // (member access `x.`, call `x(`, index `x[`, or passed/assigned `= x` / `(x` /
+      // `, x`). A plain word match would also count the variable's name in a comment
+      // like `// Build the app`, wrongly keeping a line that can't compile.
+      const rest = f.content.replace(full, "");
+      const usedAsCode = new RegExp(`\\b${varName}\\s*[.([]|[=,(]\\s*${varName}\\b`).test(rest);
+      return usedAsCode ? full : "";
+    });
+    if (content !== f.content) {
+      notes.push(`.NET: removed a hallucinated '<var> = <builder>.CreateBuilder(...)' statement in ${f.path} (CS1061 that broke the publish and stranded the Fly deploy in 'pending').`);
+      return { path: f.path, content };
+    }
+    return f;
+  });
+  return { files: out, notes };
+}
+
+/**
  * Auto-register app-defined services that controllers inject but Program.cs never
  * wires into DI.
  *

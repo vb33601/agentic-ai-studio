@@ -96,6 +96,8 @@ export function prepareSchema(plan: StackPlan, files: RepoFile[], dockerfile: st
       break;
 
     // --- Spring/JPA: Hibernate builds the schema from the entities. ---
+    // (Coercing a baked-in H2 datasource → Postgres is a separate concern handled
+    // by the datasource/ coercion modules; here we only set the no-migrations strategy.)
     case "spring":
       if (!/SPRING_JPA_HIBERNATE_DDL_AUTO/.test(df)) {
         df = df.replace(

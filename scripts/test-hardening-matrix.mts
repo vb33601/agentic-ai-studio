@@ -30,7 +30,7 @@ check(
 check("go-mod-tidy only on go", JSON.stringify(stacksWith("go-mod-tidy")) === JSON.stringify(["go"]), stacksWith("go-mod-tidy").join(","));
 
 // The .NET-specific passes apply to dotnet alone.
-for (const p of ["dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune"]) {
+for (const p of ["dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "dotnet-program-builder"]) {
   check(`${p} only on dotnet`, JSON.stringify(stacksWith(p)) === JSON.stringify(["dotnet"]), stacksWith(p).join(","));
 }
 check("dotnet has all three .NET passes + schema", ["dotnet-package-conflict", "dotnet-di-register", "dotnet-di-prune", "schema-autocreate"].every((p) => HARDENING_MATRIX.dotnet.passes.includes(p as never)));
@@ -45,6 +45,14 @@ check(
 // CORS coverage: generic `cors` on the web stacks, `dotnet-cors` on dotnet.
 check("cors stacks = node,python", JSON.stringify(stacksWith("cors")) === JSON.stringify(["node", "python"]), stacksWith("cors").join(","));
 check("dotnet-cors only on dotnet", JSON.stringify(stacksWith("dotnet-cors")) === JSON.stringify(["dotnet"]), stacksWith("dotnet-cors").join(","));
+
+// The datasource-coerce family is one pass per ORM-bearing stack.
+check("spring-datasource-postgres only on java", JSON.stringify(stacksWith("spring-datasource-postgres")) === JSON.stringify(["java"]), stacksWith("spring-datasource-postgres").join(","));
+check("prisma-datasource-postgres only on node", JSON.stringify(stacksWith("prisma-datasource-postgres")) === JSON.stringify(["node"]), stacksWith("prisma-datasource-postgres").join(","));
+check("dotnet-datasource-postgres only on dotnet", JSON.stringify(stacksWith("dotnet-datasource-postgres")) === JSON.stringify(["dotnet"]), stacksWith("dotnet-datasource-postgres").join(","));
+check("rails-datasource-postgres only on ruby", JSON.stringify(stacksWith("rails-datasource-postgres")) === JSON.stringify(["ruby"]), stacksWith("rails-datasource-postgres").join(","));
+check("django-datasource-postgres only on python", JSON.stringify(stacksWith("django-datasource-postgres")) === JSON.stringify(["python"]), stacksWith("django-datasource-postgres").join(","));
+check("laravel-datasource-postgres only on php", JSON.stringify(stacksWith("laravel-datasource-postgres")) === JSON.stringify(["php"]), stacksWith("laravel-datasource-postgres").join(","));
 
 // hardeningPassesFor is total.
 check("hardeningPassesFor returns passes for a known stack", hardeningPassesFor("rust").includes("strip-broken-files"));

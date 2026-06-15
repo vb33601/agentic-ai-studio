@@ -105,7 +105,19 @@ export function npgsqlConnectionString(postgresUrl: string): string {
   return parts.join(";") + ";";
 }
 
-/** Spring Boot reads SPRING_DATASOURCE_* with a JDBC URL (no userinfo inline). */
+/**
+ * Spring Boot reads SPRING_DATASOURCE_* with a JDBC URL (no userinfo inline).
+ *
+ * We also pin the DRIVER and DIALECT, not just the URL. Generated apps routinely
+ * ship `spring.datasource.driver-class-name=org.h2.Driver` (+ H2Dialect) baked
+ * into application.properties for local dev. Injecting only the Postgres URL
+ * leaves that H2 driver in place, and HikariCP then dies at boot —
+ * "Driver org.h2.Driver claims to not accept jdbcUrl, jdbc:postgresql://…" —
+ * taking the whole context down. Environment variables outrank application.properties
+ * in Spring's relaxed binding, so these override the baked-in H2 to the real
+ * Postgres driver/dialect. (The driver must also be ON the classpath — the
+ * `spring-datasource-postgres` hardening pass guarantees that in pom/gradle.)
+ */
 function springDatasource(postgresUrl: string, schema?: string): DbEnvVar[] {
   const p = parsePostgresUrl(postgresUrl);
   if (!p) return [];
@@ -114,6 +126,26 @@ function springDatasource(postgresUrl: string, schema?: string): DbEnvVar[] {
     { key: "SPRING_DATASOURCE_URL", value: url },
     { key: "SPRING_DATASOURCE_USERNAME", value: p.user },
     { key: "SPRING_DATASOURCE_PASSWORD", value: p.password },
+    { key: "SPRING_DATASOURCE_DRIVER_CLASS_NAME", value: "org.postgresql.Driver" },
+    { key: "SPRING_JPA_DATABASE_PLATFORM", value: "org.hibernate.dialect.PostgreSQLDialect" },
+  ];
+}
+
+/**
+ * Laravel reads discrete DB_* vars (not a URL) and selects the driver by
+ * DB_CONNECTION. Generated apps default that to `sqlite`, so the managed Postgres
+ * is ignored unless we set the whole discrete set — DB_CONNECTION=pgsql first.
+ */
+function laravelDatasource(postgresUrl: string): DbEnvVar[] {
+  const p = parsePostgresUrl(postgresUrl);
+  if (!p) return [];
+  return [
+    { key: "DB_CONNECTION", value: "pgsql" },
+    { key: "DB_HOST", value: p.host },
+    { key: "DB_PORT", value: String(p.port) },
+    { key: "DB_DATABASE", value: p.database },
+    { key: "DB_USERNAME", value: p.user },
+    { key: "DB_PASSWORD", value: p.password },
   ];
 }
 
@@ -140,7 +172,9 @@ export function databaseEnvForFramework(framework: string, postgresUrl: string, 
     }
     case "spring":
       return springDatasource(postgresUrl, schema);
+    case "laravel":
+      return laravelDatasource(postgresUrl);
     default:
-      return []; // Node/Python/Go/Rails/PHP read DATABASE_URL (with search_path) directly.
+      return []; // Node/Python/Go/Rails read DATABASE_URL (with search_path) directly.
   }
 }

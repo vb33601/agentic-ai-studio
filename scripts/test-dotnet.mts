@@ -4,7 +4,7 @@
  *
  *   npx tsx scripts/test-dotnet.mts
  */
-import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi } from "../src/lib/deploy/dotnet";
+import { fixDotnetPackageConflicts, autoRegisterDotnetServices, pruneDanglingServiceRegistrations, ensureDotnetCors, detectMissingDotnetApi, repairDotnetProgramBuilder } from "../src/lib/deploy/dotnet";
 
 type F = { path: string; content: string };
 let fails = 0;
@@ -103,6 +103,42 @@ const prog = (files: F[]) => files.find((f) => f.path === "Program.cs")!.content
   check("warns when no controllers/endpoints", detectMissingDotnetApi(noApi).notes.length === 1, JSON.stringify(detectMissingDotnetApi(noApi).notes));
   check("silent when controllers exist", detectMissingDotnetApi(withApi).notes.length === 0);
   check("silent when minimal-API routes exist", detectMissingDotnetApi(minimal).notes.length === 0);
+}
+
+// --- program-builder: strip a hallucinated `builder.CreateBuilder()` (CS1061) ---
+{
+  console.log("program-builder:");
+  // The exact production shape that stranded my-app-rest-menu in 'pending'.
+  const broken: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddControllers();\nvar app = builder.CreateBuilder();\nvar webApp = builder.Build();\nwebApp.MapControllers();\nwebApp.Run();\n" },
+  ];
+  const fixed = repairDotnetProgramBuilder(broken);
+  const out = fixed.files.find((f) => f.path === "Program.cs")!.content;
+  check("removes the bogus builder.CreateBuilder() line", !/\.CreateBuilder\s*\(\s*\)/.test(out));
+  check("keeps the real WebApplication.CreateBuilder(args)", /WebApplication\.CreateBuilder\(args\)/.test(out));
+  check("keeps the real builder.Build()", /builder\.Build\(\)/.test(out));
+  check("reports the repair", fixed.notes.length === 1);
+
+  // Safety: a valid Program.cs is untouched (no false positive).
+  const valid: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.MapControllers();\napp.Run();\n" },
+  ];
+  check("leaves a valid Program.cs unchanged", repairDotnetProgramBuilder(valid).files[0].content === valid[0].content);
+
+  // Safety: if the declared var IS used elsewhere (as code), don't remove it (avoid CS0103).
+  const used: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.CreateBuilder();\napp.Run();\n" },
+  ];
+  check("does not strip when the variable is referenced again", /var app = builder\.CreateBuilder\(\)/.test(repairDotnetProgramBuilder(used).files[0].content));
+
+  // Regression (the EXACT production shape): a `// Build the app` comment mentions
+  // the word "app" — the variable is still unused as CODE, so it MUST be stripped.
+  const withComment: F[] = [
+    { path: "Program.cs", content: "var builder = WebApplication.CreateBuilder(args);\nvar app = builder.CreateBuilder();\n\n// Build the app\nvar webApp = builder.Build();\nwebApp.UseCors(\"AllowAll\");\nwebApp.Run();\n" },
+  ];
+  const cfix = repairDotnetProgramBuilder(withComment).files[0].content;
+  check("strips despite the word 'app' appearing in a comment", !/builder\.CreateBuilder\(\)/.test(cfix));
+  check("keeps webApp usages intact", /webApp\.UseCors/.test(cfix) && /webApp\.Run/.test(cfix));
 }
 
 console.log("-".repeat(60));

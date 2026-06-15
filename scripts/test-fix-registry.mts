@@ -56,11 +56,18 @@ const m = matchKnownFix(realVercelError);
 check("recognizes the real Settings.jsx truncation error", m.some((f) => f.id === "repair-truncated-source"), m.map((f) => f.id).join(","));
 
 const samples: Array<[string, string]> = [
+  ["dotnet-program-builder", "Program.cs(12,15): error CS1061: 'WebApplicationBuilder' does not contain a definition for 'CreateBuilder'"],
   ["dotnet-package-conflict", "error NU1605: Detected package downgrade: System.IdentityModel"],
   ["dotnet-di-register", "InvalidOperationException: Unable to resolve service for type 'IUserService'"],
   ["dep-reconcile", "ModuleNotFoundError: No module named 'requests'"],
   ["safe-array-iteration", "TypeError: Cannot read properties of undefined (reading 'map')"],
   ["cors", "Access to fetch has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header"],
+  ["spring-datasource-postgres", "java.lang.RuntimeException: Driver org.h2.Driver claims to not accept jdbcUrl, jdbc:postgresql://pg-host:28007/defaultdb?currentSchema=app"],
+  ["prisma-datasource-postgres", "Error: the URL must start with the protocol `file:`. Datasource provider sqlite does not match the postgresql URL."],
+  ["dotnet-datasource-postgres", "System.ArgumentException: keyword 'host' not supported when opening SqliteConnection"],
+  ["rails-datasource-postgres", "Please install the postgresql adapter: `gem install activerecord-postgresql-adapter` (could not load 'pg')"],
+  ["django-datasource-postgres", "django.db.utils.OperationalError: attempt to write a readonly database (django.db.backends.sqlite3)"],
+  ["laravel-datasource-postgres", "Illuminate\\Database\\QueryException: Database (database.sqlite) does not exist."],
 ];
 for (const [expectId, log] of samples) {
   check(`recognizes ${expectId}`, matchKnownFix(log).some((f) => f.id === expectId), matchKnownFix(log).map((f) => f.id).join(","));
