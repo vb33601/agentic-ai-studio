@@ -32,34 +32,96 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-/** A cheap, fast model for the enhance/refine passes (env-overridable). */
-// The magic-prompt / plan / rewrite passes run on the AI/ML API rather than
-// OpenRouter: AI/ML API doesn't reserve credits for the full maxOutputTokens up
-// front, so these can run unlimited-length (see *_MAX_TOKENS above) without the
-// 402 "requires more credits" that was silently dropping the magic prompt and plan
-// back to the original input. Override the model/provider via env.
-export function getEnhancementModel() {
-  const id = process.env.PROMPT_ENHANCER_MODEL || "gpt-5.1-chat-latest";
-  const provider = process.env.PROMPT_ENHANCER_PROVIDER || "aimlapi";
-  return resolveModel(id, provider);
+/** Where the user is currently building — used to route the enhancer passes to a
+ *  gateway whose API key is known to work (e.g. a Kilo Code build runs the magic
+ *  prompt / plan on Kilo Code too, instead of a possibly-dead default). */
+export interface BuildContext {
+  modelId?: string;
+  provider?: string;
+}
+
+export interface EnhancerCandidate {
+  id: string;
+  provider: string;
+}
+
+// A capable, cheap, tool-free instruction-follower per gateway. Each gateway
+// speaks its own model-id dialect, so we keep one strong long-form writer for
+// each (Qwen2.5-72B on the HF/AIML routers; Claude 3.5 Haiku on the OpenRouter-
+// style gateways). Env override: PROMPT_ENHANCER_MODEL / PROMPT_ENHANCER_PROVIDER.
+const ENHANCER_MODEL_BY_PROVIDER: Record<string, string> = {
+  kilocode: "anthropic/claude-3.5-haiku",
+  openrouter: "anthropic/claude-3.5-haiku",
+  huggingface: "Qwen/Qwen2.5-72B-Instruct",
+  aimlapi: "Qwen/Qwen2.5-72B-Instruct",
+};
+
+function enhancerKeyPresent(provider: string): boolean {
+  switch (provider) {
+    case "kilocode": return !!process.env.KILOCODE_API_KEY;
+    case "huggingface": return !!process.env.HUGGINGFACE_API_KEY;
+    case "aimlapi": return !!process.env.AIMLAPI_API_KEY;
+    case "openrouter": return !!process.env.OPENROUTER_API_KEY;
+    default: return false;
+  }
+}
+
+/**
+ * Ordered enhancer models to try for the magic-prompt / plan / rewrite passes,
+ * spanning gateways so these passes keep producing output even when any single
+ * provider (historically the HF router) is down or out of credits.
+ *
+ * Order: explicit env override → the gateway the user is actually building with
+ * (its key is known-good) → the HF default → the remaining gateways that have a
+ * configured key. Candidates without an API key are dropped, so the chain only
+ * contains gateways we can actually reach.
+ */
+export function getEnhancementCandidates(build?: BuildContext): EnhancerCandidate[] {
+  const out: EnhancerCandidate[] = [];
+  const add = (id?: string, provider?: string) => {
+    if (!id || !provider || !enhancerKeyPresent(provider)) return;
+    if (out.some((c) => c.id === id && c.provider === provider)) return;
+    out.push({ id, provider });
+  };
+
+  // 1. Explicit override always wins (when its key is present).
+  add(process.env.PROMPT_ENHANCER_MODEL, process.env.PROMPT_ENHANCER_PROVIDER);
+  // 2. The gateway the user is building with — ride the key we know works.
+  if (build?.provider) add(ENHANCER_MODEL_BY_PROVIDER[build.provider], build.provider);
+  // 3. HF default, then the remaining gateways.
+  for (const provider of ["huggingface", "kilocode", "openrouter", "aimlapi"]) {
+    add(ENHANCER_MODEL_BY_PROVIDER[provider], provider);
+  }
+  return out;
+}
+
+/** First reachable enhancer model — used by the lighter rewrite / refine passes. */
+export function getEnhancementModel(build?: BuildContext) {
+  const [first] = getEnhancementCandidates(build);
+  if (first) return resolveModel(first.id, first.provider);
+  // Last resort: the historical default, even if its key looks absent (lets a
+  // misconfigured-but-working setup still work, and keeps the type non-null).
+  return resolveModel(
+    process.env.PROMPT_ENHANCER_MODEL || "Qwen/Qwen2.5-72B-Instruct",
+    process.env.PROMPT_ENHANCER_PROVIDER || "huggingface",
+  );
 }
 
 // Magic prompt + implementation plan generation limits (env-overridable, up to a
-// 10-minute window). Both run UNLIMITED in length by default (no maxOutputTokens →
-// the model's own ceiling). This is safe because the enhancement model runs on the
-// AI/ML API (see getEnhancementModel), which — unlike OpenRouter — does NOT reserve
-// credits for the full maxOutputTokens up front, so an uncapped request can't 402
-// "requires more credits" and silently drop the magic prompt / plan back to the
-// input. Set MAGIC_PROMPT_MAX_TOKENS / PLAN_MAX_TOKENS to bound them if ever needed.
-// NOTE: the usable window is also capped by the route's maxDuration (60s on Vercel
-// Hobby; MAX_DURATION raised on Render).
+// 10-minute window). Output is UNCAPPED by default: the brief/plan should be as
+// long as the build genuinely warrants, with no max-token ceiling. Set
+// MAGIC_PROMPT_MAX_TOKENS / PLAN_MAX_TOKENS only if you want to re-impose a cap.
+// NOTE: the usable window is also bounded by the route's maxDuration (60s on
+// Vercel Hobby; raised on Render).
 const TEN_MINUTES_MS = 600_000;
 const MAGIC_PROMPT_TIMEOUT_MS = Number(process.env.MAGIC_PROMPT_TIMEOUT_MS) || TEN_MINUTES_MS;
 const MAGIC_PROMPT_MAX_TOKENS = process.env.MAGIC_PROMPT_MAX_TOKENS
   ? Number(process.env.MAGIC_PROMPT_MAX_TOKENS)
   : undefined;
 const PLAN_TIMEOUT_MS = Number(process.env.PLAN_TIMEOUT_MS) || TEN_MINUTES_MS;
-const PLAN_MAX_TOKENS = process.env.PLAN_MAX_TOKENS ? Number(process.env.PLAN_MAX_TOKENS) : undefined;
+const PLAN_MAX_TOKENS = process.env.PLAN_MAX_TOKENS
+  ? Number(process.env.PLAN_MAX_TOKENS)
+  : undefined;
 
 // ---------------------------------------------------------------------------
 // input analysis (deterministic — covers positive AND negative cases)
@@ -234,6 +296,9 @@ export interface PreprocessArgs {
   agentType: string;
   enhance: boolean;
   modelMessages: ModelMessage[];
+  /** The gateway the user is building with, so the rewrite pass rides a key we
+   *  know works (falls back across gateways otherwise). */
+  build?: BuildContext;
 }
 
 export interface PreprocessResult {
@@ -258,13 +323,13 @@ Rules:
 - You MAY add tasteful, commonly-expected scope and polish (e.g. sensible CRUD, empty/loading/error states, sample data, smooth interactions) — but do NOT invent niche or out-of-scope features, and keep it realistic for a single build.
 - Keep it tight: a short paragraph or a few bullet points. Output ONLY the brief — no preamble or quotes.`;
 
-async function rewritePrompt(text: string, agentType: string): Promise<string> {
+async function rewritePrompt(text: string, agentType: string, build?: BuildContext): Promise<string> {
   const { text: out } = await generateText({
-    model: getEnhancementModel(),
+    model: getEnhancementModel(build),
     temperature: isArtifactAgent(agentType) ? 0.4 : 0.2,
     system: isArtifactAgent(agentType) ? BUILD_REWRITE_SYSTEM : PROSE_REWRITE_SYSTEM,
     prompt: text,
-    // Keep the upfront credit reservation small (a rewrite is short).
+    // A rewrite is short — keep it tightly bounded.
     maxOutputTokens: 1500,
   });
   return out;
@@ -276,25 +341,106 @@ Rules:
 - Cover: the stack + entry/start file, every key screen/module/endpoint, the data model/state, and how all the pieces connect end-to-end (so the app actually works as a whole). Sub-bullets are fine for detail.
 - No code, no preamble, no closing remarks — output ONLY the bullet list.`;
 
-/**
- * Generate a short end-to-end implementation plan for a build request. Used to (a)
- * surface the plan in the UI alongside tool calls and (b) check, after generation
- * and around deploy, that what was built matches the plan. Fail-open: returns null
- * on any error / non-builder agent, so it can never break a chat.
- */
-export async function generateImplementationPlan(text: string, agentType: string): Promise<string | null> {
-  if (!isArtifactAgent(agentType) || !text.trim()) return null;
-  try {
-    const { text: out } = await withTimeout(
-      generateText({ model: getEnhancementModel(), temperature: 0.3, system: PLAN_SYSTEM, prompt: text, maxOutputTokens: PLAN_MAX_TOKENS }),
-      PLAN_TIMEOUT_MS,
-    );
-    const clean = (out || "").trim();
-    return clean.length > 15 ? clean : null;
-  } catch (err) {
-    console.warn(`[plan] generation failed, falling back to no plan:`, err instanceof Error ? err.message : err);
+/** Run an enhancer pass across the gateway candidate chain, returning the first
+ *  substantial result. Tries every reachable gateway (so a single dead provider
+ *  no longer drops the magic prompt / plan) and returns null only when none of
+ *  them produced enough text — the caller then uses a deterministic fallback. */
+async function runEnhancer(opts: {
+  system: string;
+  prompt: string;
+  temperature: number;
+  maxOutputTokens?: number;
+  timeoutMs: number;
+  minLength: number;
+  label: string;
+  build?: BuildContext;
+}): Promise<string | null> {
+  const candidates = getEnhancementCandidates(opts.build);
+  if (!candidates.length) {
+    console.warn(`[${opts.label}] no enhancer gateway has an API key — using deterministic fallback`);
     return null;
   }
+  for (const cand of candidates) {
+    try {
+      const { text: out } = await withTimeout(
+        generateText({
+          model: resolveModel(cand.id, cand.provider),
+          temperature: opts.temperature,
+          system: opts.system,
+          prompt: opts.prompt,
+          // Undefined ⇒ uncapped: the brief/plan runs as long as it needs.
+          maxOutputTokens: opts.maxOutputTokens,
+        }),
+        opts.timeoutMs,
+      );
+      const clean = (out || "").trim();
+      if (clean.length >= opts.minLength) return clean;
+      console.warn(`[${opts.label}] ${cand.provider}:${cand.id} returned too little (${clean.length} chars) — trying next`);
+    } catch (err) {
+      console.warn(`[${opts.label}] ${cand.provider}:${cand.id} failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return null;
+}
+
+/** A single-line, length-bounded echo of the request for embedding in fallbacks. */
+function requestSummary(text: string): string {
+  return normalize(text).replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+/** Deterministic, no-LLM implementation brief. The final guarantee that a magic
+ *  prompt exists even when every enhancer gateway is unreachable. */
+function deterministicMagicPrompt(text: string): string {
+  const req = requestSummary(text) || "the requested application";
+  return [
+    `Build a complete, production-ready application for the following request: ${req}.`,
+    ``,
+    `Overview & goal: Deliver a polished, fully working implementation of the request above. The app must run end-to-end with no missing pieces, placeholders, or TODOs.`,
+    `Tech stack & entry point: Choose a sensible modern stack for this kind of app and create the entry/start file plus its root component so the app launches immediately. Every file referenced by the entry (transitively) must exist.`,
+    `Features & user flows: Implement every screen, page, and capability the request implies, with clear primary user journeys from start to finish.`,
+    `Data & state: Define the data model (entities and key fields), decide where state lives, and make data flow correctly through the app. Include realistic sample/demo data.`,
+    `UI/UX: Build a modern, cohesive, responsive, and accessible interface with strong visual hierarchy, sensible navigation, and smooth interactions.`,
+    `Edge cases & states: Handle empty, loading, error, and success states, validate input, and provide sensible defaults.`,
+    `Quality bar: Ship clean, idiomatic, complete, runnable code with a sensible file/module structure — no placeholders or omitted sections.`,
+    `End-to-end wiring: Connect every component, the data model, and state so the application genuinely works as a whole, then end with a short summary of what was built and how to run it.`,
+  ].join("\n");
+}
+
+/** Deterministic, no-LLM ordered plan — the final guarantee that an implementation
+ *  plan exists even when every enhancer gateway is unreachable. */
+function deterministicPlan(text: string): string {
+  const req = requestSummary(text) || "the requested application";
+  return [
+    `- Choose the stack and scaffold the project, including the entry/start file and root component, for: ${req}`,
+    `- Define the data model (entities and key fields) and decide where application state lives`,
+    `- Build the root layout, navigation, and shared UI components`,
+    `- Implement each core feature and screen the request requires, with realistic sample data`,
+    `- Handle empty, loading, error, and success states and validate user input`,
+    `- Wire all screens, components, data, and state together end-to-end so the app works as a whole`,
+    `- Polish the UI for a modern, responsive, accessible result and verify the app runs start to finish`,
+  ].join("\n");
+}
+
+/**
+ * Generate an end-to-end implementation plan for a build request. Used to (a)
+ * surface the plan in the UI alongside tool calls and (b) check, after generation
+ * and around deploy, that what was built matches the plan. ALWAYS returns a plan
+ * for builder agents with a non-empty request (LLM across the gateway chain, then
+ * a deterministic fallback); returns null only for non-builder / empty input.
+ */
+export async function generateImplementationPlan(text: string, agentType: string, build?: BuildContext): Promise<string | null> {
+  if (!isArtifactAgent(agentType) || !text.trim()) return null;
+  const llm = await runEnhancer({
+    system: PLAN_SYSTEM,
+    prompt: text,
+    temperature: 0.3,
+    maxOutputTokens: PLAN_MAX_TOKENS,
+    timeoutMs: PLAN_TIMEOUT_MS,
+    minLength: 16,
+    label: "plan",
+    build,
+  });
+  return llm ?? deterministicPlan(text);
 }
 
 const MAGIC_PROMPT_SYSTEM = `You are a principal product engineer and prompt architect. Expand the user's short build request into ONE comprehensive, self-contained implementation brief that a coding agent will follow to build the app end-to-end.
@@ -314,39 +460,35 @@ Cover, in this order, every detail that matters:
 Be specific and exhaustive about the minute details, but stay realistic and in-scope for a single build — do NOT invent niche features, and do NOT fabricate specific facts, names, numbers, or URLs the user did not imply. Output ONLY the brief — no preamble, no section headings, no labels like "Brief:", and no surrounding quotes.`;
 
 /**
- * Expand a short build request into a detailed 500-1000 word implementation brief
- * — the "magic prompt" the model actually builds from (and the plan + verification
- * derive from). Fail-open: returns null on any error / non-builder agent / when the
- * expansion isn't a meaningful improvement, so the caller keeps the original prompt.
+ * Expand a short build request into a detailed (500-1000+ word, uncapped)
+ * implementation brief — the "magic prompt" the model actually builds from (and
+ * the plan + verification derive from). ALWAYS returns a brief for builder agents
+ * with a non-empty request: it tries the LLM across the gateway chain, then falls
+ * back to a deterministic structured brief. Returns null only for non-builder
+ * agents / empty input.
  */
-export async function generateMagicPrompt(text: string, agentType: string): Promise<string | null> {
+export async function generateMagicPrompt(text: string, agentType: string, build?: BuildContext): Promise<string | null> {
   if (!isArtifactAgent(agentType) || !text.trim()) return null;
-  try {
-    const { text: out } = await withTimeout(
-      generateText({
-        model: getEnhancementModel(),
-        temperature: 0.4,
-        system: MAGIC_PROMPT_SYSTEM,
-        prompt: text,
-        // Unlimited brief length by default: no maxOutputTokens cap (the model
-        // uses its own ceiling). Set MAGIC_PROMPT_MAX_TOKENS to bound the upfront
-        // OpenRouter credit reservation if needed.
-        maxOutputTokens: MAGIC_PROMPT_MAX_TOKENS,
-      }),
-      // Up to 10 minutes by default (env-overridable). A long brief can take a
-      // while; only deploys with a high route maxDuration can use the full window.
-      MAGIC_PROMPT_TIMEOUT_MS,
-    );
-    const clean = (out || "").trim();
-    // Adopt the brief whenever the model returned something substantial (a real
-    // multi-paragraph brief, not a truncated/empty reply). We intentionally do
-    // NOT require it to be ~2x the original — that rejected expansions of longer,
-    // already-detailed prompts and left the magic prompt showing the input text.
-    return clean.length >= 350 && clean.length >= text.trim().length ? clean : null;
-  } catch (err) {
-    console.warn(`[magic-prompt] expansion failed, falling back to original:`, err instanceof Error ? err.message : err);
-    return null;
-  }
+  const llm = await runEnhancer({
+    system: MAGIC_PROMPT_SYSTEM,
+    prompt: text,
+    temperature: 0.4,
+    // Uncapped by default (env-overridable via MAGIC_PROMPT_MAX_TOKENS) so the
+    // brief runs as long as the build warrants.
+    maxOutputTokens: MAGIC_PROMPT_MAX_TOKENS,
+    // Up to 10 minutes by default; only deploys with a high route maxDuration can
+    // use the full window.
+    timeoutMs: MAGIC_PROMPT_TIMEOUT_MS,
+    // A real multi-paragraph brief, not a truncated/empty reply. We intentionally
+    // do NOT require ~2x the original — that rejected expansions of already-
+    // detailed prompts and left the magic prompt showing the input text.
+    minLength: 350,
+    label: "magic-prompt",
+    build,
+  });
+  if (llm && llm.length >= text.trim().length) return llm;
+  // Guarantee a magic prompt in every case.
+  return deterministicMagicPrompt(text);
 }
 
 /** The text of the last user message (the possibly-rewritten "magic prompt"). */
@@ -405,7 +547,7 @@ export async function preprocessPrompt(args: PreprocessArgs): Promise<Preprocess
 
   if (args.enhance && (analysis.needsRewrite || artifactEnrich)) {
     try {
-      const rewritten = await withTimeout(rewritePrompt(analysis.normalized, args.agentType), 5000);
+      const rewritten = await withTimeout(rewritePrompt(analysis.normalized, args.agentType, args.build), 5000);
       const clean = (rewritten || "").trim();
       if (clean && clean.length <= 8000) {
         modelMessages = replaceLastUserText(args.modelMessages, clean);

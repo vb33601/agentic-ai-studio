@@ -126,6 +126,7 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       agentType: resolvedAgentType,
       enhance: enhancePrompt,
       modelMessages: rawModelMessages,
+      build: { modelId, provider },
     });
 
     // Quality engine (phase 2): for app builders, append web-grounded high-quality
@@ -177,9 +178,10 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           // passes overlap instead of stacking ~16s + ~8s of latency before the
           // build starts. Both fail-open: errors leave the original prompt / no plan.
           const canExpand = !pre.analysis.hasInjection && !pre.analysis.looksLikeCode;
+          const build = { modelId, provider };
           const [expanded, plan] = await Promise.all([
-            canExpand ? generateMagicPrompt(magicText, resolvedAgentType).catch(() => null) : Promise.resolve(null),
-            generateImplementationPlan(magicText, resolvedAgentType).catch(() => null),
+            canExpand ? generateMagicPrompt(magicText, resolvedAgentType, build).catch(() => null) : Promise.resolve(null),
+            generateImplementationPlan(magicText, resolvedAgentType, build).catch(() => null),
           ]);
           if (expanded) {
             magicText = expanded;

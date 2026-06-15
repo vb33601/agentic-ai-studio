@@ -61,6 +61,9 @@ export async function POST(req: NextRequest) {
       agentType,
       enhance: enhancePrompt,
       modelMessages: rawModelMessages,
+      // This route routes through OpenRouter (modelCandidates defaults to it), so
+      // the rewrite pass should ride that gateway too.
+      build: { modelId, provider: "openrouter" },
     });
 
     const finalSystem = config.systemPrompt + pre.systemAugmentation;
