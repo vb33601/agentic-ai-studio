@@ -170,6 +170,27 @@ const completeFullstack = findAppGaps(
 );
 check("no gaps on a complete full-stack app", completeFullstack.length === 0, completeFullstack.join(" | "));
 
+// --- 6) Python / Django (non-Node stack): the structural detectors must NOT
+//        false-positive on a complete Django project (manage.py + app package,
+//        external rest_framework/django.* imports, relative .models/.serializers),
+//        and MUST catch a genuinely missing referenced module. ---
+const djangoComplete = [
+  { path: "manage.py", content: "import sys\nfrom django.core.management import execute_from_command_line\nexecute_from_command_line(sys.argv)" },
+  { path: "requirements.txt", content: "Django>=5\ndjangorestframework\n" },
+  { path: "config/settings.py", content: "from pathlib import Path\nINSTALLED_APPS=['rest_framework','tasks']" },
+  { path: "config/urls.py", content: "from django.urls import path, include\nurlpatterns=[path('api/', include('tasks.urls'))]" },
+  { path: "tasks/__init__.py", content: "" },
+  { path: "tasks/models.py", content: "from django.db import models\nclass Task(models.Model):\n  title=models.CharField(max_length=200)" },
+  { path: "tasks/serializers.py", content: "from rest_framework import serializers\nfrom .models import Task\nclass TaskSerializer(serializers.ModelSerializer):\n  class Meta:\n    model=Task" },
+  { path: "tasks/views.py", content: "from rest_framework import viewsets\nfrom .models import Task\nfrom .serializers import TaskSerializer\nclass TaskViewSet(viewsets.ModelViewSet):\n  queryset=Task.objects.all()" },
+  { path: "tasks/urls.py", content: "from rest_framework.routers import DefaultRouter\nfrom .views import TaskViewSet\nrouter=DefaultRouter()\nrouter.register('tasks', TaskViewSet)\nurlpatterns=router.urls" },
+];
+const djangoPrompt = "Build a Django REST API for a task manager with list/create/delete endpoints under /api/tasks.";
+check("complete Django app: no broken local refs", findBrokenLocalRefs(djangoComplete).length === 0, JSON.stringify(findBrokenLocalRefs(djangoComplete)));
+check("complete Django app: no app gaps (backend recognized)", findAppGaps(djangoComplete, djangoPrompt).length === 0, JSON.stringify(findAppGaps(djangoComplete, djangoPrompt)));
+const djangoMissing = djangoComplete.filter((f) => f.path !== "tasks/serializers.py");
+check("incomplete Django app: missing .serializers flagged", findBrokenLocalRefs(djangoMissing).some((g) => /serializers/.test(g)));
+
 console.log("-".repeat(60));
 console.log(fails === 0 ? "ALL TRUNCATION TESTS PASSED" : `${fails} TEST(S) FAILED`);
 process.exit(fails ? 1 : 0);

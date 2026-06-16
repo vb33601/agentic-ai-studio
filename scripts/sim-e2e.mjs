@@ -34,6 +34,7 @@ const SCENARIOS = [
   { id: "single-file", kind: "gen", prompt: "Create a single file index.html containing an <h1> that says Hello E2E Test. Only that one file.", expect: { minFiles: 1 } },
   { id: "frontend-spa", kind: "gen", prompt: "Build a small React + Vite todo app: add a todo, list todos, delete a todo. Keep it to a few files.", expect: { minFiles: 3 } },
   { id: "fullstack", kind: "gen", prompt: "Build a notes app: an Express backend exposing GET and POST /api/notes, and a React (Vite) frontend that fetches and creates notes by calling that API.", expect: { minFiles: 4, wantBackend: true, wantFrontend: true } },
+  { id: "django", kind: "gen", prompt: "Build a Django REST API for a task manager: a Task model (title, done), and list/create/delete endpoints under /api/tasks. Include manage.py, settings, urls, models, views, serializers, and requirements.txt so it runs.", expect: { minFiles: 5, wantBackend: true } },
 ];
 
 const results = [];
