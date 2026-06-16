@@ -249,12 +249,25 @@ export function detectAgentType(userMessage: string): string {
   // Game development
   if (hasWord(t, "game") || hasWord(t, "gaming")) return "gameDev";
 
-  // App builder — full-stack / SaaS / e-commerce / explicit website
+  // App builder — a complete multi-module APPLICATION/SYSTEM, not a single coding
+  // task. This must be broad: prompts like "Build a complete end to end insurance
+  // claims management system with .NET backend and React" name no SaaS/CRM keyword
+  // yet are exactly the 40-50-module builds the appBuilder (FULLSTACK_RULES) is for.
+  // Misrouting these to the terse "coding" agent ("build what was asked, then stop")
+  // makes the model emit a couple files and stop — the "2-3 files then it stops"
+  // failure. Route to appBuilder on any strong full-app signal.
+  const mentionsBackend = /\b(back-?end|api|server|\.net|asp\.?net|express|fastapi|flask|django|rails|laravel|spring|nest|gin)\b/i.test(t);
+  const mentionsFrontend = /\b(front-?end|react|vue|svelte|angular|next\.?js|mui|tailwind|chakra|bootstrap)\b/i.test(t);
   if (
     hasWord(t, "saas") || hasWord(t, "crm") || hasWord(t, "erp") ||
-    /e-?commerce/i.test(t) || /full.?stack/i.test(t) ||
+    /e-?commerce/i.test(t) || /full.?stack/i.test(t) || /end.to.end/i.test(t) ||
     hasWord(t, "platform") || hasWord(t, "website") || hasWord(t, "webpage") ||
-    /web\s?app/i.test(t)
+    /web\s?app/i.test(t) || hasWord(t, "application") || hasWord(t, "modules") ||
+    /\bmanagement system\b/i.test(t) ||
+    // "build/create/... a ... system/app/dashboard/portal" → a full app, not a snippet.
+    (/\b(system|dashboard|portal|admin panel)\b/i.test(t) && /\b(build|create|generate|develop|complete|full)\b/i.test(t)) ||
+    // Mentions BOTH a backend and a frontend → inherently a full-stack app.
+    (mentionsBackend && mentionsFrontend)
   ) return "appBuilder";
 
   // UI/UX — must contain "ui", "ux", "design", or "component" as whole words
