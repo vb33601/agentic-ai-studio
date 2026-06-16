@@ -263,15 +263,26 @@ export function ChatWindow() {
       .map((p) => ("text" in p ? (p as { text: string }).text : ""))
       .join(" ");
 
-    // Gaps from the client (truncated files + missing whole component) PLUS the
-    // server's end-to-end verdict (when the post-gen check ran). Either triggers a
-    // resume — so it works for any model and any stack, even when the request was
-    // cut before the server could run its verdict.
+    // The SERVER's post-generation verdict is authoritative: it ran every
+    // deterministic structural check over the COMPLETE artifact set (and the LLM
+    // judge when funded). So:
+    //   - verdict ok=true  → the build is structurally complete; do NOT resume,
+    //     even if the client's own thinner check disagrees. (This is what stops the
+    //     catastrophic stacking on slow free models: each resume is a fresh multi-
+    //     minute generation, and trusting an ok=true verdict prevents 3-6 of them.)
+    //   - verdict ok=false → resume on the server's hard gaps.
+    //   - NO verdict (stream cut before the server could emit one) → fall back to
+    //     the client's own gap check so a truly-cut generation still recovers.
     const verdict = (last.parts ?? []).find((p) => p.type === "data-verification") as
       | { data?: { ok?: boolean; gaps?: string[] } } | undefined;
-    const clientGaps = findAppGaps(files, requestText);
-    const verdictGaps = verdict?.data?.ok === false ? (verdict.data?.gaps ?? ["the build is incomplete"]) : [];
-    const allGaps = [...clientGaps, ...verdictGaps];
+    let allGaps: string[];
+    if (verdict?.data?.ok === true) {
+      allGaps = [];
+    } else if (verdict?.data?.ok === false) {
+      allGaps = verdict.data?.gaps?.length ? verdict.data.gaps : ["the build is incomplete"];
+    } else {
+      allGaps = findAppGaps(files, requestText); // no server verdict → client check
+    }
 
     if (allGaps.length > 0 && autoResumeRef.current < MAX_AUTO_RESUME) {
       autoResumeRef.current += 1;

@@ -114,15 +114,31 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
       // Granular, mostly model-free gap set — keeps the loop going PAST the binary
       // component gate for large multi-module apps (the "stopped after the
       // frontend" failure), and works on free models without the LLM judge.
+      // HARD gaps: high-precision "the app won't build/run" signals — a whole
+      // missing component, a truncated file, an import/namespace/ref to a file that
+      // was never created. These are safe to act on automatically and are what the
+      // CLIENT auto-resume should fire on (no false churn).
+      const hardGaps = () => [
+        ...detectComponentGaps(artifacts, o.requestText),
+        ...detectTruncatedArtifacts(artifacts),
+        ...detectMissingModules(artifacts),
+        ...detectMissingLocalRefs(artifacts),
+      ];
+      // ALL gaps (drives the SERVER continue-build loop, which can also refine):
+      // hard gaps PLUS softer/advisory signals — plan-step coverage, polish flags
+      // (empty/placeholder/viewport), and the LLM judge. These help complete a big
+      // multi-module app but are NOISY on a deliberately tiny app (a plan that
+      // over-specifies a one-file request), so they must NOT reach the client.
       const currentGaps = () => {
         const judge = report?.checked && !report.ok ? report.gaps : [];
+        // Plan-coverage is for completing LARGE multi-module apps (the "stopped after
+        // the frontend" case). On a 1-2 file app it just reflects an over-specified
+        // plan vs. a deliberately tiny request, so don't let it drive regeneration.
+        const planGaps = artifacts.length >= 3 ? deterministicPlanGaps(o.plan, artifacts) : [];
         return [
-          ...detectComponentGaps(artifacts, o.requestText),
-          ...deterministicPlanGaps(o.plan, artifacts),
-          ...detectTruncatedArtifacts(artifacts),
+          ...hardGaps(),
+          ...planGaps,
           ...detectArtifactFlags(artifacts),
-          ...detectMissingModules(artifacts),
-          ...detectMissingLocalRefs(artifacts),
           ...judge,
         ];
       };
@@ -182,23 +198,21 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
         prevGapCount = gaps.length;
       }
 
-      // Always surface a verdict the CLIENT can resume on — not just when the LLM
-      // judge ran. The residual deterministic gap set (truncation / missing
-      // component / broken refs / unmet plan items) drives the client auto-resume
-      // even on free/no-judge runs, so a build that's still structurally incomplete
-      // when the stream ends gets one more continuation in the browser.
-      const residual = currentGaps();
+      // Surface a verdict the CLIENT can resume on — even when the LLM judge didn't
+      // run (free models). Only HARD gaps drive the client resume so a tiny app
+      // whose plan was over-specified doesn't churn (the single-file false-churn).
+      const residual = hardGaps();
       const verdict = {
         ok: (report?.checked ? report.ok : true) && residual.length === 0,
         score: report?.checked ? report.score : residual.length === 0 ? 1 : 0,
         phase: "post-generation" as const,
         steps: report?.steps ?? [],
-        gaps: [...new Set([...(report?.checked ? report.gaps : []), ...residual])],
+        gaps: [...new Set([...(report?.checked && !report.ok ? report.gaps : []), ...residual])],
         summary: report?.summary ?? (residual.length === 0 ? "All structural checks passed." : `${residual.length} structural gap(s) remain.`),
         checked: true,
       };
       writer.write({ type: "data-verification", id: "plan-verify", data: verdict } as never);
-      console.log(`[completeness] verdict ok=${verdict.ok} score=${verdict.score.toFixed(2)} gaps=${verdict.gaps.length} residual=${residual.length}`);
+      console.log(`[completeness] verdict ok=${verdict.ok} score=${verdict.score.toFixed(2)} hardGaps=${residual.length} allGaps=${currentGaps().length}`);
     }
 
     // 3. Deterministic scaffold (always — even with 0 artifacts → a starter app).
