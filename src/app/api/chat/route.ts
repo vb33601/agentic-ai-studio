@@ -353,7 +353,20 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       },
     });
 
-    return createUIMessageStreamResponse({ stream });
+    return createUIMessageStreamResponse({
+      stream,
+      // Anti-buffering headers so a reverse proxy (Render's edge, nginx, CDNs)
+      // streams the response straight through instead of BUFFERING it — buffering
+      // is what truncated a long generation to ~100KB in production while it ran
+      // fine (~1MB) locally with no proxy. With these + the keep-alive heartbeat,
+      // a multi-minute free-model build streams to completion without being cut.
+      headers: {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Encoding": "none",
+        Connection: "keep-alive",
+      },
+    });
   } catch (error) {
     console.error("Chat API error:", error);
     return new Response(JSON.stringify({ error: "Internal server error" }), {

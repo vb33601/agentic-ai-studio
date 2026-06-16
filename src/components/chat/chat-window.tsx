@@ -112,6 +112,16 @@ export function ChatWindow() {
   const { messages, sendMessage, stop, status, setMessages, error } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
+      // No client-side timeout. A build can stream for up to the server's 60-min
+      // budget (slow free models produce ~1MB+ over many minutes). We forward to
+      // the global fetch unchanged except for cache:"no-store" (never buffer/cache
+      // the stream), so the request is only ever cancelled by the user's Stop
+      // button (the AbortSignal useChat passes in init) — never by an implicit
+      // timeout. This + the server's anti-buffering headers + keep-alive heartbeat
+      // is what stops a long generation being truncated (it was being cut to
+      // ~100KB in production by proxy buffering / idle drops).
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, cache: "no-store" }),
       // Read request params lazily from the store so model/agent/tool changes
       // always take effect on the next send without re-creating the transport.
       body: () => {

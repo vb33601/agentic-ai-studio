@@ -170,7 +170,17 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return createUIMessageStreamResponse({ stream });
+    return createUIMessageStreamResponse({
+      stream,
+      // Anti-buffering headers (see chat/route.ts) so a proxy streams straight
+      // through instead of buffering and truncating a long generation.
+      headers: {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Encoding": "none",
+        Connection: "keep-alive",
+      },
+    });
   } catch (error) {
     console.error("Agent API error:", error);
     return new Response(JSON.stringify({ error: "Agent execution failed" }), {
