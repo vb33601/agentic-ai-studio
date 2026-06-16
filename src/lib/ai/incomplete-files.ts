@@ -52,3 +52,36 @@ export function findIncompleteFiles(files: SimpleFile[]): string[] {
   }
   return [...out];
 }
+
+/**
+ * Human-readable gaps that mean "this build isn't finished" — used by the client
+ * auto-resume so it fires in ALL scenarios (any model, any stack), not just when a
+ * file is mid-write. Combines truncated files with a whole MISSING COMPONENT check
+ * (the request asked for a backend/frontend but none exists) so a cut that stopped
+ * before a component was built still triggers a resume. Stack-agnostic.
+ */
+export function findAppGaps(files: SimpleFile[], requestText: string): string[] {
+  const gaps: string[] = [];
+  const truncated = findIncompleteFiles(files);
+  if (truncated.length) gaps.push(`truncated/cut-off files (re-output complete): ${truncated.join(", ")}`);
+
+  const req = (requestText || "").toLowerCase();
+  const paths = files.map((f) => f.path.toLowerCase());
+  const hasP = (re: RegExp) => paths.some((p) => re.test(p));
+  const hasC = (re: RegExp) => files.some((f) => re.test(f.content || ""));
+
+  const wantsBackend = /\b(back-?end|api|server|endpoints?|rest|spring|django|\.net|asp\.?net|express|fastapi|flask|rails|laravel|nest|gin)\b/.test(req);
+  const wantsFrontend = /\b(front-?end|react|vue|svelte|angular|\bui\b|client|web ?app|web ?page|\bpage\b|vite|next\.?js|tailwind)\b/.test(req);
+
+  const hasFrontend =
+    hasP(/\/frontend\/|\/client\/|\.(jsx|tsx|vue|svelte)$/) ||
+    (hasP(/(^|\/)index\.html$/) && hasC(/<script[^>]+type=["']module["']/i));
+  const hasBackend =
+    hasP(/\/backend\/|\/server\/|(^|\/)(program\.cs|manage\.py|main\.go|app\.py|server\.[jt]s)$|\.csproj$|(^|\/)pom\.xml$|application\.(properties|yml|yaml)$|(^|\/)requirements\.txt$/) ||
+    hasP(/controller|(^|\/)routes?\//) ||
+    hasC(/@(RestController|RequestMapping)|app\.(get|post|put|delete)\(|@app\.route|ApiController|express\(\)/);
+
+  if (wantsBackend && !hasBackend) gaps.push("the requested BACKEND/API is missing — build it");
+  if (wantsFrontend && !hasFrontend) gaps.push("the requested FRONTEND is missing — build it");
+  return gaps;
+}

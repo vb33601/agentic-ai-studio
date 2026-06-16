@@ -15,7 +15,7 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { getLanguageFromPath } from "@/lib/utils";
 import { getToolParts } from "@/lib/ai/tool-parts";
 import { extractFilesFromMarkdown } from "@/lib/ai/extract-files";
-import { findIncompleteFiles } from "@/lib/ai/incomplete-files";
+import { findAppGaps } from "@/lib/ai/incomplete-files";
 import { apiCreateChat, apiGetChatMessages, apiSaveMessages } from "@/lib/api/chats";
 import { isImage, imageToFilePart, parseDocument, buildDocContext } from "@/lib/attachments";
 
@@ -238,23 +238,29 @@ export function ChatWindow() {
     const files = useWorkspaceStore.getState().files;
     if (files.length === 0) { autoResumeRef.current = 0; return; }
 
-    // Server verdict (when the post-gen check ran): incomplete if ok === false.
+    // The original request drives the stack-agnostic missing-component check.
+    const firstUser = messages.find((m) => m.role === "user");
+    const requestText = (firstUser?.parts ?? [])
+      .filter((p) => p.type === "text")
+      .map((p) => ("text" in p ? (p as { text: string }).text : ""))
+      .join(" ");
+
+    // Gaps from the client (truncated files + missing whole component) PLUS the
+    // server's end-to-end verdict (when the post-gen check ran). Either triggers a
+    // resume — so it works for any model and any stack, even when the request was
+    // cut before the server could run its verdict.
     const verdict = (last.parts ?? []).find((p) => p.type === "data-verification") as
       | { data?: { ok?: boolean; gaps?: string[] } } | undefined;
-    const truncated = findIncompleteFiles(files);
-    const verdictIncomplete = verdict?.data?.ok === false;
+    const clientGaps = findAppGaps(files, requestText);
+    const verdictGaps = verdict?.data?.ok === false ? (verdict.data?.gaps ?? ["the build is incomplete"]) : [];
+    const allGaps = [...clientGaps, ...verdictGaps];
 
-    if ((truncated.length > 0 || verdictIncomplete) && autoResumeRef.current < MAX_AUTO_RESUME) {
+    if (allGaps.length > 0 && autoResumeRef.current < MAX_AUTO_RESUME) {
       autoResumeRef.current += 1;
-      const gaps = verdict?.data?.gaps ?? [];
-      const note = [
-        truncated.length ? `Truncated/cut-off files to RE-OUTPUT complete (same path): ${truncated.join(", ")}.` : "",
-        gaps.length ? `Still missing/incomplete: ${gaps.slice(0, 6).join("; ")}.` : "",
-      ].filter(Boolean).join(" ");
       sendMessage({
         text:
-          `The previous build was cut off mid-generation and is incomplete. ${note} ` +
-          `Continue from where it stopped: re-output the COMPLETE version of each truncated file, and create any missing files (backend, entry point, imports, config) so the app builds and runs end-to-end. Do NOT repeat files that are already complete.`,
+          `The previous build was cut off mid-generation and is incomplete. Issues: ${allGaps.slice(0, 8).join("; ")}. ` +
+          `Continue from where it stopped: re-output the COMPLETE version of each truncated file (same path), and create any missing files (backend, frontend, entry point, imports, config) so the app builds and runs end-to-end. Do NOT repeat files that are already complete.`,
       });
     } else {
       autoResumeRef.current = 0;
