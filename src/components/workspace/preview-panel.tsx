@@ -2,12 +2,13 @@
 
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import {
-  RefreshCw, ExternalLink, Monitor, Smartphone, Tablet, Play, Square, Loader2, Terminal,
+  RefreshCw, ExternalLink, Monitor, Smartphone, Tablet, Play, Square, Loader2, Terminal, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useWorkspaceStore, WorkspaceFile } from "@/store/workspace";
 import { runProject, webContainerSupported, type RunResult } from "@/lib/webcontainer/runner";
+import { downloadProjectZip } from "@/lib/deploy/download";
 import { detectAppGroups, filesForApp, resolveAppRoot } from "@/lib/workspace/apps";
 import { AppSelector } from "@/components/workspace/app-selector";
 
@@ -150,6 +151,17 @@ export function PreviewPanel() {
             </Button>
           )
         ) : null}
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => downloadProjectZip(appFiles, (appRoot?.split("/").pop()) || "app")}
+          disabled={appFiles.length === 0}
+          title="Download this app as a .zip (with a Dockerfile + deploy guide for any platform)"
+        >
+          <Download className="h-3.5 w-3.5" /> Download app
+        </Button>
 
         <Input
           value={customUrl}

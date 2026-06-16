@@ -15,6 +15,7 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { getLanguageFromPath } from "@/lib/utils";
 import { getToolParts } from "@/lib/ai/tool-parts";
 import { extractFilesFromMarkdown } from "@/lib/ai/extract-files";
+import { findIncompleteFiles } from "@/lib/ai/incomplete-files";
 import { apiCreateChat, apiGetChatMessages, apiSaveMessages } from "@/lib/api/chats";
 import { isImage, imageToFilePart, parseDocument, buildDocContext } from "@/lib/attachments";
 
@@ -215,11 +216,59 @@ export function ChatWindow() {
     }
   }, [isLoading, messages, extractFilesFromMessage]);
 
+  // AUTO-RESUME. When a streaming generation STOPS (for any reason — a clean
+  // finish, an upstream free-model drop, a network/proxy cut), check whether the
+  // produced app is actually complete. If a file was left cut off mid-content
+  // (e.g. the model dropped while writing ClaimsList.jsx) or the server's
+  // end-to-end verdict says it's incomplete, automatically send a continuation
+  // request that picks up from the leftover — re-emitting the truncated files and
+  // adding any missing ones — until it's complete or a bounded number of attempts
+  // is reached. Each resume is a fresh request, so it survives any mid-generation
+  // cut. Reset per new user message in handleSubmit.
+  const MAX_AUTO_RESUME = 4;
+  const autoResumeRef = useRef(0);
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    const justStopped = wasLoadingRef.current && !isLoading;
+    wasLoadingRef.current = isLoading;
+    if (!justStopped) return;
+
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    const files = useWorkspaceStore.getState().files;
+    if (files.length === 0) { autoResumeRef.current = 0; return; }
+
+    // Server verdict (when the post-gen check ran): incomplete if ok === false.
+    const verdict = (last.parts ?? []).find((p) => p.type === "data-verification") as
+      | { data?: { ok?: boolean; gaps?: string[] } } | undefined;
+    const truncated = findIncompleteFiles(files);
+    const verdictIncomplete = verdict?.data?.ok === false;
+
+    if ((truncated.length > 0 || verdictIncomplete) && autoResumeRef.current < MAX_AUTO_RESUME) {
+      autoResumeRef.current += 1;
+      const gaps = verdict?.data?.gaps ?? [];
+      const note = [
+        truncated.length ? `Truncated/cut-off files to RE-OUTPUT complete (same path): ${truncated.join(", ")}.` : "",
+        gaps.length ? `Still missing/incomplete: ${gaps.slice(0, 6).join("; ")}.` : "",
+      ].filter(Boolean).join(" ");
+      sendMessage({
+        text:
+          `The previous build was cut off mid-generation and is incomplete. ${note} ` +
+          `Continue from where it stopped: re-output the COMPLETE version of each truncated file, and create any missing files (backend, entry point, imports, config) so the app builds and runs end-to-end. Do NOT repeat files that are already complete.`,
+      });
+    } else {
+      autoResumeRef.current = 0;
+    }
+    // sendMessage is stable; depend on isLoading/messages to fire on each stop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, messages]);
+
   // --- submit ---
 
   const handleSubmit = useCallback(async () => {
     if ((!inputText.trim() && attachments.length === 0) || isLoading) return;
 
+    autoResumeRef.current = 0; // a fresh user request resets the auto-resume budget
     const pending = attachments;
     setAttachments([]);
 

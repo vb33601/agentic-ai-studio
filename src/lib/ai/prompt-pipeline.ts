@@ -957,7 +957,9 @@ export function detectTruncatedArtifacts(artifacts: Artifact[]): string[] {
       const opens = (c.match(/[{[(]/g) || []).length;
       const closes = (c.match(/[}\])]/g) || []).length;
       const tail = c.trimEnd().slice(-1);
-      if (opens - closes >= 2 && !/[}\])>;]/.test(tail)) truncated = true;
+      // `>` is NOT a "complete" ending (a file cut mid arrow-function ends `=>`);
+      // a real complete JSX/HTML file ending in `>` is already brace-balanced.
+      if (opens - closes >= 2 && !/[}\]);]/.test(tail)) truncated = true;
     }
     if (truncated) {
       flags.push(`\`${a.path}\` looks TRUNCATED (cut off mid-content) — regenerate the COMPLETE file by calling createFile again with the same path and the full, valid content.`);

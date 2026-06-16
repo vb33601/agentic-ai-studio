@@ -1,0 +1,54 @@
+/**
+ * Lightweight, dependency-free detection of files a generation left CUT OFF
+ * mid-content — safe to run in the browser (no `ai`/zod imports). Used by the
+ * client to auto-detect when a streaming generation stopped mid-file (e.g. the
+ * upstream free model dropped the stream while writing ClaimsList.jsx) and resume.
+ *
+ * High-precision signals only, so we don't re-request files that are actually fine:
+ *  - JSON that no longer parses,
+ *  - an odd number of ``` fences,
+ *  - a brace-language file that is unbalanced AND ends mid-token (not on a closing
+ *    char), or
+ *  - an `import { … }` opened but never closed / never reaching `from` (the exact
+ *    "Expected `from` but found EOF" build failure).
+ */
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|css|scss|less|json)$/i;
+
+export interface SimpleFile {
+  path: string;
+  content: string;
+}
+
+function looksTruncated(path: string, content: string): boolean {
+  const c = content || "";
+  if (!c.trim()) return false; // empty handled elsewhere
+  if (((c.match(/```/g) || []).length) % 2 === 1) return true;
+  if (/\.json$/i.test(path)) {
+    try { JSON.parse(c); return false; } catch { return true; }
+  }
+  if (BRACE_LANG.test(path)) {
+    const opens = (c.match(/[{[(]/g) || []).length;
+    const closes = (c.match(/[}\])]/g) || []).length;
+    const tail = c.trimEnd().slice(-1);
+    // Unbalanced AND not ending on a real closing token => cut off mid-content.
+    // NOTE: `>` is deliberately NOT a "complete" ending — a file truncated mid
+    // arrow function ends in `=>`, and a genuinely complete JSX/HTML file ending
+    // in `>` is already brace-balanced (so the imbalance check won't fire on it).
+    if (opens - closes >= 1 && !/[}\]);]/.test(tail)) return true;
+  }
+  // A JS/TS import that opened a brace but never closed it before EOF.
+  if (/\.(jsx?|tsx?|mjs|cjs)$/i.test(path)) {
+    const m = c.match(/(?:^|\n)\s*import\s+[^;\n]*\{[^}]*$/);
+    if (m && !/\bfrom\b/.test(m[0])) return true;
+  }
+  return false;
+}
+
+/** Paths of files that appear truncated/cut off. */
+export function findIncompleteFiles(files: SimpleFile[]): string[] {
+  const out = new Set<string>();
+  for (const f of files) {
+    if (looksTruncated(f.path, f.content)) out.add(f.path);
+  }
+  return [...out];
+}
