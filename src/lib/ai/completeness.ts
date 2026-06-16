@@ -105,11 +105,24 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
   try {
     let artifacts = await gatherArtifacts(o.result);
 
-    if (artifacts.length) {
-      status("Reviewing the generated app for completeness…");
-      let report = o.plan
+    // Run the completeness pipeline even with ZERO artifacts — that is the WORST
+    // case (the model emitted nothing, e.g. a free model that spent its budget on
+    // prose) and the one that MOST needs recovery. Previously this whole block was
+    // gated on `artifacts.length`, so 0 files skipped straight to a generic scaffold
+    // (a wrong-stack React starter for a .NET request) with no real build attempt.
+    if (o.canRepair || artifacts.length) {
+      status(artifacts.length ? "Reviewing the generated app for completeness…" : "No files yet — building the app…");
+      let report = o.plan && artifacts.length
         ? await verifyAgainstPlan({ plan: o.plan, files: artifacts, phase: "post-generation", build: o.build })
         : null;
+
+      // When NOTHING was generated, seed an explicit "build the whole app" gap so
+      // the continue-build loop below actually runs (the per-detector checks all
+      // return [] on an empty file set, which would otherwise leave gaps empty).
+      const emptyGap = () =>
+        artifacts.length === 0
+          ? ["NOTHING was generated yet — build the ENTIRE application now from the plan: every backend file (entry/bootstrap that starts the server, controllers/routes, models, services, config) AND every frontend file (entry, root App, pages, components, API client), wired so it runs end-to-end."]
+          : [];
 
       // Granular, mostly model-free gap set — keeps the loop going PAST the binary
       // component gate for large multi-module apps (the "stopped after the
@@ -119,6 +132,7 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
       // was never created. These are safe to act on automatically and are what the
       // CLIENT auto-resume should fire on (no false churn).
       const hardGaps = () => [
+        ...emptyGap(),
         ...detectComponentGaps(artifacts, o.requestText),
         ...detectTruncatedArtifacts(artifacts),
         ...detectMissingModules(artifacts),
