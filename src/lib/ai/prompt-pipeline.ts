@@ -1285,6 +1285,11 @@ export async function applyOutputPipeline(args: OutputPipelineArgs): Promise<voi
   // first real content arrives, so a pre-content error leaves the writer clean.
   const reader = result
     .toUIMessageStream({
+      // The route emits the message `start` frame itself (BEFORE any keep-alive /
+      // magic-prompt / plan data part), so the UI-message protocol's required
+      // "start-first" ordering holds — writing data parts before start breaks the
+      // AI SDK client (but not a raw curl). So suppress this stream's own start.
+      sendStart: false,
       sendFinish: false,
       // Surface the real provider error (default masks it as "An error
       // occurred") so fallback detection and the client banner see the cause.

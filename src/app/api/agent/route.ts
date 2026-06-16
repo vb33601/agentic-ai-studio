@@ -83,6 +83,9 @@ export async function POST(req: NextRequest) {
     const stream = createUIMessageStream({
       onError: (error) => (error instanceof Error ? error.message : String(error)),
       execute: async ({ writer }) => {
+        // Message `start` frame FIRST (before heartbeat/data parts) so the UI-message
+        // protocol's start-first ordering holds — see chat/route.ts.
+        writer.write({ type: "start" } as never);
         // Keep-alive heartbeat (see chat/route.ts): emit a tiny transient part every
         // 10s so an idle browser/proxy doesn't drop the streaming connection during
         // the slow free-model / continue-build gaps.
@@ -166,6 +169,7 @@ export async function POST(req: NextRequest) {
         if (lastError) throw lastError;
         } finally {
           clearInterval(heartbeat);
+          try { writer.write({ type: "finish" } as never); } catch { /* writer closed */ }
         }
       },
     });

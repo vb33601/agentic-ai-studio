@@ -195,6 +195,11 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       // Surface the real error text to the client (the SDK masks it by default).
       onError: (error) => (error instanceof Error ? error.message : String(error)),
       execute: async ({ writer }) => {
+        // Emit the message `start` frame FIRST — before any keep-alive heartbeat,
+        // status, magic-prompt, or plan data part. The UI-message protocol requires
+        // start to come first; writing data parts before it breaks the AI SDK
+        // client (the UI "fails") even though a raw curl tolerates it.
+        writer.write({ type: "start" } as never);
         // Keep-alive heartbeat. Free fallback models (and the magic-prompt / plan /
         // verify / continue-build passes) have long stretches where NO bytes flow to
         // the client. A browser/proxy can drop such an idle streaming connection
@@ -349,6 +354,8 @@ Provide every file the project needs as its own labeled code block. Do not abbre
         } finally {
           clearInterval(heartbeat);
           status(""); // always clear the status line when the turn ends
+          // Close the message envelope (the model stream uses sendFinish:false).
+          try { writer.write({ type: "finish" } as never); } catch { /* writer closed */ }
         }
       },
     });
