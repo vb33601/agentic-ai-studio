@@ -1,7 +1,49 @@
 import { repairTruncatedSource, detectTruncatedSources, type SrcFile } from "./truncation";
 import { checkDockerfileInvariants } from "./stack-invariants";
 import { matchKnownFix, unmatchedFailure, type FixRule } from "./fix-registry";
+import { findBrokenLocalRefs } from "@/lib/ai/incomplete-files";
 import type { StackPlan } from "./dockerfile";
+
+/** Resolve a relative reference against a base dir (./ and ../ aware). */
+function joinRel(dir: string, rel: string): string {
+  const parts = dir ? dir.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+/**
+ * The backend's package.json "start" script runs an entry file that was never
+ * created — the #1 cause of a backend that builds but then crashes on boot, which
+ * a container host (Render/Fly/Railway) surfaces as a deploy stuck in "pending"
+ * forever (the process exits, never binds the port, health never goes green). Block
+ * it loudly with the missing path so the UI can say WHY instead of hanging.
+ */
+function missingServerEntry(files: SrcFile[]): string[] {
+  const paths = new Set(files.map((f) => f.path));
+  const suffixes = ["", ".js", ".cjs", ".mjs", ".ts", "/index.js", "/index.ts"];
+  const hasFile = (p: string) => suffixes.some((s) => paths.has(p + s));
+  const NODE_RUN = /\b(?:node|nodemon|ts-node|tsx)\b\s+([^\s&|;]+)/;
+  const blockers: string[] = [];
+  for (const f of files) {
+    if (f.path !== "package.json" && !f.path.endsWith("/package.json")) continue;
+    let pkg: { scripts?: Record<string, string> } | null = null;
+    try { pkg = JSON.parse(f.content); } catch { continue; }
+    const start = typeof pkg?.scripts?.start === "string" ? pkg.scripts.start : "";
+    const run = NODE_RUN.exec(start);
+    if (!run) continue;
+    const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+    const target = run[1].replace(/^['"]|['"]$/g, "").replace(/^\.?\//, "");
+    const full = joinRel(dir, target);
+    if (target && !hasFile(full) && !paths.has(full)) {
+      blockers.push(`\`${f.path}\` "start" runs \`${target}\` but that server entry was never created (\`${full}\`) — the backend would crash on boot and the deploy would hang in "pending". Regenerate the server entry.`);
+    }
+  }
+  return blockers;
+}
 
 /**
  * Pre-deploy verification gate — the static tier of the build → verify → fix loop
@@ -80,6 +122,16 @@ export function verifyForDeploy(input: VerifyInput): VerifyReport {
         `the generator's output was cut off mid-statement, so the build would fail (e.g. CS1513 '} expected'). ` +
         `Regenerate: ${stillTruncated.join(", ")}.`,
     );
+  }
+
+  // 2b) Block a backend whose server entry / local imports were never created — a
+  //     build that boots into a crash (ENOENT / "Cannot find module"), which a
+  //     container host reports as a deploy stuck in "pending". High-precision: only
+  //     relative refs to files that don't exist in the set, never external libs.
+  for (const b of missingServerEntry(files)) blockers.push(b);
+  const brokenRefs = findBrokenLocalRefs(files as { path: string; content: string }[]);
+  for (const b of brokenRefs) {
+    blockers.push(`${b} (unresolved local reference — the backend would fail to start, hanging the deploy in "pending").`);
   }
 
   // 3) Dockerfile build-correctness invariants for the detected stack.

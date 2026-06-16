@@ -370,7 +370,10 @@ Provide every file the project needs as its own labeled code block. Do not abbre
       headers: {
         "X-Accel-Buffering": "no",
         "Cache-Control": "no-cache, no-transform",
-        "Content-Encoding": "none",
+        // NOTE: do NOT set `Content-Encoding: none` — `none` is not a valid
+        // content-coding token. Some clients/proxies mishandle the body (treating
+        // it as a broken/unknown encoding), which can corrupt or truncate a long
+        // stream. Omitting it leaves the response as identity, which is correct.
         Connection: "keep-alive",
       },
     });

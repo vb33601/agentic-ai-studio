@@ -132,8 +132,14 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
       const totalLen = () => artifacts.reduce((n, a) => n + (a.content?.length || 0), 0);
       let prevCount = artifacts.length;
       let prevLen = totalLen();
+      let prevGapCount = gaps.length;
+      // 2-strikes rule: a single stalled round (no new files / no shorter gap set)
+      // doesn't end the loop — only TWO consecutive no-progress rounds do. A round
+      // that, say, adds one trivial file then stalls used to terminate early with
+      // real gaps still open; this lets the model take another swing first.
+      let strikes = 0;
       for (let round = 0; o.canRepair && gaps.length > 0 && round < maxRounds; round++) {
-        console.log(`[completeness] continue-build round=${round + 1}/${maxRounds} gaps=${gaps.length} files=${artifacts.length}`);
+        console.log(`[completeness] continue-build round=${round + 1}/${maxRounds} gaps=${gaps.length} files=${artifacts.length} strikes=${strikes}`);
         status(`Completing the app — building the remaining parts (pass ${round + 1})…`);
         const fix = streamText({
           model: o.model,
@@ -146,30 +152,53 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
         writer.merge(fix.toUIMessageStream({ sendStart: false, sendFinish: false }));
         await fix.text;
         const added = await gatherArtifacts(fix);
-        if (added.length === 0) break; // model produced no files → stalled
 
+        // Merge added files but NEVER let a re-truncated/shorter pass clobber a good
+        // file: a continuation that re-emits an existing file is only accepted when
+        // it's longer (more complete) or the existing one looked truncated.
         const byPath = new Map(artifacts.map((a) => [a.path, a]));
-        for (const a of added) byPath.set(a.path, a);
-        artifacts = [...byPath.values()];
-
-        // Progress = new files OR more content; stop when a pass adds neither.
-        const count = artifacts.length;
-        const len = totalLen();
-        if (count <= prevCount && len <= prevLen) {
-          console.log("[completeness] no net progress, stopping");
-          break;
+        for (const a of added) {
+          const prev = byPath.get(a.path);
+          if (!prev || (a.content?.length || 0) >= (prev.content?.length || 0)) byPath.set(a.path, a);
         }
-        prevCount = count;
-        prevLen = len;
+        artifacts = [...byPath.values()];
 
         if (o.plan) report = await verifyAgainstPlan({ plan: o.plan, files: artifacts, phase: "post-generation", build: o.build });
         gaps = currentGaps();
+
+        // Progress = new files OR more content OR a smaller gap set. Two consecutive
+        // rounds with none → genuinely stalled, stop.
+        const count = artifacts.length;
+        const len = totalLen();
+        const progressed = count > prevCount || len > prevLen || gaps.length < prevGapCount;
+        if (!progressed) {
+          strikes += 1;
+          if (strikes >= 2) { console.log("[completeness] no net progress for 2 rounds, stopping"); break; }
+        } else {
+          strikes = 0;
+        }
+        prevCount = count;
+        prevLen = len;
+        prevGapCount = gaps.length;
       }
 
-      if (report?.checked) {
-        writer.write({ type: "data-verification", id: "plan-verify", data: report } as never);
-        console.log(`[completeness] plan-verify ok=${report.ok} score=${report.score.toFixed(2)} gaps=${report.gaps.length}`);
-      }
+      // Always surface a verdict the CLIENT can resume on — not just when the LLM
+      // judge ran. The residual deterministic gap set (truncation / missing
+      // component / broken refs / unmet plan items) drives the client auto-resume
+      // even on free/no-judge runs, so a build that's still structurally incomplete
+      // when the stream ends gets one more continuation in the browser.
+      const residual = currentGaps();
+      const verdict = {
+        ok: (report?.checked ? report.ok : true) && residual.length === 0,
+        score: report?.checked ? report.score : residual.length === 0 ? 1 : 0,
+        phase: "post-generation" as const,
+        steps: report?.steps ?? [],
+        gaps: [...new Set([...(report?.checked ? report.gaps : []), ...residual])],
+        summary: report?.summary ?? (residual.length === 0 ? "All structural checks passed." : `${residual.length} structural gap(s) remain.`),
+        checked: true,
+      };
+      writer.write({ type: "data-verification", id: "plan-verify", data: verdict } as never);
+      console.log(`[completeness] verdict ok=${verdict.ok} score=${verdict.score.toFixed(2)} gaps=${verdict.gaps.length} residual=${residual.length}`);
     }
 
     // 3. Deterministic scaffold (always — even with 0 artifacts → a starter app).
@@ -191,6 +220,15 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
     const finalFiles = scaffolded.length ? [...artifacts, ...scaffolded] : artifacts;
     const savedTo = saveGeneratedApp(finalFiles);
     if (savedTo) console.log(`[completeness] saved app locally → ${savedTo}`);
+
+    // DEBUG_STREAM: total work the SERVER produced for this request. Compare with
+    // the client's received-chars log (chat-window onFinish) on one reproduction to
+    // tell apart an incomplete GENERATION (server total also small) from real
+    // in-transit byte loss (server large, client small).
+    if (process.env.DEBUG_STREAM) {
+      const chars = finalFiles.reduce((n, a) => n + (a.content?.length || 0), 0);
+      console.log(`[DEBUG_STREAM] server produced files=${finalFiles.length} totalChars=${chars} (~${(chars / 1024).toFixed(1)}KB)`);
+    }
   } catch {
     /* fail-open: leave whatever already streamed */
   } finally {

@@ -53,6 +53,9 @@ export async function POST(req: NextRequest) {
     let dbWired = false;
     let backendError: string | null = null;
     let backendProvider: ProviderId | null = null;
+    // Opaque ref the client polls (/api/deploy/backend-status) so the backend
+    // resolves out of "pending" → live/failed instead of hanging indefinitely.
+    let backendStatusRef: unknown = null;
     // Why no backend service was created, when there isn't one (so the UI can
     // explain it instead of silently shipping only the frontend).
     let backendNote: string | null = null;
@@ -121,7 +124,7 @@ export async function POST(req: NextRequest) {
             dockerfilePath: container.prep.dockerfilePath, envVars, provider,
             description: `Container backend (${container.prep.plan.framework}) from agentic-ai-studio`,
           });
-          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider;
+          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider; backendStatusRef = r.statusRef ?? null;
         } else {
           // ---- Optimized Node backend (Render / Fly / Railway) ----
           // Pin Node 22 LTS. Render defaults to Node 24, which has no prebuilt
@@ -152,7 +155,7 @@ export async function POST(req: NextRequest) {
             buildCommand: backendPrep.buildCommand, startCommand: backendPrep.startCommand, envVars, provider,
             description: "Backend from agentic-ai-studio",
           });
-          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider;
+          backendUrl = r.url; backendDashboard = r.dashboardUrl; repoUrl = r.repoUrl; backendProvider = r.provider; backendStatusRef = r.statusRef ?? null;
         }
       } catch (e) {
         backendError = e instanceof Error ? e.message : String(e);
@@ -170,7 +173,13 @@ export async function POST(req: NextRequest) {
     let frontendId: string | null = null;
     let frontendError: string | null = null;
     const front = prepareFrontendForVercel(repoFiles, backendUrl);
-    if (front.found) {
+    // BLOCK + EXPLAIN: don't ship a frontend whose backend failed to deploy. Its
+    // API calls would hit nothing (404 / no body) and the app renders a blank page
+    // on load — which looks like a frontend bug but is really the missing backend.
+    // Surface the backend error and tell the user to fix it and redeploy instead.
+    if (front.found && frontendUnwired) {
+      frontendError = `Frontend not deployed: its backend failed to deploy${backendError ? ` (${backendError})` : ""}, so the frontend's API calls would fail and the page would render blank. Fix the backend error above and redeploy.`;
+    } else if (front.found) {
       try {
         if (!serverToken("VERCEL_TOKEN")) throw new Error("VERCEL_TOKEN is not configured.");
         const prep = prepareForDeploy(front.files);
@@ -228,6 +237,7 @@ export async function POST(req: NextRequest) {
       backendUrl,
       backendDashboard,
       backendProvider,
+      backendStatusRef,
       repoUrl,
       dbWired,
       backendDir,
@@ -245,7 +255,7 @@ export async function POST(req: NextRequest) {
       warnings: [
         ...(hasBackend ? backendWarnings : []),
         ...(frontendUnwired
-          ? ["The backend failed to deploy, so the frontend was shipped without a working API URL — its login/data calls will fail in the browser. Fix the backend error above and redeploy."]
+          ? ["The backend failed to deploy, so the frontend was NOT shipped (it would render blank without a working API). Fix the backend error above and redeploy — both will then deploy together."]
           : []),
       ],
     });

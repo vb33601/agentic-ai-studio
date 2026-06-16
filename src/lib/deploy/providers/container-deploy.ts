@@ -53,6 +53,13 @@ export interface ContainerDeployResult {
   fallbacksTried: string[];
   /** Post-deploy release verification, when `input.verify` was requested. */
   verification?: ReleaseStatus;
+  /**
+   * Opaque reference the CLIENT can poll for live/failed status (via
+   * /api/deploy/backend-status → releaseSnapshot). This is how a backend deploy
+   * resolves out of "pending" instead of hanging — the container build runs async
+   * and the HTTP route can't wait for it (Hobby 60s cap).
+   */
+  statusRef?: VerifyRef;
   /** Provider advisories (e.g. Fly falling back to the push trigger). */
   notes?: string[];
 }
@@ -108,8 +115,12 @@ export async function deployContainer(input: ContainerDeployInput): Promise<Cont
 
   // Attach post-deploy release verification (best-effort) before returning, so a
   // deploy that builds-then-dies isn't reported as success and silently strands.
-  const finalize = async (result: ContainerDeployResult, ref: VerifyRef): Promise<ContainerDeployResult> =>
-    input.verify ? { ...result, verification: await verifyRelease(ref, input.verify) } : result;
+  const finalize = async (result: ContainerDeployResult, ref: VerifyRef): Promise<ContainerDeployResult> => {
+    // Always carry the poll ref so the client can resolve "pending" → live/failed,
+    // whether or not a (blocking, server-side) verify was requested.
+    const withRef = { ...result, statusRef: ref };
+    return input.verify ? { ...withRef, verification: await verifyRelease(ref, input.verify) } : withRef;
+  };
 
   const failures: string[] = [];
   for (const provider of candidates) {

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { findIncompleteFiles } from "@/lib/ai/incomplete-files";
 
 export interface WorkspaceFile {
   id: string;
@@ -66,9 +67,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       if (idx === -1) return { files: [...s.files, file] };
       // Don't clobber a file the user is actively editing.
       if (s.files[idx].isDirty) return { files: s.files };
+      const existing = s.files[idx];
+      // No-regression guard: an auto-resume/continuation pass can re-emit a file
+      // and RE-TRUNCATE it (same token cap), which would otherwise overwrite a good
+      // version with a worse one. Reject a strictly-shorter replacement UNLESS the
+      // existing file looks truncated (so a genuine fix of a cut-off file still
+      // lands). Equal/longer content, and the first complete write over a partial
+      // streaming snapshot, always pass.
+      const newLen = file.content?.length || 0;
+      const oldLen = existing.content?.length || 0;
+      if (newLen < oldLen && findIncompleteFiles([existing]).length === 0) {
+        return { files: s.files };
+      }
       // Replace in place, keeping the existing id so editor tabs/selection hold.
       const next = s.files.slice();
-      next[idx] = { ...file, id: s.files[idx].id };
+      next[idx] = { ...file, id: existing.id };
       return { files: next };
     }),
   updateFile: (id, updates) =>

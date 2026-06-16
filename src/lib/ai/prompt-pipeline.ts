@@ -1094,11 +1094,20 @@ export function detectComponentGaps(artifacts: Artifact[], requestText: string):
     hasPath(/(^|\/)schema\.prisma$|\/migrations?\/|\.sql$|models?\.py$|(^|\/)models?\//) ||
     hasContent(/@Entity|spring\.datasource|DATABASES\s*[:=]|new DbContext|PrismaClient|create_engine|mongoose\.|jdbc:|DATABASE_URL/i);
 
+  // STRUCTURAL evidence (request keywords are advisory — a prompt like "insurance
+  // claims management system" names no stack yet still needs both halves). The
+  // frontend actively calls an API → a backend is expected even with no keyword;
+  // a backend wired for CORS / a frontend URL → a frontend is expected.
+  const frontendCallsApi =
+    hasContent(/fetch\(\s*[`'"][^`'"]*\/api\//i) ||
+    hasContent(/\b(?:axios|VITE_API_URL|VITE_BACKEND_URL|REACT_APP_API_URL|NEXT_PUBLIC_API_URL|API_BASE_URL|baseURL)\b/);
+  const backendExpectsFrontend = hasContent(/\b(?:CORS_ORIGIN|FRONTEND_URL|cors\(|app\.use\(\s*cors|Access-Control-Allow-Origin)\b/i);
+
   const gaps: string[] = [];
-  if (wantsBackend && !hasBackend)
-    gaps.push("The requested BACKEND/API was not generated — no server, controller, or backend project files exist. Build the backend end-to-end: its entry/bootstrap file that starts the server, the REST routes/controllers the frontend calls (mounted at the matching /api/... paths), and wire it so it runs.");
-  if (wantsFrontend && !hasFrontend)
-    gaps.push("The requested FRONTEND was not generated — no UI/component files exist. Build the frontend end-to-end: its entry (e.g. index.html + main), the root App, every page/component, and the API client that calls the backend.");
+  if (!hasBackend && (wantsBackend || frontendCallsApi))
+    gaps.push("The BACKEND/API was not generated — no server, controller, or backend project files exist (and the frontend calls an API). Build the backend end-to-end: its entry/bootstrap file that starts the server, the REST routes/controllers the frontend calls (mounted at the matching /api/... paths), and wire it so it runs.");
+  if (!hasFrontend && (wantsFrontend || backendExpectsFrontend))
+    gaps.push("The FRONTEND was not generated — no UI/component files exist. Build the frontend end-to-end: its entry (e.g. index.html + main), the root App, every page/component, and the API client that calls the backend.");
   if (wantsDb && !hasDb)
     gaps.push("The requested DATABASE/persistence layer is missing — no models/entities, schema, migrations, or datasource config exist. Add persistence: the models/entities and a datasource that reads the connection string from an env var, and use it from the backend so data persists.");
   return gaps;

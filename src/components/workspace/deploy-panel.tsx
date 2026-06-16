@@ -31,6 +31,8 @@ interface DeployResponse {
   backendUrl?: string;
   backendDashboard?: string;
   backendProvider?: string;
+  /** Opaque ref the client polls (/api/deploy/backend-status) for live/failed. */
+  backendStatusRef?: unknown;
   backendError?: string;
   backendNote?: string;
   hasBackend?: boolean;
@@ -238,7 +240,8 @@ export function DeployPanel() {
   const pollBackendHealth = async (
     url: string,
     attempts = 60, // ≈8 min — container providers build remotely + cold-start.
-  ): Promise<{ healthy: boolean; status: number | null; bodySnippet?: string; reachedServer: boolean }> => {
+    statusRef?: unknown, // when present, also poll the real BUILD status (Render/Fly/…)
+  ): Promise<{ healthy: boolean; status: number | null; bodySnippet?: string; reachedServer: boolean; buildFailed?: boolean; buildDetail?: string }> => {
     let last: { status: number | null; bodySnippet?: string } = { status: null };
     let reachedServer = false; // ever got an HTTP response (vs. pure "no response")
     for (let i = 0; i < attempts; i++) {
@@ -248,6 +251,23 @@ export function DeployPanel() {
       if (h?.healthy) return { healthy: true, status: h.status, reachedServer: true };
       if (typeof h?.status === "number") reachedServer = true;
       last = { status: h?.status ?? null, bodySnippet: h?.bodySnippet };
+
+      // Consult the provider's real BUILD status so a FAILED build is reported
+      // promptly instead of looping for 8 min as "still building" — the root of the
+      // "backend stuck on pending" symptom. A terminal failure ends the wait.
+      if (statusRef) {
+        const s = await fetch("/api/deploy/backend-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ref: statusRef, url }),
+        }).then((r) => r.json()).catch(() => null);
+        if (s?.state === "failed") {
+          addBuildLog(`  Build status: FAILED — ${s.detail || "the provider reported a failed build"}.`);
+          return { healthy: false, status: last.status, bodySnippet: last.bodySnippet, reachedServer, buildFailed: true, buildDetail: s.detail || s.hint };
+        }
+        if (s?.state === "live" && s?.health?.healthy) return { healthy: true, status: s.health.status ?? last.status, reachedServer: true };
+      }
+
       // Log progress occasionally so a slow build doesn't look stuck. Distinguish
       // "no response" (still building / scaled-to-zero) from a real HTTP error.
       if (i % 4 === 0) {
@@ -347,9 +367,12 @@ export function DeployPanel() {
     deployProvider?: string;
     dashboardUrl?: string;
     framework?: string;
-  }): Promise<{ healthy: boolean; status: number | null; reachedServer: boolean }> => {
-    let bh = await pollBackendHealth(opts.backendUrl);
+    statusRef?: unknown;
+  }): Promise<{ healthy: boolean; status: number | null; reachedServer: boolean; buildFailed?: boolean; buildDetail?: string }> => {
+    let bh = await pollBackendHealth(opts.backendUrl, 60, opts.statusRef);
     if (bh.healthy) return { healthy: true, status: bh.status, reachedServer: true };
+    // A confirmed FAILED build: report it (don't churn auto-repair on guesswork).
+    if (bh.buildFailed) return { healthy: false, status: bh.status, reachedServer: bh.reachedServer, buildFailed: true, buildDetail: bh.buildDetail };
     // Only attempt CODE auto-repair when the app actually responded with a crash
     // (5xx). A backend that never responded is almost always still building or
     // scaled-to-zero, not broken — editing its source would be guesswork, so we
@@ -481,13 +504,14 @@ export function DeployPanel() {
       // Verify the backend actually serves requests (build success ≠ runtime
       // success). Run it concurrently with the frontend build poll below so the
       // two slow async steps overlap instead of adding up.
-      const backendCheck: Promise<{ healthy: boolean; status: number | null; reachedServer: boolean } | null> = data.backendUrl
+      const backendCheck: Promise<{ healthy: boolean; status: number | null; reachedServer: boolean; buildFailed?: boolean; buildDetail?: string } | null> = data.backendUrl
         ? verifyAndHealBackend({
             backendUrl: data.backendUrl,
             repoUrl: data.repoUrl,
             deployProvider: data.backendProvider || backend,
             dashboardUrl: data.backendDashboard,
             framework: data.backendFramework,
+            statusRef: data.backendStatusRef,
           })
         : Promise.resolve(null);
 
@@ -528,6 +552,11 @@ export function DeployPanel() {
         if (bh.healthy) {
           addBuildLog(`✓ BACKEND HEALTHY (HTTP ${bh.status}) → ${data.backendUrl}`);
           update(deployId, { backendHealthy: true });
+        } else if (bh.buildFailed) {
+          addBuildLog(`✗ BACKEND BUILD FAILED → ${data.backendUrl}`);
+          if (bh.buildDetail) addBuildLog(`  ${bh.buildDetail}`);
+          addBuildLog(`  Open the build logs: ${data.backendDashboard || "the provider dashboard"}`);
+          update(deployId, { backendHealthy: false });
         } else if (!bh.reachedServer) {
           // Never got an HTTP response within the window — the remote build/boot
           // is just slow (not a crash). The app should come up shortly on its own.

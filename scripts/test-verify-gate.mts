@@ -48,6 +48,32 @@ check("recognised failure carries its module", r5.recognized.some((f) => f.modul
 const r6 = verifyForDeploy({ files: [], errorLog: "kernel panic: unknown opcode 0xff in libmystery" });
 check("flags a novel failure (author a new rule)", r6.novelFailure);
 
+// Missing server ENTRY: package.json "start" runs a file that was never created →
+// the backend would crash on boot and hang the deploy in "pending". BLOCK it.
+const r7 = verifyForDeploy({
+  files: [{ path: "package.json", content: '{"scripts":{"start":"node src/server.js"},"dependencies":{"express":"^4"}}' }],
+});
+check("blocks a missing server entry", !r7.ok && r7.blockers.some((b) => /server entry|pending/i.test(b)));
+
+// Server entry present → no entry blocker.
+const r8 = verifyForDeploy({
+  files: [
+    { path: "package.json", content: '{"scripts":{"start":"node src/server.js"}}' },
+    { path: "src/server.js", content: "const express=require('express');const app=express();app.listen(3000);" },
+  ],
+});
+check("allows a present server entry", r8.ok);
+
+// Unresolved LOCAL import in the backend → block (would crash with Cannot find module).
+const r9 = verifyForDeploy({
+  files: [
+    { path: "package.json", content: '{"scripts":{"start":"node server.js"}}' },
+    { path: "server.js", content: "const routes = require('./routes/claims');\nconst app = require('express')();\napp.listen(3000);" },
+    // routes/claims.js was never created.
+  ],
+});
+check("blocks an unresolved local import", !r9.ok && r9.blockers.some((b) => /claims/.test(b)));
+
 // gateOrThrow throws on a blocker, returns on clean.
 let threw = false;
 try { gateOrThrow({ files: [{ path: "a.cs", content: "class C { void F() { var x = 1 +\n" }] }); } catch { threw = true; }

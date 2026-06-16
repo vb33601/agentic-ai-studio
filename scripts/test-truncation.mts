@@ -17,6 +17,7 @@ import {
   repairTruncatedSource,
   detectTruncatedSources,
 } from "../src/lib/deploy/truncation";
+import { findAppGaps, findBrokenLocalRefs } from "../src/lib/ai/incomplete-files";
 
 let fails = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -107,6 +108,67 @@ const backend = [
 const detected = detectTruncatedSources(backend);
 check("detector flags the truncated .cs", detected.includes("Controllers/UserController.cs"));
 check("detector leaves the valid .go alone", !detected.includes("main.go"));
+
+// --- 4) Broken LOCAL references: a file imports a sibling that was never made.
+//        This is the high-precision "a whole file got skipped" signal that keeps
+//        the resume loop going even with no truncation. ---
+const danglingJs = findBrokenLocalRefs([
+  { path: "src/main.jsx", content: "import App from './App.jsx';\nimport './missing.css';\ncreateRoot(el).render(<App/>);" },
+  // App.jsx exists; missing.css + ./Header do NOT.
+  { path: "src/App.jsx", content: "import { Header } from './components/Header';\nexport default function App(){return <Header/>;}" },
+]);
+check("flags the missing ./components/Header", danglingJs.some((g) => /Header/.test(g)));
+check("flags the missing ./missing.css", danglingJs.some((g) => /missing\.css/.test(g)));
+// App.jsx exists, so no flag should name it as the MISSING reference (it appears
+// only as an importer in the Header flag, which is fine).
+check("does NOT flag the existing ./App.jsx", !danglingJs.some((g) => g.startsWith("`./App.jsx`")));
+
+const danglingPy = findBrokenLocalRefs([
+  { path: "app/main.py", content: "from .routes import claims\nfrom .db import session" },
+  { path: "app/routes.py", content: "claims = 1" },
+  // app/db.py is missing.
+]);
+check("flags the missing python .db module", danglingPy.some((g) => /db/.test(g)));
+check("does NOT flag the existing .routes module", !danglingPy.some((g) => /routes/.test(g)));
+
+const noBrokenRefs = findBrokenLocalRefs([
+  { path: "src/main.jsx", content: "import App from './App';\nrender(<App/>);" },
+  { path: "src/App.jsx", content: "export default function App(){return <div/>;}" },
+]);
+check("no broken-ref false positives on a resolved app", noBrokenRefs.length === 0);
+
+// --- 5) findAppGaps is STRUCTURAL, not keyword-gated. A prompt like "insurance
+//        claims management system" names no stack, yet a frontend that calls an
+//        API with no server present must still flag the missing backend. ---
+const feOnlyCallsApi = findAppGaps(
+  [
+    { path: "index.html", content: '<script type="module" src="/src/main.jsx"></script>' },
+    { path: "src/main.jsx", content: "fetch('/api/claims').then(r=>r.json())" },
+    { path: "src/App.jsx", content: "export default function App(){return <div/>;}" },
+  ],
+  "insurance claims management system", // NO backend/api/react keywords
+);
+check("missing backend flagged structurally (no keywords)", feOnlyCallsApi.some((g) => /BACKEND/i.test(g)));
+
+const beOnlyWithCors = findAppGaps(
+  [
+    { path: "server.js", content: "const app = express(); app.use(cors({origin: process.env.CORS_ORIGIN})); app.get('/api/claims',(req,res)=>res.json([])); app.listen(3000);" },
+    { path: "package.json", content: '{"dependencies":{"express":"^4"}}' },
+  ],
+  "insurance claims management system",
+);
+check("missing frontend flagged structurally (CORS wired)", beOnlyWithCors.some((g) => /FRONTEND/i.test(g)));
+
+const completeFullstack = findAppGaps(
+  [
+    { path: "index.html", content: '<script type="module" src="/src/main.jsx"></script>' },
+    { path: "src/main.jsx", content: "import App from './App.jsx';\nfetch('/api/claims')" },
+    { path: "src/App.jsx", content: "export default function App(){return <div/>;}" },
+    { path: "server/index.js", content: "const app = express(); app.get('/api/claims',(req,res)=>res.json([])); app.listen(3000);" },
+  ],
+  "insurance claims management system",
+);
+check("no gaps on a complete full-stack app", completeFullstack.length === 0, completeFullstack.join(" | "));
 
 console.log("-".repeat(60));
 console.log(fails === 0 ? "ALL TRUNCATION TESTS PASSED" : `${fails} TEST(S) FAILED`);

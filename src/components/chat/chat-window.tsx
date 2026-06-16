@@ -139,6 +139,24 @@ export function ChatWindow() {
       },
     }),
     onFinish: ({ message }: { message: UIMessage }) => {
+      // DEBUG_STREAM probe: how much actually REACHED the browser. Toggle in
+      // devtools with `localStorage.DEBUG_STREAM = "1"`. Compare with the server's
+      // `[DEBUG_STREAM] server produced …` log: if the server total is MBs but this
+      // is KBs, the stream is being severed in transit; if both are small, the
+      // generation itself came up short (gap detection / resume should catch it).
+      if (typeof window !== "undefined" && window.localStorage?.getItem("DEBUG_STREAM") === "1") {
+        const parts = message.parts ?? [];
+        let textChars = 0;
+        let toolChars = 0;
+        for (const p of parts) {
+          if (p.type === "text" && "text" in p) textChars += (p as { text: string }).text.length;
+          const io = (p as { output?: unknown; input?: unknown }).output ?? (p as { input?: unknown }).input;
+          if (io != null) toolChars += (typeof io === "string" ? io : JSON.stringify(io)).length;
+        }
+        const total = textChars + toolChars;
+        // eslint-disable-next-line no-console
+        console.log(`[DEBUG_STREAM] client received parts=${parts.length} textChars=${textChars} toolChars=${toolChars} total=${total} (~${(total / 1024).toFixed(1)}KB)`);
+      }
       extractFilesFromMessage(message, true);
       // Save the FINALIZED message (tool parts are output-available with their
       // outputs here, unlike the streaming snapshot the render loop sees).
@@ -225,7 +243,7 @@ export function ChatWindow() {
   // adding any missing ones — until it's complete or a bounded number of attempts
   // is reached. Each resume is a fresh request, so it survives any mid-generation
   // cut. Reset per new user message in handleSubmit.
-  const MAX_AUTO_RESUME = 4;
+  const MAX_AUTO_RESUME = 6;
   const autoResumeRef = useRef(0);
   const wasLoadingRef = useRef(false);
   useEffect(() => {
