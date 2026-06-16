@@ -31,6 +31,7 @@ import { ensureScaffold } from "./scaffold";
 import { verifyAgainstPlan, deterministicPlanGaps } from "@/lib/quality/plan-verify";
 import { getLanguageFromPath } from "@/lib/utils";
 import type { SamplingParams } from "./hyperparams";
+import { saveGeneratedApp } from "./save-local";
 
 /** Just the parts of a streamText result we need (text + steps). Loosely typed
  *  to accept any StreamTextResult without fighting its tool generics. */
@@ -179,6 +180,13 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
       writer.write({ type: "text-end", id } as never);
       console.log(`[completeness] scaffold: added ${scaffolded.length} files: ${scaffolded.map((f) => f.path).join(", ")}`);
     }
+
+    // Persist the finished app to the local filesystem (~/ai-platform-apps by
+    // default when running locally; GENERATED_APPS_DIR to override/enable). Best-
+    // effort — never affects the response.
+    const finalFiles = scaffolded.length ? [...artifacts, ...scaffolded] : artifacts;
+    const savedTo = saveGeneratedApp(finalFiles);
+    if (savedTo) console.log(`[completeness] saved app locally → ${savedTo}`);
   } catch {
     /* fail-open: leave whatever already streamed */
   } finally {

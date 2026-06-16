@@ -44,9 +44,12 @@ RUN apk add --no-cache openssl \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Wrapper that disables Node's default request/headers timeouts so long streaming
+# generations aren't cut mid-stream in production (see server-start.js).
+COPY --chown=nextjs:nodejs server-start.js ./server-start.js
 
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-CMD ["node", "server.js"]
+CMD ["node", "server-start.js"]

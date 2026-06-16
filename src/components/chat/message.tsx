@@ -118,7 +118,7 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
             </div>
           </div>
         )}
-        {buildStatus?.data?.text && (
+        {isStreaming && buildStatus?.data?.text && (
           <div className="w-full flex items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
             <span>{buildStatus.data.text}</span>
