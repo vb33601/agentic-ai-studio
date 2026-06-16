@@ -959,6 +959,32 @@ export function detectMissingModules(artifacts: Artifact[]): string[] {
     }
   }
 
+  // ---- PHP: `use App\X\Foo;` with no file declaring that class ----
+  const php = artifacts.filter((a) => /\.php$/i.test(a.path));
+  if (php.length) {
+    const declaredTypes = new Set<string>();
+    const rootCounts = new Map<string, number>();
+    for (const f of php) {
+      const ns = (f.content || "").match(/\bnamespace\s+([\w\\]+)\s*;/)?.[1];
+      if (!ns) continue;
+      rootCounts.set(ns.split("\\")[0], (rootCounts.get(ns.split("\\")[0]) || 0) + 1);
+      for (const m of (f.content || "").matchAll(/\b(?:class|interface|trait|enum)\s+(\w+)/g)) declaredTypes.add(`${ns}\\${m[1]}`);
+    }
+    const root = [...rootCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of php) {
+        for (const m of (f.content || "").matchAll(/\buse\s+([\w\\]+)\s*;/g)) {
+          const imp = m[1].replace(/^\\/, "");
+          if (!imp.startsWith(root + "\\") || seen.has(imp)) continue;
+          if (declaredTypes.has(imp)) continue;
+          seen.add(imp);
+          flags.push(`PHP class \`${imp}\` is imported (\`use\`) but no generated file declares it — create that class, or remove the use and its usages.`);
+        }
+      }
+    }
+  }
+
   return flags.slice(0, 8);
 }
 
@@ -996,7 +1022,7 @@ export function detectComponentGaps(artifacts: Artifact[], requestText: string):
 
 // Brace/bracket-balanced languages — safe to use balance as a truncation signal
 // (NOT Python/YAML/etc. where braces are rare and indentation rules).
-const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|h|hpp|css|scss|less|json)$/i;
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|h|hpp|php|kt|kts|swift|scala|dart|groovy|gradle|css|scss|less|json)$/i;
 
 /**
  * Phase 3 — TRUNCATION detection. Free/low-cap models can stop mid-file

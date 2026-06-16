@@ -12,7 +12,7 @@
  *  - an `import { … }` opened but never closed / never reaching `from` (the exact
  *    "Expected `from` but found EOF" build failure).
  */
-const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|css|scss|less|json)$/i;
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|h|hpp|php|kt|kts|swift|scala|dart|groovy|gradle|css|scss|less|json)$/i;
 
 export interface SimpleFile {
   path: string;
