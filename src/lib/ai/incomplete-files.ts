@@ -53,7 +53,7 @@ function joinRel(dir: string, rel: string): string {
  * the highest-precision signal that "a whole file was skipped" — a dangling local
  * reference can't be a false positive (the importer literally needs that file). We
  * cover the same JS/TS import resolution as `detectArtifactFlags` plus Python,
- * C/C++, Ruby and Rust relative refs. External libraries are never checked.
+ * C/C++, Ruby, Rust and Go relative refs. External libraries are never checked.
  */
 export function findBrokenLocalRefs(files: SimpleFile[]): string[] {
   const paths = new Set(files.map((f) => f.path));
@@ -67,6 +67,12 @@ export function findBrokenLocalRefs(files: SimpleFile[]): string[] {
     seen.add(key);
     out.push(`\`${ref}\` is referenced by \`${importer}\` but \`${target}\` was never created — create that file (or fix the reference).`);
   };
+
+  // Go: an `import "<module>/pkg"` (module name from go.mod) that resolves to a
+  // directory with no .go file. Only local-module paths are checked, never deps.
+  const goMod = files.find((f) => f.path.endsWith("go.mod"));
+  const goModule = goMod?.content.match(/^\s*module\s+(\S+)/m)?.[1];
+  const goDir = goMod ? dirOf(goMod.path) : "";
 
   // JS/TS — resolve relative import/require/export-from with the usual extension
   // candidates (matches detectArtifactFlags' resolution table).
@@ -114,7 +120,101 @@ export function findBrokenLocalRefs(files: SimpleFile[]): string[] {
         if (!has(joinRel(dir, `${m[1]}.rs`)) && !has(joinRel(dir, `${m[1]}/mod.rs`))) flag(f.path, `mod ${m[1]};`, joinRel(dir, `${m[1]}.rs`));
       }
     }
+
+    if (goModule && /\.go$/i.test(f.path)) {
+      const re = new RegExp(`"(${goModule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^"]+)"`, "g");
+      for (const m of c.matchAll(re)) {
+        const pkgPath = joinRel(goDir, m[1].slice(goModule.length + 1));
+        // Resolves if any .go file lives in that package directory.
+        if (![...paths].some((p) => dirOf(p) === pkgPath && p.endsWith(".go"))) flag(f.path, `import "${m[1]}"`, `${pkgPath}/`);
+      }
+    }
   }
+  return out.slice(0, 8);
+}
+
+/**
+ * Browser-safe port of the server's `detectMissingModules`: a NAMESPACE/type that
+ * is imported but no generated file declares it — the C#/Java/PHP analogue of a
+ * broken local reference. High-precision: only the app's OWN root namespace is
+ * checked (external framework imports are skipped), so it never false-positives on
+ * `using System;` / `import java.util.*;` / `use Illuminate\...`.
+ */
+export function findMissingNamespaces(files: SimpleFile[]): string[] {
+  const out: string[] = [];
+
+  // C#: `using App.X;` with no file that declares `namespace App.X`.
+  const cs = files.filter((f) => /\.cs$/i.test(f.path));
+  if (cs.length) {
+    const declared = new Set<string>();
+    for (const f of cs) for (const m of (f.content || "").matchAll(/\bnamespace\s+([\w.]+)/g)) declared.add(m[1]);
+    const shortest = [...declared].sort((a, b) => a.length - b.length)[0];
+    const root = shortest?.split(".")[0];
+    const declaredArr = [...declared];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of cs) {
+        for (const m of (f.content || "").matchAll(/\busing\s+(?:static\s+)?([\w.]+)\s*;/g)) {
+          const ns = m[1];
+          if (ns !== root && !ns.startsWith(root + ".")) continue; // external → skip
+          if (seen.has(ns) || declaredArr.some((d) => d === ns || d.startsWith(ns + "."))) continue;
+          seen.add(ns);
+          out.push(`C# namespace \`${ns}\` is imported (\`using ${ns};\`) but no file declares it — create the file(s) that declare \`namespace ${ns}\`, or remove that using.`);
+        }
+      }
+    }
+  }
+
+  // Java: `import com.app.X;` with no file declaring that type.
+  const java = files.filter((f) => /\.java$/i.test(f.path));
+  if (java.length) {
+    const declaredTypes = new Set<string>();
+    const rootCounts = new Map<string, number>();
+    for (const f of java) {
+      const pkg = (f.content || "").match(/\bpackage\s+([\w.]+)\s*;/)?.[1];
+      if (!pkg) continue;
+      rootCounts.set(pkg.split(".")[0], (rootCounts.get(pkg.split(".")[0]) || 0) + 1);
+      for (const m of (f.content || "").matchAll(/\b(?:class|interface|enum|record)\s+(\w+)/g)) declaredTypes.add(`${pkg}.${m[1]}`);
+    }
+    const root = [...rootCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of java) {
+        for (const m of (f.content || "").matchAll(/\bimport\s+(?:static\s+)?([\w.]+)\s*;/g)) {
+          const imp = m[1];
+          if (!imp.startsWith(root + ".") || imp.endsWith(".*") || seen.has(imp) || declaredTypes.has(imp)) continue;
+          seen.add(imp);
+          out.push(`Java type \`${imp}\` is imported but no generated file declares it — create that class/interface, or remove the import.`);
+        }
+      }
+    }
+  }
+
+  // PHP: `use App\X\Foo;` with no file declaring that class.
+  const php = files.filter((f) => /\.php$/i.test(f.path));
+  if (php.length) {
+    const declaredTypes = new Set<string>();
+    const rootCounts = new Map<string, number>();
+    for (const f of php) {
+      const ns = (f.content || "").match(/\bnamespace\s+([\w\\]+)\s*;/)?.[1];
+      if (!ns) continue;
+      rootCounts.set(ns.split("\\")[0], (rootCounts.get(ns.split("\\")[0]) || 0) + 1);
+      for (const m of (f.content || "").matchAll(/\b(?:class|interface|trait|enum)\s+(\w+)/g)) declaredTypes.add(`${ns}\\${m[1]}`);
+    }
+    const root = [...rootCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of php) {
+        for (const m of (f.content || "").matchAll(/\buse\s+([\w\\]+)\s*;/g)) {
+          const imp = m[1].replace(/^\\/, "");
+          if (!imp.startsWith(root + "\\") || seen.has(imp) || declaredTypes.has(imp)) continue;
+          seen.add(imp);
+          out.push(`PHP class \`${imp}\` is imported (\`use\`) but no generated file declares it — create that class, or remove the use.`);
+        }
+      }
+    }
+  }
+
   return out.slice(0, 8);
 }
 
@@ -180,6 +280,7 @@ export function findAppGaps(files: SimpleFile[], requestText = ""): string[] {
   if (truncated.length) gaps.push(`truncated/cut-off files (re-output complete): ${truncated.join(", ")}`);
 
   for (const ref of findBrokenLocalRefs(files)) gaps.push(ref);
+  for (const ns of findMissingNamespaces(files)) gaps.push(ns);
 
   const req = (requestText || "").toLowerCase();
   const paths = files.map((f) => f.path.toLowerCase());

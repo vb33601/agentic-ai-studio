@@ -17,7 +17,7 @@ import {
   repairTruncatedSource,
   detectTruncatedSources,
 } from "../src/lib/deploy/truncation";
-import { findAppGaps, findBrokenLocalRefs } from "../src/lib/ai/incomplete-files";
+import { findAppGaps, findBrokenLocalRefs, findMissingNamespaces } from "../src/lib/ai/incomplete-files";
 
 let fails = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -190,6 +190,48 @@ check("complete Django app: no broken local refs", findBrokenLocalRefs(djangoCom
 check("complete Django app: no app gaps (backend recognized)", findAppGaps(djangoComplete, djangoPrompt).length === 0, JSON.stringify(findAppGaps(djangoComplete, djangoPrompt)));
 const djangoMissing = djangoComplete.filter((f) => f.path !== "tasks/serializers.py");
 check("incomplete Django app: missing .serializers flagged", findBrokenLocalRefs(djangoMissing).some((g) => /serializers/.test(g)));
+
+// --- 7) CROSS-STACK circulation: the same "a referenced module/file/namespace was
+//        never created" detection must work on EVERY deploy-supported stack, with
+//        no false positives on a complete app (the client recovery path used to be
+//        blind to Go/C#/Java/PHP). Each: complete => 0 gaps; missing dep => flagged.
+
+// Go (relative import via go.mod module name).
+const goComplete = [
+  { path: "go.mod", content: "module example.com/app\n\ngo 1.22\n" },
+  { path: "main.go", content: `package main\nimport "example.com/app/handlers"\nfunc main(){ handlers.Run() }` },
+  { path: "handlers/handler.go", content: "package handlers\nfunc Run(){}" },
+];
+check("Go complete: no broken refs", findBrokenLocalRefs(goComplete).length === 0, JSON.stringify(findBrokenLocalRefs(goComplete)));
+check("Go missing package flagged", findBrokenLocalRefs(goComplete.filter((f) => f.path !== "handlers/handler.go")).some((g) => /handlers/.test(g)));
+
+// C# (namespace `using`).
+const csComplete = [
+  { path: "Program.cs", content: "using App.Services;\nnamespace App;\npublic class Program { static void Main(){ new Svc(); } }" },
+  { path: "Services/Svc.cs", content: "namespace App.Services;\npublic class Svc {}" },
+];
+check("C# complete: no missing namespaces", findMissingNamespaces(csComplete).length === 0, JSON.stringify(findMissingNamespaces(csComplete)));
+check("C# missing namespace flagged", findMissingNamespaces(csComplete.filter((f) => f.path !== "Services/Svc.cs")).some((g) => /App\.Services/.test(g)));
+
+// Java (package import).
+const javaComplete = [
+  { path: "com/app/App.java", content: "package com.app;\nimport com.app.svc.Svc;\npublic class App {}" },
+  { path: "com/app/svc/Svc.java", content: "package com.app.svc;\npublic class Svc {}" },
+];
+check("Java complete: no missing types", findMissingNamespaces(javaComplete).length === 0, JSON.stringify(findMissingNamespaces(javaComplete)));
+check("Java missing type flagged", findMissingNamespaces(javaComplete.filter((f) => f.path !== "com/app/svc/Svc.java")).some((g) => /com\.app\.svc\.Svc/.test(g)));
+
+// PHP (use statement).
+const phpComplete = [
+  { path: "src/App.php", content: "<?php\nnamespace App;\nuse App\\Svc\\Foo;\nclass App { function f(){ new Foo(); } }" },
+  { path: "src/Svc/Foo.php", content: "<?php\nnamespace App\\Svc;\nclass Foo {}" },
+];
+check("PHP complete: no missing classes", findMissingNamespaces(phpComplete).length === 0, JSON.stringify(findMissingNamespaces(phpComplete)));
+check("PHP missing class flagged", findMissingNamespaces(phpComplete.filter((f) => f.path !== "src/Svc/Foo.php")).some((g) => g.includes("App\\Svc\\Foo")));
+
+// External framework imports must NEVER be flagged (no false positives).
+check("C# ignores external (using System)", findMissingNamespaces([{ path: "P.cs", content: "using System;\nusing System.Linq;\nnamespace App; class P {}" }]).length === 0);
+check("Java ignores external (java.util)", findMissingNamespaces([{ path: "A.java", content: "package com.app;\nimport java.util.List;\nclass A {}" }]).length === 0);
 
 console.log("-".repeat(60));
 console.log(fails === 0 ? "ALL TRUNCATION TESTS PASSED" : `${fails} TEST(S) FAILED`);
