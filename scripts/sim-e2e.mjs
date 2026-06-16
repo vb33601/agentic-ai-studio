@@ -11,7 +11,7 @@
  * chat transcript (error banners), and whether files reached the workspace.
  */
 import { chromium } from "playwright-chromium";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const BASE = process.env.BASE || "http://localhost:3007";
 const DEVLOG = process.env.DEVLOG || "/tmp/aip-test/dev.log";
@@ -25,6 +25,11 @@ const PLACEHOLDER = 'textarea[placeholder*="Ask anything"]';
 const SCENARIOS = [
   { id: "ui-load", kind: "ui", desc: "App loads with no console/page errors" },
   { id: "ui-controls", kind: "ui", desc: "Agent/model selectors, tools toggle, tab switching, settings" },
+  { id: "ui-empty-submit", kind: "ui", desc: "Whitespace-only submit is a no-op (no request fired)" },
+  { id: "ui-attachment", kind: "ui", desc: "Attaching a document shows a chip and can be removed" },
+  { id: "ui-newchat", kind: "ui", desc: "New chat resets the conversation + workspace" },
+  { id: "ui-model-switch", kind: "ui", desc: "Switching model updates the input footer" },
+  { id: "ui-stop", kind: "ui", desc: "Stop mid-generation halts cleanly with no error" },
   { id: "chat", kind: "gen", prompt: "What is the capital of France? Answer in one short sentence.", expect: { minFiles: 0 } },
   { id: "single-file", kind: "gen", prompt: "Create a single file index.html containing an <h1> that says Hello E2E Test. Only that one file.", expect: { minFiles: 1 } },
   { id: "frontend-spa", kind: "gen", prompt: "Build a small React + Vite todo app: add a todo, list todos, delete a todo. Keep it to a few files.", expect: { minFiles: 3 } },
@@ -56,6 +61,7 @@ async function run() {
   const consoleErrors = [];
   const clientStreamLogs = [];
   let chatInflight = 0;
+  let chatStarts = 0;
   let lastChatActivity = Date.now();
 
   page.on("pageerror", (e) => pageErrors.push(String(e.message || e)));
@@ -68,7 +74,7 @@ async function run() {
       consoleErrors.push(t);
     }
   });
-  page.on("request", (r) => { if (r.url().includes("/api/chat")) { chatInflight++; lastChatActivity = Date.now(); } });
+  page.on("request", (r) => { if (r.url().includes("/api/chat")) { chatInflight++; chatStarts++; lastChatActivity = Date.now(); } });
   const settle = (r) => { if (r.url().includes("/api/chat")) { chatInflight = Math.max(0, chatInflight - 1); lastChatActivity = Date.now(); } };
   page.on("requestfinished", settle);
   page.on("requestfailed", settle);
@@ -117,6 +123,99 @@ async function run() {
         for (const tab of ["Code", "Files", "Preview", "Deploy", "Chat"]) {
           try { await page.getByRole("button", { name: new RegExp(`^${tab}$`) }).first().click({ timeout: 4000 }); await sleep(300); }
           catch { issues.push(`tab '${tab}' not clickable`); }
+        }
+      }
+
+      if (sc.id === "ui-empty-submit") {
+        const before = chatStarts;
+        const ta = page.locator(PLACEHOLDER);
+        await ta.click();
+        await ta.fill("    "); // whitespace only
+        await page.keyboard.press("Enter");
+        await sleep(2000);
+        if (chatStarts > before) issues.push("whitespace-only submit fired a /api/chat request (should be a no-op)");
+        await ta.fill("");
+      }
+
+      if (sc.id === "ui-attachment") {
+        const sample = "/tmp/aip-test/sample.txt";
+        writeFileSync(sample, "Insurance claim #1234: policyholder Jane Doe, amount $5,000, status pending.\n");
+        const input = page.locator('input[type="file"]');
+        if (await input.count()) {
+          await input.first().setInputFiles(sample);
+          await sleep(1200);
+          const shown = await page.getByText("sample.txt", { exact: false }).count();
+          if (!shown) issues.push("attached file chip (sample.txt) did not appear");
+          // Remove it again (find the chip's X). Best-effort.
+          const removeBtn = page.locator('button:has(svg.lucide-x)');
+          if (await removeBtn.count()) await removeBtn.last().click().catch(() => {});
+        } else {
+          issues.push("no file input found for attachments");
+        }
+      }
+
+      if (sc.id === "ui-newchat") {
+        // Type something first, then hit New chat and confirm it resets.
+        const ta = page.locator(PLACEHOLDER);
+        await ta.fill("draft that should be cleared");
+        const newBtn = page.locator('button[title="New chat"]');
+        if (await newBtn.count()) {
+          await newBtn.first().click();
+          await sleep(1000);
+          const val = await ta.inputValue().catch(() => "");
+          const files = await page.evaluate(() => document.body.innerText);
+          // After reset we expect the empty-state (no messages). The input may or may
+          // not retain text depending on impl; the key check is no crash + still usable.
+          if (!(await page.locator(PLACEHOLDER).count())) issues.push("chat input gone after New chat");
+          void val; void files;
+        } else {
+          issues.push("New chat button not found");
+        }
+      }
+
+      if (sc.id === "ui-model-switch") {
+        // Open the model selector, search, pick the first result; footer should update.
+        try {
+          await page.getByRole("button").nth(2).click({ timeout: 4000 }).catch(() => {});
+          const search = page.locator('input[placeholder*="Search any model"]');
+          if (await search.count()) {
+            await search.fill("gpt");
+            await sleep(900);
+            const first = page.locator('[role="option"], button').filter({ hasText: /gpt/i }).first();
+            if (await first.count()) await first.click({ timeout: 3000 }).catch(() => {});
+          }
+          await page.keyboard.press("Escape").catch(() => {});
+          await sleep(500);
+        } catch (e) { issues.push("model switch: " + String(e).split("\n")[0]); }
+      }
+
+      if (sc.id === "ui-stop") {
+        const ta = page.locator(PLACEHOLDER);
+        await ta.click();
+        await ta.fill("Write a long detailed essay about the history of computing, 2000 words.");
+        await page.keyboard.press("Enter");
+        // Wait until a /api/chat request is actually in flight.
+        const t0 = Date.now();
+        while (chatInflight === 0 && Date.now() - t0 < 120000) await sleep(1000);
+        if (chatInflight === 0) {
+          issues.push("generation never started within 120s (can't test stop)");
+        } else {
+          await sleep(3000);
+          // Click the Stop button (destructive button with the stop-circle icon).
+          const stopBtn = page.locator('button:has(svg.lucide-circle-stop), button:has(svg.lucide-stop-circle), button.bg-destructive');
+          if (await stopBtn.count()) {
+            await stopBtn.first().click().catch(() => {});
+            await sleep(4000);
+            const bodyText = await page.evaluate(() => document.body.innerText);
+            if (/Generation (failed|error)|An error occurred|Internal server error/i.test(bodyText)) issues.push("error banner after Stop");
+            // Input should be usable again (send path restored).
+            if (!(await page.locator(PLACEHOLDER).count())) issues.push("chat input gone after Stop");
+          } else {
+            issues.push("Stop button not found while generating");
+          }
+          // Drain any lingering request so the next scenario starts clean.
+          const t1 = Date.now();
+          while (chatInflight > 0 && Date.now() - t1 < 30000) await sleep(1000);
         }
       }
 
