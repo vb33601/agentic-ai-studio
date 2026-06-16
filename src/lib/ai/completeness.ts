@@ -24,6 +24,7 @@ import {
   detectComponentGaps,
   detectTruncatedArtifacts,
   detectArtifactFlags,
+  detectMissingModules,
   type Artifact,
 } from "./prompt-pipeline";
 import { extractFilesFromMarkdown } from "./extract-files";
@@ -119,6 +120,7 @@ export async function enforceCompleteness(o: EnforceCompletenessOpts): Promise<v
           ...deterministicPlanGaps(o.plan, artifacts),
           ...detectTruncatedArtifacts(artifacts),
           ...detectArtifactFlags(artifacts),
+          ...detectMissingModules(artifacts),
           ...judge,
         ];
       };

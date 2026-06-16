@@ -896,6 +896,72 @@ export function buildFileManifest(artifacts: Artifact[], budget = 24000): string
  * free-model failure where the model builds only one half of a full-stack app.
  * These gaps feed the same plan-repair loop, so the missing component gets built.
  */
+/**
+ * Cross-stack BROKEN-REFERENCE detection: a file imports/uses a namespace, package,
+ * type, or module that NO generated file declares — the compiled-language analogue
+ * of the JS "imports a file that was never created" check in detectArtifactFlags.
+ * This catches errors like .NET `CS0234: namespace 'X' does not exist` and Java
+ * "cannot find symbol" that otherwise only surface at deploy-time build. Scoped to
+ * the APP's OWN root namespace/package so external libraries are never flagged.
+ * High-precision; feeds the completeness loop, which then creates the missing file.
+ */
+export function detectMissingModules(artifacts: Artifact[]): string[] {
+  const flags: string[] = [];
+
+  // ---- C# / .NET: `using App.X;` with no file that `namespace App.X` ----
+  const cs = artifacts.filter((a) => /\.cs$/i.test(a.path));
+  if (cs.length) {
+    const declared = new Set<string>();
+    for (const f of cs) for (const m of (f.content || "").matchAll(/\bnamespace\s+([\w.]+)/g)) declared.add(m[1]);
+    // App root = first segment of the shortest declared namespace (e.g. "ClaimsManagement").
+    const shortest = [...declared].sort((a, b) => a.length - b.length)[0];
+    const root = shortest?.split(".")[0];
+    const declaredArr = [...declared];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of cs) {
+        for (const m of (f.content || "").matchAll(/\busing\s+(?:static\s+)?([\w.]+)\s*;/g)) {
+          const ns = m[1];
+          if (ns !== root && !ns.startsWith(root + ".")) continue; // external/framework → skip
+          if (seen.has(ns)) continue;
+          // Resolved if declared exactly, or as a parent of a declared namespace.
+          if (declaredArr.some((d) => d === ns || d.startsWith(ns + "."))) continue;
+          seen.add(ns);
+          flags.push(`C# namespace \`${ns}\` is imported (\`using ${ns};\`) but no file declares it — create the file(s) that declare \`namespace ${ns}\` (e.g. the missing class), or remove that using and its usages.`);
+        }
+      }
+    }
+  }
+
+  // ---- Java: `import com.app.X;` with no file declaring that type ----
+  const java = artifacts.filter((a) => /\.java$/i.test(a.path));
+  if (java.length) {
+    const declaredTypes = new Set<string>();
+    const rootCounts = new Map<string, number>();
+    for (const f of java) {
+      const pkg = (f.content || "").match(/\bpackage\s+([\w.]+)\s*;/)?.[1];
+      if (!pkg) continue;
+      rootCounts.set(pkg.split(".")[0], (rootCounts.get(pkg.split(".")[0]) || 0) + 1);
+      for (const m of (f.content || "").matchAll(/\b(?:class|interface|enum|record)\s+(\w+)/g)) declaredTypes.add(`${pkg}.${m[1]}`);
+    }
+    const root = [...rootCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const seen = new Set<string>();
+    if (root) {
+      for (const f of java) {
+        for (const m of (f.content || "").matchAll(/\bimport\s+(?:static\s+)?([\w.]+)\s*;/g)) {
+          const imp = m[1];
+          if (!imp.startsWith(root + ".") || imp.endsWith(".*") || seen.has(imp)) continue;
+          if (declaredTypes.has(imp)) continue;
+          seen.add(imp);
+          flags.push(`Java type \`${imp}\` is imported but no generated file declares it — create that class/interface, or remove the import and its usages.`);
+        }
+      }
+    }
+  }
+
+  return flags.slice(0, 8);
+}
+
 export function detectComponentGaps(artifacts: Artifact[], requestText: string): string[] {
   if (!artifacts.length) return [];
   const req = (requestText || "").toLowerCase();
