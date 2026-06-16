@@ -1020,9 +1020,36 @@ export function detectComponentGaps(artifacts: Artifact[], requestText: string):
   return gaps;
 }
 
-// Brace/bracket-balanced languages — safe to use balance as a truncation signal
-// (NOT Python/YAML/etc. where braces are rare and indentation rules).
-const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|h|hpp|php|kt|kts|swift|scala|dart|groovy|gradle|css|scss|less|json)$/i;
+// CLASS 1 — brace/bracket-balanced languages (use `{}` blocks). Comprehensive:
+// the C family, JVM, .NET, web, systems, mobile, and config/DSL brace formats.
+// Balance is a safe truncation signal for all of these.
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx|m|mm|php|kt|kts|swift|scala|sc|dart|groovy|gvy|gradle|d|zig|vala|sol|proto|tf|hcl|ino|pde|css|scss|less|pcss|json|json5|jsonc)$/i;
+
+// CLASS 2 — non-brace / statement-based languages (Python, Ruby, Lua, Elixir,
+// Erlang, Perl, shell, SQL, R, Julia, Haskell, OCaml, Clojure/Lisp, CoffeeScript,
+// Nim, Crystal, F#, VB, Tcl, AWK, …). The brace count is meaningless here, so we
+// use language-agnostic "ends mid-statement" signals — see looksTruncatedIndent.
+const STATEMENT_LANG = /\.(py|pyw|rb|rake|lua|ex|exs|erl|pl|pm|r|jl|sh|bash|zsh|fish|ps1|hs|ml|mli|clj|cljs|cljc|edn|rkt|scm|lisp|el|coffee|elm|nim|cr|fs|fsx|sql|vb|tcl|awk)$/i;
+
+/**
+ * Truncation signal for non-brace languages: an unclosed ()/[] OR the last real
+ * line ends on a continuation token (comma, backslash, an open bracket/paren/
+ * brace, or a trailing colon whose block body was never written). No COMPLETE
+ * file ends that way, so this is high-precision across languages.
+ */
+function looksTruncatedIndent(content: string): boolean {
+  const c = content || "";
+  const opens = (c.match(/[([]/g) || []).length;
+  const closes = (c.match(/[)\]]/g) || []).length;
+  if (opens - closes >= 1) return true;
+  const lines = c.replace(/\r/g, "").split("\n");
+  let last = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (t && !t.startsWith("#") && !t.startsWith("//") && !t.startsWith("--")) { last = t; break; }
+  }
+  return /[,\\([{:]$/.test(last);
+}
 
 /**
  * Phase 3 — TRUNCATION detection. Free/low-cap models can stop mid-file
@@ -1052,6 +1079,9 @@ export function detectTruncatedArtifacts(artifacts: Artifact[]): string[] {
       // `>` is NOT a "complete" ending (a file cut mid arrow-function ends `=>`);
       // a real complete JSX/HTML file ending in `>` is already brace-balanced.
       if (opens - closes >= 2 && !/[}\]);]/.test(tail)) truncated = true;
+    } else if (STATEMENT_LANG.test(a.path)) {
+      // Non-brace languages (Python, Ruby, shell, SQL, …): use "ends mid-statement".
+      if (looksTruncatedIndent(c)) truncated = true;
     }
     if (truncated) {
       flags.push(`\`${a.path}\` looks TRUNCATED (cut off mid-content) — regenerate the COMPLETE file by calling createFile again with the same path and the full, valid content.`);

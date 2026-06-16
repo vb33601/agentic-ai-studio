@@ -12,7 +12,24 @@
  *  - an `import { … }` opened but never closed / never reaching `from` (the exact
  *    "Expected `from` but found EOF" build failure).
  */
-const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|h|hpp|php|kt|kts|swift|scala|dart|groovy|gradle|css|scss|less|json)$/i;
+// Kept in sync with prompt-pipeline.ts. Class 1: brace-balanced languages.
+const BRACE_LANG = /\.(jsx?|tsx?|mjs|cjs|cs|java|go|rs|c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx|m|mm|php|kt|kts|swift|scala|sc|dart|groovy|gvy|gradle|d|zig|vala|sol|proto|tf|hcl|ino|pde|css|scss|less|pcss|json|json5|jsonc)$/i;
+// Class 2: non-brace / statement-based languages — "ends mid-statement".
+const STATEMENT_LANG = /\.(py|pyw|rb|rake|lua|ex|exs|erl|pl|pm|r|jl|sh|bash|zsh|fish|ps1|hs|ml|mli|clj|cljs|cljc|edn|rkt|scm|lisp|el|coffee|elm|nim|cr|fs|fsx|sql|vb|tcl|awk)$/i;
+
+function looksTruncatedIndent(content: string): boolean {
+  const c = content || "";
+  const opens = (c.match(/[([]/g) || []).length;
+  const closes = (c.match(/[)\]]/g) || []).length;
+  if (opens - closes >= 1) return true;
+  const lines = c.replace(/\r/g, "").split("\n");
+  let last = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (t && !t.startsWith("#") && !t.startsWith("//") && !t.startsWith("--")) { last = t; break; }
+  }
+  return /[,\\([{:]$/.test(last);
+}
 
 export interface SimpleFile {
   path: string;
@@ -35,6 +52,9 @@ function looksTruncated(path: string, content: string): boolean {
     // arrow function ends in `=>`, and a genuinely complete JSX/HTML file ending
     // in `>` is already brace-balanced (so the imbalance check won't fire on it).
     if (opens - closes >= 1 && !/[}\]);]/.test(tail)) return true;
+  }
+  if (STATEMENT_LANG.test(path)) {
+    return looksTruncatedIndent(c);
   }
   // A JS/TS import that opened a brace but never closed it before EOF.
   if (/\.(jsx?|tsx?|mjs|cjs)$/i.test(path)) {
