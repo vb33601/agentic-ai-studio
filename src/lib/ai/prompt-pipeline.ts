@@ -988,6 +988,90 @@ export function detectMissingModules(artifacts: Artifact[]): string[] {
   return flags.slice(0, 8);
 }
 
+/** Normalize a relative reference against a base directory (handles ./ and ../). */
+function joinPath(dir: string, rel: string): string {
+  const parts = dir ? dir.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Universal MISSING-FILE / MISSING-IMPORT detection by RELATIVE reference: a file
+ * imports/includes a LOCAL sibling module/file that no generated file provides.
+ * Complements detectMissingModules (namespace-based: C#/Java/PHP) and the JS import
+ * check in detectArtifactFlags — together they cover a reference to a never-created
+ * file across stacks: Python (relative imports), C/C++ (`#include "…"`), Ruby
+ * (require_relative), Rust (`mod x;`), Go (local package import). High-precision:
+ * only LOCAL/relative references are checked, never external libraries.
+ */
+export function detectMissingLocalRefs(artifacts: Artifact[]): string[] {
+  const flags: string[] = [];
+  const paths = new Set(artifacts.map((a) => a.path));
+  const has = (p: string) => paths.has(p);
+  const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+  const seen = new Set<string>();
+  const flag = (importer: string, ref: string, target: string) => {
+    const key = importer + "|" + ref;
+    if (seen.has(key)) return;
+    seen.add(key);
+    flags.push(`\`${importer}\` references \`${ref}\` but \`${target}\` was never created — create that file, or fix/remove the reference.`);
+  };
+
+  // Go module name (from go.mod) so `import "<module>/pkg"` can be resolved locally.
+  const goMod = artifacts.find((a) => a.path.endsWith("go.mod"));
+  const goModule = goMod?.content.match(/^\s*module\s+(\S+)/m)?.[1];
+  const goDir = goMod ? dirOf(goMod.path) : "";
+
+  for (const a of artifacts) {
+    const dir = dirOf(a.path);
+    const c = a.content || "";
+
+    if (/\.py$/i.test(a.path)) {
+      for (const m of c.matchAll(/^[ \t]*from\s+(\.+)([\w.]*)\s+import\b/gm)) {
+        let base = dir;
+        for (let i = 1; i < m[1].length; i++) base = dirOf(base);
+        const mod = m[2].replace(/\./g, "/");
+        const cands = mod ? [`${joinPath(base, mod)}.py`, `${joinPath(base, mod)}/__init__.py`] : [`${base}/__init__.py`];
+        if (!cands.some(has)) flag(a.path, m[0].trim(), cands[0]);
+      }
+    }
+
+    if (/\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/i.test(a.path)) {
+      for (const m of c.matchAll(/^[ \t]*#\s*include\s+"([^"]+)"/gm)) {
+        const target = joinPath(dir, m[1]);
+        if (!has(target) && ![...paths].some((p) => p.endsWith("/" + m[1]) || p === m[1])) flag(a.path, `#include "${m[1]}"`, target);
+      }
+    }
+
+    if (/\.rb$/i.test(a.path)) {
+      for (const m of c.matchAll(/\brequire_relative\s+['"]([^'"]+)['"]/g)) {
+        const rel = m[1].endsWith(".rb") ? m[1] : `${m[1]}.rb`;
+        if (!has(joinPath(dir, rel))) flag(a.path, `require_relative '${m[1]}'`, joinPath(dir, rel));
+      }
+    }
+
+    if (/\.rs$/i.test(a.path)) {
+      for (const m of c.matchAll(/^[ \t]*(?:pub\s+)?mod\s+(\w+)\s*;/gm)) {
+        if (!has(joinPath(dir, `${m[1]}.rs`)) && !has(joinPath(dir, `${m[1]}/mod.rs`))) flag(a.path, `mod ${m[1]};`, joinPath(dir, `${m[1]}.rs`));
+      }
+    }
+
+    if (goModule && /\.go$/i.test(a.path)) {
+      const re = new RegExp(`"(${goModule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^"]+)"`, "g");
+      for (const m of c.matchAll(re)) {
+        const pkgPath = joinPath(goDir, m[1].slice(goModule.length + 1));
+        // The local package resolves if any .go file lives in that directory.
+        if (![...paths].some((p) => dirOf(p) === pkgPath && p.endsWith(".go"))) flag(a.path, `import "${m[1]}"`, `${pkgPath}/`);
+      }
+    }
+  }
+  return flags.slice(0, 8);
+}
+
 export function detectComponentGaps(artifacts: Artifact[], requestText: string): string[] {
   if (!artifacts.length) return [];
   const req = (requestText || "").toLowerCase();
