@@ -7,7 +7,7 @@ import {
   stepCountIs,
 } from "ai";
 import { NextRequest } from "next/server";
-import { resolveModel, modelCandidates, primaryAnchor } from "@/lib/ai/providers";
+import { resolveModel, modelCandidates, primaryAnchor, autoCandidates } from "@/lib/ai/providers";
 import { samplingFor } from "@/lib/ai/hyperparams";
 import { ALL_TOOLS } from "@/lib/ai/tools";
 import { getAgentConfig, detectAgentType } from "@/lib/ai/agents";
@@ -29,6 +29,7 @@ import {
 import { enhancePrompt as enhanceBuildDirectives } from "@/lib/quality/prompt-enhancer";
 import { enforceCompleteness } from "@/lib/ai/completeness";
 import { extractFilesFromMarkdown } from "@/lib/ai/extract-files";
+import { runAgentBuild } from "@/lib/ai/agent/route-bridge";
 
 // Route segment config exports MUST be statically-analyzable literals — Next.js
 // rejects runtime expressions (e.g. `Number(process.env.X)`) with "Invalid segment
@@ -65,6 +66,7 @@ export async function POST(req: NextRequest) {
       systemPrompt,
       enhancePrompt = true,
       refineOutput = true,
+      agentLoop,
     } = body as {
       messages: UIMessage[];
       modelId?: string;
@@ -74,6 +76,7 @@ export async function POST(req: NextRequest) {
       systemPrompt?: string;
       enhancePrompt?: boolean;
       refineOutput?: boolean;
+      agentLoop?: boolean;
     };
 
     const lastMessage = messages[messages.length - 1];
@@ -95,26 +98,24 @@ export async function POST(req: NextRequest) {
     const temperature = agentConfig.temperature;
     const maxSteps = agentConfig.maxSteps;
 
-    // Anchor generation on Claude. Respect an explicit non-default UI model pick;
-    // otherwise (no pick, or the legacy "openai/gpt-4o" default that pointed at
-    // the now-dead OpenRouter key) lead with the strong anchor — Anthropic-direct
-    // when ANTHROPIC_API_KEY is set, else Claude Sonnet 4.6 via funded Kilo Code.
-    const usingLegacyDefault = !modelId || modelId === "openai/gpt-4o";
-    // Tier the anchor to conserve premium-model credits: only genuinely complex
-    // code builds use the heavy model (Claude Sonnet); simple/low-medium builds
-    // and ordinary chat use the light model (Claude Haiku — the modern "Claude
-    // Instant"). Tunable via HEAVY_TIER_MIN_COMPLEXITY.
+    // Model selection. The default is "Auto" (free-first, escalate): free models
+    // lead, premium Claude/GPT only for complex builds when keyed — so generation
+    // runs at $0 by default and never dies on "out of credits". An explicit UI pick
+    // is honoured as the primary, with the cross-account fallback chain behind it.
+    const usingAuto = !modelId || modelId === "auto" || modelId === "openai/gpt-4o";
+    // Tier by complexity: only genuinely complex code builds escalate to the heavy
+    // model. Tunable via HEAVY_TIER_MIN_COMPLEXITY.
     const heavyThreshold = Number(process.env.HEAVY_TIER_MIN_COMPLEXITY) || 0.5;
     const wantHeavy = isArtifactAgent(resolvedAgentType) && analyzePrompt(lastText).complexityScore >= heavyThreshold;
     const anchor = primaryAnchor(wantHeavy ? "heavy" : "light");
-    const effModelId = usingLegacyDefault ? anchor.id : modelId;
-    const effProvider = usingLegacyDefault ? anchor.provider : provider;
-    console.log(`[chat] anchor tier=${wantHeavy ? "heavy" : "light"} model=${effModelId} provider=${effProvider} (legacyDefault=${usingLegacyDefault})`);
+    const effModelId = usingAuto ? anchor.id : modelId;
+    const effProvider = usingAuto ? anchor.provider : provider;
 
-    // Ordered model chain: the anchor/pick first, then a cross-provider,
-    // cross-account fallback chain ending in free models, tried when a model
-    // fails before streaming any content (so a dead key can't truncate a build).
-    const candidates = modelCandidates(effModelId, effProvider);
+    // Ordered candidate chain tried in turn when a model fails before streaming
+    // (so a dead key / 402 can't truncate a build). Auto → the free-first router;
+    // explicit pick → that model first, then the cross-account fallback chain.
+    const candidates = usingAuto ? autoCandidates(wantHeavy) : modelCandidates(effModelId, effProvider);
+    console.log(`[chat] selection=${usingAuto ? "auto" : "pick"} tier=${wantHeavy ? "heavy" : "light"} lead=${candidates[0]?.provider}/${candidates[0]?.id} candidates=${candidates.length}`);
 
     const activeTools = enableTools
       ? Object.fromEntries(
@@ -191,6 +192,16 @@ Provide every file the project needs as its own labeled code block. Do not abbre
     const producesArtifacts = hasTools && (allowedTools.includes("createFile") || allowedTools.includes("generateImage"));
     const canRepair = hasTools && allowedTools.includes("createFile");
 
+    // Re-architecture path (Phase 1): run artifact builds through the agentic edit
+    // loop (scaffold template + bounded edit-tool loop) instead of the legacy
+    // one-shot stream. Off by default — opt in per-request (body.agentLoop) or
+    // globally (AGENT_LOOP=1) so the legacy pipeline stays the safe default and the
+    // two paths can be A/B compared on the eval harness.
+    const useAgentLoop =
+      (agentLoop === true || process.env.AGENT_LOOP === "1") &&
+      hasTools &&
+      isArtifactAgent(resolvedAgentType);
+
     const stream = createUIMessageStream({
       // Surface the real error text to the client (the SDK masks it by default).
       onError: (error) => (error instanceof Error ? error.message : String(error)),
@@ -251,7 +262,23 @@ Provide every file the project needs as its own labeled code block. Do not abbre
           implPlan = plan;
           if (implPlan) writer.write({ type: "data-plan", id: "impl-plan", data: { plan: implPlan } } as never);
         }
-        if (producesArtifacts) status("Generating your application…");
+        if (producesArtifacts || useAgentLoop) status("Generating your application…");
+
+        // --- Re-architecture path: agentic edit loop (Phase 1) ---
+        if (useAgentLoop) {
+          await runAgentBuild({
+            writer,
+            candidates,
+            request: magicText,
+            requestForGaps: lastText,
+            baseTemperature: temperature,
+            baseMaxTokens: MAX_OUTPUT_TOKENS,
+            maxSteps,
+            status,
+          });
+          return; // finally{} clears heartbeat/status and writes the finish frame
+        }
+
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
           const cand = candidates[i];

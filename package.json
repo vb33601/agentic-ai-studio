@@ -7,6 +7,8 @@
     "build": "NODE_ENV=production next build",
     "start": "NODE_ENV=production next start",
     "lint": "eslint",
+    "eval": "tsx scripts/eval-harness.mts",
+    "test:agent": "tsx scripts/test-agent-loop.mts",
     "test:stacks": "tsx scripts/test-stacks.mts",
     "test:stacks:docker": "tsx scripts/test-stacks.mts --docker",
     "test:harden": "tsx scripts/test-runtime-harden.mts",

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UIMessage } from "ai";
-import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks, ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
+import { Bot, User, Copy, Check, ChevronDown, ChevronUp, Wrench, Sparkles, ListChecks, ShieldCheck, ShieldAlert, Loader2, Boxes, FileCode } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +68,17 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
   const buildStatus = (message.parts ?? []).find((p) => p.type === "data-status") as
     | { data?: { text?: string } }
     | undefined;
+  // Re-architecture parts: the chosen starting template + the local build/boot cert.
+  const templatePart = (message.parts ?? []).find((p) => p.type === "data-template") as
+    | { data?: { key?: string; label?: string; stack?: string } }
+    | undefined;
+  const certification = (message.parts ?? []).find((p) => p.type === "data-certification") as
+    | { data?: { ran?: boolean; ok?: boolean; stack?: string; errors?: string[]; runOk?: boolean } }
+    | undefined;
+  // Live per-file build progress (latest snapshot of the growing file list).
+  const fileProgress = (message.parts ?? []).filter((p) => p.type === "data-files").pop() as
+    | { data?: { files?: { path: string; op: string }[] } }
+    | undefined;
 
   const generatedImages = toolParts
     // Only once the tool call has settled — during input streaming the prompt
@@ -122,6 +133,58 @@ export function ChatMessage({ message, isStreaming }: MessageProps) {
           <div className="w-full flex items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
             <span>{buildStatus.data.text}</span>
+          </div>
+        )}
+        {templatePart?.data?.label && (
+          <div className="w-full flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Boxes className="h-3 w-3 text-sky-500 shrink-0" />
+            <span>Starting from <span className="font-medium text-foreground">{templatePart.data.label}</span>{templatePart.data.stack ? ` · ${templatePart.data.stack}` : ""}</span>
+          </div>
+        )}
+        {(fileProgress?.data?.files?.length ?? 0) > 0 && (
+          <div className="w-full rounded-md border bg-muted/30 p-2">
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <FileCode className="h-3 w-3 text-violet-500" />
+              <span>Files ({fileProgress!.data!.files!.length})</span>
+            </div>
+            <ul className="max-h-44 space-y-0.5 overflow-y-auto">
+              {fileProgress!.data!.files!.map((f) => (
+                <li key={f.path} className="flex items-center gap-1.5 text-[11px]">
+                  {f.op === "template" ? (
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-muted-foreground/40" />
+                  ) : f.op === "deleted" ? (
+                    <span className="h-2.5 w-2.5 shrink-0 text-red-500">✕</span>
+                  ) : (
+                    <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                  )}
+                  <span className={cn("truncate font-mono", f.op === "template" ? "text-muted-foreground" : "text-foreground", f.op === "deleted" && "line-through opacity-60")}>{f.path}</span>
+                  {f.op === "edit" && <span className="text-[9px] text-sky-500">edited</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {certification?.data?.ran && (
+          <div className={cn(
+            "w-full flex items-start gap-2 rounded-md border p-2.5 text-xs",
+            certification.data.ok
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              : "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300",
+          )}>
+            {certification.data.ok ? <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" /> : <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />}
+            <div className="min-w-0">
+              <p className="font-medium">
+                {certification.data.ok ? "Sandbox build passed — the app compiles and boots" : "Sandbox build failed"}
+                {certification.data.stack ? ` (${certification.data.stack})` : ""}
+              </p>
+              {!certification.data.ok && (certification.data.errors ?? []).length > 0 && (
+                <ul className="mt-1 space-y-0.5 opacity-90">
+                  {certification.data.errors!.slice(0, 4).map((e, i) => (
+                    <li key={i} className="font-mono text-[10px] truncate">{e}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
         {magicPrompt?.data && (

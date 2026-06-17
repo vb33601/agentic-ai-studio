@@ -96,7 +96,7 @@ export function ModelSelector() {
                 {searching ? "Searching Hugging Face…" : "No models found — type 3+ chars to search Hugging Face"}
               </Command.Empty>
               <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                {searching ? "Searching Hugging Face…" : `${all.length} models · Kilo Code · OpenRouter · AIML · Hugging Face`}
+                {searching ? "Searching Hugging Face…" : `${all.length} models · models.dev · Kilo Code · OpenRouter · AIML · Hugging Face`}
               </div>
               {all.map((m) => (
                 <Command.Item

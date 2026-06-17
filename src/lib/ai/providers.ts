@@ -1,6 +1,8 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGateway } from "@ai-sdk/gateway";
 
 export type ProviderKey =
   | "openai"
@@ -15,7 +17,9 @@ export type ProviderKey =
   | "huggingface"
   | "together"
   | "fireworks"
-  | "ollama";
+  | "ollama"
+  | "gateway"
+  | "requesty";
 
 // Kilo Code gateway: OpenAI-compatible, ~335 models behind one key. The host
 // canonicalises kilocode.ai → kilo.ai, so use the final host to avoid a 308 hop.
@@ -32,6 +36,15 @@ export interface ModelOption {
 }
 
 export const MODEL_OPTIONS: ModelOption[] = [
+  // DEFAULT: Auto — a free-first router that escalates to premium only for complex
+  // builds (and only when those accounts have credit). Keeps generation running at
+  // $0 by default so the app never dies on "out of credits"; the user can still pin
+  // any specific model below. Handled specially in the chat route (see autoCandidates).
+  { id: "auto", name: "Auto (free-first)", provider: "openrouter", contextWindow: 1000000, supportsVision: true, supportsTools: true, description: "Recommended — free models first, escalates to premium Claude/GPT for complex builds" },
+  // Google Gemini (DIRECT — uses GEMINI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).
+  // Google's free tier is generous, so these are the primary zero-cost workhorses.
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash (free tier)", provider: "google", contextWindow: 1048576, supportsVision: true, supportsTools: true, description: "Google-direct — fast, free-tier available, great default" },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "google", contextWindow: 1048576, supportsVision: true, supportsTools: true, description: "Google-direct — most capable Gemini" },
   // Anthropic (direct — uses ANTHROPIC_API_KEY, no gateway markup). Preferred for
   // code generation; the build anchor auto-promotes to these when the key is set.
   { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (direct)", provider: "anthropic", contextWindow: 200000, supportsVision: true, supportsTools: true, description: "Anthropic-direct — best balance for code generation" },
@@ -113,6 +126,20 @@ export function anthropicDirectAvailable(): boolean {
   return !!k && k.trim().length > 0;
 }
 
+/** Whether a Google Generative AI (Gemini) key is configured. Gemini's free tier
+ *  is the primary zero-cost workhorse, so the Auto router leads with it when set.
+ *  Accepts either the AI SDK's standard var or the common GEMINI_API_KEY alias. */
+export function googleDirectAvailable(): boolean {
+  const k = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY;
+  return !!k && k.trim().length > 0;
+}
+
+/** Whether a router that can serve the broad models.dev directory is usable —
+ *  the Vercel AI Gateway (key or OIDC) or Requesty. */
+export function gatewayAvailable(): boolean {
+  return !!(process.env.VERCEL_AI_GATEWAY_KEY || process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.REQUESTY_API_KEY);
+}
+
 // The strong "Claude-quality" anchor every code generation should lead with.
 // Anthropic-direct when keyed, else Claude Sonnet 4.6 via the funded Kilo Code
 // gateway (verified tool-capable). `claude-sonnet-4-6` is the canonical
@@ -157,6 +184,69 @@ const CROSS_PROVIDER_FALLBACKS: ModelCandidate[] = [
   { id: "Qwen/Qwen3.6-27B", provider: "huggingface", maxOutputTokens: FREE_TIER_MAX_TOKENS, free: true },
 ];
 
+// Gemini direct on the free tier — the leading zero-cost workhorse (full output
+// cap; the free tier is generous, unlike the credit-reserving routers).
+const GEMINI_FREE: ModelCandidate = { id: "gemini-2.5-flash", provider: "google", free: true };
+
+// Best-effort free models on OpenRouter (the `:free` tier). IDs on the free tier
+// rotate over time, so this is a chain (any that 404s is skipped by the candidate
+// loop) and is overridable via OPENROUTER_FREE_MODELS (comma-separated).
+const OPENROUTER_FREE: ModelCandidate[] = (
+  process.env.OPENROUTER_FREE_MODELS
+    ? process.env.OPENROUTER_FREE_MODELS.split(",").map((s) => s.trim()).filter(Boolean)
+    : [
+        "deepseek/deepseek-chat-v3-0324:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemini-2.0-flash-exp:free",
+      ]
+).map((id) => ({ id, provider: "openrouter", maxOutputTokens: FREE_TIER_MAX_TOKENS, free: true }));
+
+/** The always-available free fallback tier, strongest→weakest. */
+function freeChain(): ModelCandidate[] {
+  return [
+    ...(googleDirectAvailable() ? [GEMINI_FREE] : []),
+    ...OPENROUTER_FREE,
+    { id: "kilo-auto/free", provider: "kilocode", maxOutputTokens: FREE_TIER_MAX_TOKENS, free: true },
+    { id: "gpt-3.5-turbo", provider: "aimlapi", maxOutputTokens: FREE_TIER_MAX_TOKENS, free: true },
+  ];
+}
+
+/** Premium anchors that actually have a route configured (key present). */
+function premiumChain(tier: AnchorTier): ModelCandidate[] {
+  const out: ModelCandidate[] = [];
+  if (anthropicDirectAvailable()) out.push(primaryAnchor(tier));
+  if (process.env.KILOCODE_API_KEY) out.push(tier === "heavy" ? KILO_CLAUDE_ANCHOR : { id: "anthropic/claude-3.5-haiku", provider: "kilocode" });
+  // Requesty (user-funded router) as a reliable premium route — strong, cheap
+  // Gemini that conserves Claude credits while keeping quality high.
+  if (process.env.REQUESTY_API_KEY) out.push(tier === "heavy" ? { id: "google/gemini-2.5-pro", provider: "requesty" } : { id: "google/gemini-2.5-flash", provider: "requesty" });
+  return out;
+}
+
+const dedupeCandidates = (chain: ModelCandidate[]): ModelCandidate[] => {
+  const seen = new Set<string>();
+  return chain.filter((c) => {
+    const k = candidateKey(c);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
+
+/**
+ * The Auto (free-first, escalate) router — the default. Simple builds run on free
+ * models first; complex builds lead with premium Claude/GPT WHEN those accounts
+ * are configured (with the free chain as the always-present safety net, so a
+ * credit exhaustion can never hard-fail a build). `wantHeavy` comes from the
+ * route's complexity score.
+ */
+export function autoCandidates(wantHeavy: boolean): ModelCandidate[] {
+  const free = freeChain();
+  const premium = premiumChain(wantHeavy ? "heavy" : "light");
+  // Complex → premium first (best quality) then free fallback.
+  // Simple  → free first ($0) then premium only if free supply is exhausted.
+  return dedupeCandidates(wantHeavy ? [...premium, ...free] : [...free, ...premium]);
+}
+
 const candidateKey = (c: ModelCandidate) => `${c.provider}:${c.id}`;
 
 /**
@@ -197,6 +287,20 @@ export function resolveModel(modelId: string, providerSource?: string) {
       // Anthropic-direct (native tool use). Only reached when ANTHROPIC_API_KEY
       // is set — primaryAnchor()/modelCandidates gate this provider on the key.
       return createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })(modelId);
+    case "google":
+      // Google Gemini direct (free tier). Native tool calling + 1M context.
+      return createGoogleGenerativeAI({
+        apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY,
+      })(modelId);
+    case "requesty":
+      // Requesty — OpenAI-compatible LLM router (router.requesty.ai). Serves a
+      // curated set of frontier models (grok-4, gemini-3, gpt-5.x, claude, …) with
+      // `creator/model` ids. Used as the user's primary gateway key.
+      return createOpenAI({ baseURL: "https://router.requesty.ai/v1", apiKey: process.env.REQUESTY_API_KEY, name: "requesty" }).chat(modelId);
+    case "gateway":
+      // Vercel AI Gateway — one endpoint over the broad models.dev directory.
+      // Model ids are `creator/model` slugs (e.g. "google/gemini-2.5-flash").
+      return createGateway({ apiKey: process.env.VERCEL_AI_GATEWAY_KEY || process.env.AI_GATEWAY_API_KEY })(modelId);
     case "aimlapi":
       return createOpenAI({ baseURL: "https://api.aimlapi.com/v1", apiKey: process.env.AIMLAPI_API_KEY, name: "aimlapi" }).chat(modelId);
     case "huggingface":
