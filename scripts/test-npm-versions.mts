@@ -15,6 +15,7 @@
  */
 import {
   repairDependencyVersions,
+  reconcilePeerFamilies,
   type PackumentFetcher,
 } from "../src/lib/deploy/npm-versions.ts";
 
@@ -29,6 +30,12 @@ const REGISTRY: Record<string, { versions: string[]; latest?: string }> = {
   "date-fns": { versions: ["2.29.3", "2.30.0", "3.0.0", "3.6.0", "4.0.0"], latest: "4.0.0" },
   react: { versions: ["17.0.2", "18.2.0", "18.3.1"], latest: "18.3.1" },
   vite: { versions: ["4.5.0", "5.0.0", "5.4.0", "6.0.0-beta.1"], latest: "5.4.0" },
+  // MUI family, mirroring the real registry: @mui/material has stable v5 + v9, but
+  // @mui/lab only ever shipped 5.x as alpha prereleases (so an aligned v5 lab must
+  // fall back to the newest alpha, not a non-existent stable 5.x).
+  "@mui/material": { versions: ["5.14.0", "5.18.0", "6.0.0", "9.1.1"], latest: "9.1.1" },
+  "@mui/lab": { versions: ["5.0.0-alpha.170", "5.0.0-alpha.173", "6.0.0-beta.1", "9.0.0-beta.5"], latest: "9.0.0-beta.5" },
+  "@mui/icons-material": { versions: ["5.14.0", "5.18.0", "6.0.0", "9.1.1"], latest: "9.1.1" },
 };
 const fetcher: PackumentFetcher = async (name) => {
   const r = REGISTRY[name];
@@ -109,6 +116,37 @@ const run = (content: string, path = "package.json") =>
   const { files, repairs } = await run(pkg({ "date-fns": "^2.30.1" }), "frontend/package.json");
   check("nested package.json is repaired", repairs.length === 1 && repairs[0].file === "frontend/package.json");
   check("nested fix lands on the right file", JSON.parse(files[0].content).dependencies["date-fns"] === "^2.30.0");
+}
+
+// --- peer-family reconcile: the exact icms Vercel failure --------------------
+const fam = (deps: Record<string, string>, path = "package.json") =>
+  reconcilePeerFamilies([{ path, content: JSON.stringify({ name: "app", dependencies: deps }, null, 2) }], { fetcher });
+
+// 9) @mui/lab@latest against a v5 app → aligned to the newest v5 alpha (no stable 5.x exists).
+{
+  const { files, repairs } = await fam({ "@mui/material": "^5.14.0", "@mui/lab": "latest" });
+  const lab = JSON.parse(files[0].content).dependencies["@mui/lab"];
+  check("@mui/lab latest aligned to material's major", repairs.length === 1 && repairs[0].pkg === "@mui/lab", JSON.stringify(repairs));
+  check("aligned to newest v5 prerelease (^5.0.0-alpha.173)", lab === "^5.0.0-alpha.173", lab);
+}
+
+// 10) A wrong fixed major is realigned too (icons-material v9 against material v5).
+{
+  const { files } = await fam({ "@mui/material": "^5.18.0", "@mui/icons-material": "^9.1.1" });
+  check("@mui/icons-material v9 realigned to v5 stable", JSON.parse(files[0].content).dependencies["@mui/icons-material"] === "^5.18.0");
+}
+
+// 11) NO-OP when the family is already coherent.
+{
+  const original = JSON.stringify({ name: "app", dependencies: { "@mui/material": "^5.14.0", "@mui/lab": "^5.0.0-alpha.170" } }, null, 2);
+  const { repairs } = await reconcilePeerFamilies([{ path: "package.json", content: original }], { fetcher });
+  check("coherent v5 family is a strict no-op", repairs.length === 0, JSON.stringify(repairs));
+}
+
+// 12) Satellite present but no anchor → untouched (can't infer a major).
+{
+  const { repairs } = await fam({ "@mui/lab": "latest" });
+  check("satellite without its anchor is fail-open", repairs.length === 0, JSON.stringify(repairs));
 }
 
 console.log(fails === 0 ? "\nAll npm-version repair tests passed." : `\n${fails} test(s) FAILED.`);

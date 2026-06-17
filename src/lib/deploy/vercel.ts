@@ -1,7 +1,7 @@
 import type { WorkspaceFile } from "@/store/workspace";
 import { slugify } from "@/lib/utils";
 import { requireServerToken, serverToken } from "./env";
-import { repairDependencyVersions } from "./npm-versions";
+import { repairDependencyVersions, reconcilePeerFamilies } from "./npm-versions";
 
 const VERCEL_API = "https://api.vercel.com";
 
@@ -64,6 +64,22 @@ export async function deployToVercel(
     }
   } catch (e) {
     console.warn("[deploy] dependency-version repair skipped:", e instanceof Error ? e.message : String(e));
+  }
+
+  // Then align coupled package families (e.g. @mui/lab must match @mui/material's
+  // major) so a floating `latest` can't pull a peer-incompatible major and abort
+  // the install with ERESOLVE. Same fail-open contract as the version repair.
+  try {
+    const aligned = await reconcilePeerFamilies(files.map((f) => ({ path: f.path, content: f.content })));
+    if (aligned.repairs.length) {
+      const byPath = new Map(aligned.files.map((f) => [f.path, f.content] as const));
+      files = files.map((f) => (byPath.has(f.path) ? { ...f, content: byPath.get(f.path)! } : f));
+      for (const r of aligned.repairs) {
+        console.warn(`[deploy] aligned ${r.pkg} ${r.from} → ${r.to} in ${r.file} (peer-family major match)`);
+      }
+    }
+  } catch (e) {
+    console.warn("[deploy] peer-family reconcile skipped:", e instanceof Error ? e.message : String(e));
   }
 
   const name = projectName(opts.name);

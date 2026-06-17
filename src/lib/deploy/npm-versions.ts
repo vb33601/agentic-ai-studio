@@ -107,6 +107,159 @@ function correctedRange(range: string, pack: Packument): string | null {
   return fixed === range.trim() ? null : fixed;
 }
 
+// ---------------------------------------------------------------------------
+// Coupled peer families
+// ---------------------------------------------------------------------------
+
+/**
+ * Some packages are published as a FAMILY whose members must share a major, or
+ * npm's peer resolution aborts the install. The classic generated-app failure:
+ * a MUI v5 app pins `@mui/material@^5` but `@mui/lab@"latest"`, which resolves to
+ * a v9 beta whose peer is `@mui/material@^9` — ERESOLVE, the Vercel build dies at
+ * `npm install`. `repairDependencyVersions` above can't catch this (the satellite
+ * version really EXISTS; it's just peer-incompatible), so this pass aligns every
+ * satellite to the ANCHOR package's major.
+ */
+interface PeerFamily {
+  anchor: string;
+  satellites: string[];
+}
+const PEER_FAMILIES: PeerFamily[] = [
+  { anchor: "@mui/material", satellites: ["@mui/lab", "@mui/icons-material", "@mui/system", "@mui/base", "@mui/styled-engine"] },
+];
+
+const TAG_OR_FLOATING = /^(latest|next|canary|beta|alpha|rc|\*|x)$/i;
+
+/** The major a range targets, or null for tags/urls/git/workspace/floating specs. */
+function rangeMajor(range: string): number | null {
+  const t = range.trim();
+  if (TAG_OR_FLOATING.test(t)) return null;
+  const m = t.match(/^[\s^~>=v]*?(\d+)(?:[.\s]|$)/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Full semver compare incl. prerelease ordering (release > prerelease). */
+function cmpVer(a: string, b: string): number {
+  const [ca, ...pa] = a.split("-");
+  const [cb, ...pb] = b.split("-");
+  const ra = ca.split(".").map(Number);
+  const rb = cb.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((ra[i] || 0) !== (rb[i] || 0)) return (ra[i] || 0) - (rb[i] || 0);
+  const sa = pa.join("-");
+  const sb = pb.join("-");
+  if (!sa && sb) return 1; // release > prerelease
+  if (sa && !sb) return -1;
+  if (!sa && !sb) return 0;
+  const ia = sa.split(".");
+  const ib = sb.split(".");
+  for (let i = 0; i < Math.max(ia.length, ib.length); i++) {
+    const x = ia[i];
+    const y = ib[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = Number(x);
+    const ny = Number(y);
+    const xn = !Number.isNaN(nx) && /^\d+$/.test(x);
+    const yn = !Number.isNaN(ny) && /^\d+$/.test(y);
+    if (xn && yn) {
+      if (nx !== ny) return nx - ny;
+    } else if (xn !== yn) {
+      return xn ? -1 : 1; // numeric identifiers have lower precedence than alphanumeric
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/** Newest version of a package within a given major — stable if any, else the
+ *  newest prerelease (e.g. `@mui/lab` only ships `5.0.0-alpha.*` for MUI v5). */
+function pickInMajor(pack: Packument, major: number): string | null {
+  const stable = pack.stableByMajor.get(major);
+  if (stable) return stable;
+  let best: string | null = null;
+  for (const v of pack.versions) {
+    const p = parse(v);
+    if (!p || p[0] !== major) continue;
+    if (!best || cmpVer(v, best) > 0) best = v;
+  }
+  return best;
+}
+
+/**
+ * Align every coupled-family satellite to its anchor's major across all manifests.
+ * Same fail-open contract as the version repair: a manifest that won't parse, a
+ * registry it can't reach, or no compatible version leaves the spec untouched.
+ */
+export async function reconcilePeerFamilies(
+  files: RepoFile[],
+  opts: { fetcher?: PackumentFetcher } = {},
+): Promise<RepairResult> {
+  const fetcher = opts.fetcher ?? defaultFetcher;
+  const manifests = files
+    .map((f, i) => ({ f, i }))
+    .filter(({ f }) => f.path === "package.json" || f.path.endsWith("/package.json"));
+  if (manifests.length === 0) return { files, repairs: [] };
+
+  const packCache = new Map<string, Packument | null>();
+  const getPack = async (n: string) => {
+    if (!packCache.has(n)) packCache.set(n, await fetcher(n).catch(() => null));
+    return packCache.get(n) ?? null;
+  };
+
+  const out = [...files];
+  const repairs: VersionRepair[] = [];
+  for (const { f, i } of manifests) {
+    let json: Record<string, unknown>;
+    try {
+      json = JSON.parse(f.content);
+    } catch {
+      continue;
+    }
+    let changed = false;
+    for (const fam of PEER_FAMILIES) {
+      // Locate the anchor spec and resolve its major (from the range, else the
+      // registry's `latest` when the anchor itself floats on a tag).
+      let anchorRange: string | undefined;
+      for (const sec of DEP_SECTIONS) {
+        const b = json[sec] as Record<string, string> | undefined;
+        if (b && typeof b[fam.anchor] === "string") {
+          anchorRange = b[fam.anchor];
+          break;
+        }
+      }
+      if (anchorRange === undefined) continue;
+      let anchorMajor = rangeMajor(anchorRange);
+      if (anchorMajor === null) {
+        const ap = await getPack(fam.anchor);
+        const lp = ap?.latest ? parse(ap.latest) : null;
+        anchorMajor = lp ? lp[0] : null;
+      }
+      if (anchorMajor === null) continue;
+
+      for (const sat of fam.satellites) {
+        for (const sec of DEP_SECTIONS) {
+          const b = json[sec] as Record<string, string> | undefined;
+          if (!b || typeof b[sat] !== "string") continue;
+          const cur = b[sat];
+          if (rangeMajor(cur) === anchorMajor) continue; // already aligned
+          const sp = await getPack(sat);
+          if (!sp) continue; // registry can't answer → fail open
+          const target = pickInMajor(sp, anchorMajor);
+          if (!target) continue; // no version in the anchor's major → leave as-is
+          const fixed = `^${target}`;
+          if (fixed === cur.trim()) continue;
+          b[sat] = fixed;
+          repairs.push({ file: f.path, pkg: sat, from: cur, to: fixed });
+          changed = true;
+        }
+      }
+    }
+    if (changed) out[i] = { path: f.path, content: JSON.stringify(json, null, 2) + "\n" };
+  }
+  return { files: out, repairs };
+}
+
 /** Parse a manifest's dependency sections into a flat name→range map. */
 function readDeps(content: string): { json: Record<string, unknown>; names: string[] } | null {
   let json: Record<string, unknown>;
