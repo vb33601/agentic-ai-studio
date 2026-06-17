@@ -152,6 +152,9 @@ async function generate(p: Prompt): Promise<GenResult> {
     // AGENT_LOOP=1 routes this request through the new agentic edit loop (the
     // re-architecture path) so one dev server can serve both legacy and new runs.
     ...(process.env.AGENT_LOOP === "1" ? { agentLoop: true } : {}),
+    // Pin a specific funded model (EVAL_MODEL_ID/EVAL_PROVIDER) so the A/B measures
+    // ARCHITECTURE, not model supply (free-tier quotas / empty premium accounts).
+    ...(process.env.EVAL_MODEL_ID ? { modelId: process.env.EVAL_MODEL_ID, provider: process.env.EVAL_PROVIDER || "gateway" } : {}),
   };
 
   const ac = new AbortController();
