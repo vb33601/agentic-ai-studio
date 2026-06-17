@@ -85,17 +85,17 @@ export const STACK_MATRIX: StackEntry[] = [
   { stack: "python", framework: "django", label: "Django", strategy: "scaffold", scaffold: { tool: "django-admin", command: "django-admin startproject {name}", post: ["pip install django"] }, certifiedBy: "official-tool", match: /\bdjango\b/ },
   { stack: "python", framework: "fastapi", label: "FastAPI", strategy: "seed", certifiedBy: "local-build", match: /\bfastapi\b/ },
   { stack: "python", framework: "flask", label: "Flask", strategy: "seed", certifiedBy: "local-build", match: /\bflask\b/ },
-  { stack: "python", framework: "python", label: "Python (generic)", strategy: "seed", certifiedBy: "local-build" },
+  { stack: "python", framework: "python", label: "Python (generic)", strategy: "seed", certifiedBy: "local-build", match: /(?:^|\W)python(?:\W|$)/ },
 
-  { stack: "dotnet", framework: "aspnet", label: "ASP.NET Core Web API", strategy: "scaffold", scaffold: { tool: "dotnet", command: "dotnet new webapi -o {name}" }, certifiedBy: "official-tool", match: /\b(\.net|asp\.?net|c#|csharp)\b/ },
+  { stack: "dotnet", framework: "aspnet", label: "ASP.NET Core Web API", strategy: "scaffold", scaffold: { tool: "dotnet", command: "dotnet new webapi -o {name}" }, certifiedBy: "official-tool", match: /(?:^|\W)(\.net|dotnet|asp\.?net|blazor|c#|csharp)(?:\W|$)/ },
   { stack: "java", framework: "spring", label: "Spring Boot", strategy: "scaffold", scaffold: { tool: "spring-initializr", command: "curl -s https://start.spring.io/starter.tgz -d dependencies=web -d type=gradle-project -d name={name} | tar -xz -C {name}", note: "Spring Initializr" }, certifiedBy: "official-tool", match: /\bspring\b/ },
   { stack: "java", framework: "scala", label: "Scala (sbt)", strategy: "seed", certifiedBy: "local-build", match: /\bscala\b/ },
   { stack: "ruby", framework: "rails", label: "Ruby on Rails", strategy: "scaffold", scaffold: { tool: "rails", command: "rails new {name} --api --skip-git" }, certifiedBy: "official-tool", match: /\brails\b/ },
   { stack: "ruby", framework: "sinatra", label: "Sinatra", strategy: "seed", certifiedBy: "local-build", match: /\bsinatra\b/ },
-  { stack: "ruby", framework: "ruby", label: "Ruby (generic)", strategy: "seed", certifiedBy: "local-build" },
+  { stack: "ruby", framework: "ruby", label: "Ruby (generic)", strategy: "seed", certifiedBy: "local-build", match: /(?:^|\W)ruby(?:\W|$)/ },
   { stack: "php", framework: "laravel", label: "Laravel", strategy: "scaffold", scaffold: { tool: "composer", command: "composer create-project laravel/laravel {name}" }, certifiedBy: "official-tool", match: /\blaravel\b/ },
   { stack: "php", framework: "symfony", label: "Symfony", strategy: "scaffold", scaffold: { tool: "composer", command: "composer create-project symfony/skeleton {name}" }, certifiedBy: "official-tool", match: /\bsymfony\b/ },
-  { stack: "php", framework: "php", label: "PHP (generic)", strategy: "seed", certifiedBy: "local-build" },
+  { stack: "php", framework: "php", label: "PHP (generic)", strategy: "seed", certifiedBy: "local-build", match: /(?:^|\W)php(?:\W|$)/ },
   { stack: "go", framework: "go", label: "Go (net/http)", strategy: "seed", certifiedBy: "local-build", match: /\bgo(lang)?\b/ },
   { stack: "rust", framework: "rust", label: "Rust (cargo)", strategy: "scaffold", scaffold: { tool: "cargo", command: "cargo new {name} --bin" }, certifiedBy: "official-tool", match: /\brust\b/ },
   { stack: "elixir", framework: "phoenix", label: "Phoenix", strategy: "scaffold", scaffold: { tool: "mix", command: "mix phx.new {name} --no-install" }, certifiedBy: "official-tool", match: /\b(phoenix|elixir)\b/ },
@@ -103,7 +103,7 @@ export const STACK_MATRIX: StackEntry[] = [
   { stack: "dart", framework: "dart", label: "Dart", strategy: "scaffold", scaffold: { tool: "dart", command: "dart create {name}" }, certifiedBy: "official-tool", match: /\bdart\b/ },
   { stack: "deno", framework: "deno", label: "Deno", strategy: "seed", certifiedBy: "local-build", match: /\bdeno\b/ },
   { stack: "bun", framework: "bun", label: "Bun", strategy: "scaffold", scaffold: { tool: "bun", command: "bun init {name} -y" }, certifiedBy: "official-tool", match: /\bbun\b/ },
-  { stack: "cpp", framework: "cpp", label: "C++ (CMake)", strategy: "seed", certifiedBy: "local-build", match: /\b(c\+\+|cpp)\b/ },
+  { stack: "cpp", framework: "cpp", label: "C++ (CMake)", strategy: "seed", certifiedBy: "local-build", match: /(?:^|\W)(c\+\+|cpp)(?:\W|$)/ },
 
   // ---- long tail: deploy-engine-known stacks with no ubiquitous scaffolder ----
   // Each gets a minimal seed certified by the LOCAL build/boot certifier.

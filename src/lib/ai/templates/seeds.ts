@@ -132,6 +132,72 @@ const SEEDS: Record<string, SeedDef> = {
       "main.cpp": '#include <iostream>\n\nint main() {\n    std::cout << "ok" << std::endl;\n    return 0;\n}\n',
     },
   },
+  dotnet: {
+    label: "ASP.NET Core Web API", stack: "dotnet", framework: "aspnet", port: 5000,
+    build: "dotnet build -c Release", dev: "dotnet run", install: "dotnet restore",
+    files: {
+      "App.csproj": '<Project Sdk="Microsoft.NET.Sdk.Web">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n  </PropertyGroup>\n</Project>\n',
+      "Program.cs": 'var builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddControllers();\nbuilder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));\n\nvar app = builder.Build();\napp.UseCors();\napp.MapControllers();\napp.MapGet("/health", () => Results.Ok(new { ok = true }));\n\nvar port = Environment.GetEnvironmentVariable("PORT") ?? "5000";\napp.Run($"http://0.0.0.0:{port}");\n',
+      "Controllers/HealthController.cs": 'using Microsoft.AspNetCore.Mvc;\n\nnamespace App.Controllers;\n\n[ApiController]\n[Route("api/[controller]")]\npublic class HealthController : ControllerBase\n{\n    [HttpGet]\n    public IActionResult Get() => Ok(new { status = "healthy" });\n}\n',
+    },
+  },
+  swift: {
+    label: "Swift (Vapor)", stack: "swift", framework: "vapor", port: 8080,
+    build: "swift build", dev: "swift run", install: "swift package resolve",
+    files: {
+      "Package.swift": '// swift-tools-version:5.9\nimport PackageDescription\n\nlet package = Package(\n    name: "app",\n    targets: [.executableTarget(name: "app", path: "Sources/app")]\n)\n',
+      "Sources/app/main.swift": 'print("ok")\n',
+    },
+  },
+  dart: {
+    label: "Dart", stack: "dart", framework: "dart", port: 8080,
+    build: "dart compile exe bin/app.dart", dev: "dart run", install: "dart pub get",
+    files: {
+      "pubspec.yaml": "name: app\nversion: 0.1.0\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n",
+      "bin/app.dart": "void main() {\n  print('ok');\n}\n",
+    },
+  },
+  bun: {
+    label: "Bun", stack: "bun", framework: "bun", port: 3000,
+    build: null, dev: "bun run index.ts", install: "bun install",
+    files: {
+      "bunfig.toml": "[install]\n",
+      "package.json": '{\n  "name": "app",\n  "module": "index.ts",\n  "type": "module",\n  "scripts": { "start": "bun run index.ts" }\n}\n',
+      "index.ts": 'const port = Number(process.env.PORT ?? 3000);\nBun.serve({\n  port,\n  fetch() {\n    return Response.json({ ok: true });\n  },\n});\nconsole.log(`listening on ${port}`);\n',
+    },
+  },
+  spring: {
+    label: "Spring Boot", stack: "java", framework: "spring", port: 8080,
+    build: "mvn -q package -DskipTests", dev: "mvn spring-boot:run", install: "mvn -q dependency:resolve",
+    files: {
+      "pom.xml": '<project xmlns="http://maven.apache.org/POM/4.0.0">\n  <modelVersion>4.0.0</modelVersion>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.3.0</version>\n  </parent>\n  <groupId>com.app</groupId>\n  <artifactId>app</artifactId>\n  <version>0.1.0</version>\n  <properties><java.version>17</java.version></properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-web</artifactId>\n    </dependency>\n  </dependencies>\n  <build><plugins><plugin>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-maven-plugin</artifactId>\n  </plugin></plugins></build>\n</project>\n',
+      "src/main/java/com/app/Application.java": 'package com.app;\n\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\n\n@SpringBootApplication\npublic class Application {\n    public static void main(String[] args) {\n        SpringApplication.run(Application.class, args);\n    }\n}\n',
+      "src/main/java/com/app/HealthController.java": 'package com.app;\n\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.RestController;\nimport java.util.Map;\n\n@RestController\npublic class HealthController {\n    @GetMapping("/health")\n    public Map<String, Object> health() {\n        return Map.of("ok", true);\n    }\n}\n',
+    },
+  },
+  rails: {
+    label: "Ruby on Rails (API)", stack: "ruby", framework: "rails", port: 3000,
+    build: null, dev: "bin/rails server -b 0.0.0.0", install: "bundle install",
+    files: {
+      "Gemfile": 'source "https://rubygems.org"\ngem "rails", "~> 7.1"\ngem "puma"\n',
+      "config.ru": 'require_relative "config/environment"\nrun Rails.application\n',
+      "config/application.rb": 'require_relative "boot"\nrequire "rails"\nrequire "action_controller/railtie"\n\nmodule App\n  class Application < Rails::Application\n    config.load_defaults 7.1\n    config.api_only = true\n  end\nend\n',
+      "config/boot.rb": 'ENV["BUNDLE_GEMFILE"] ||= File.expand_path("../Gemfile", __dir__)\nrequire "bundler/setup"\n',
+      "config/environment.rb": 'require_relative "application"\nRails.application.initialize!\n',
+      "config/routes.rb": 'Rails.application.routes.draw do\n  get "/health", to: "health#show"\nend\n',
+      "app/controllers/health_controller.rb": 'class HealthController < ActionController::API\n  def show\n    render json: { ok: true }\n  end\nend\n',
+    },
+  },
+  laravel: {
+    label: "Laravel (API)", stack: "php", framework: "laravel", port: 8000,
+    build: null, dev: "php artisan serve --host 0.0.0.0", install: "composer install",
+    files: {
+      "composer.json": '{\n  "require": { "laravel/framework": "^11.0" },\n  "autoload": { "psr-4": { "App\\\\": "app/" } }\n}\n',
+      "artisan": '#!/usr/bin/env php\n<?php\n// Laravel console entrypoint (scaffold). The official installer fills the rest.\n',
+      "routes/api.php": '<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get("/health", fn () => ["ok" => true]);\n',
+      "app/Http/Controllers/HealthController.php": '<?php\n\nnamespace App\\Http\\Controllers;\n\nclass HealthController\n{\n    public function show()\n    {\n        return ["ok" => true];\n    }\n}\n',
+    },
+  },
 };
 
 // Exotic-tail stacks: the minimal buildable project for each toolchain (derived

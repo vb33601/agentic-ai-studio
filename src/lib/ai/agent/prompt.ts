@@ -21,6 +21,7 @@ Rules:
 - Implement EVERY feature the user asked for. Build small, focused files and wire them together (imports, routes, entry points).
 - Do not invent imports to files you have not created — if a file imports a sibling, create that sibling.
 - Prefer edit_file for small changes; use write_file for new files or large rewrites.
+- Keep the template's file STRUCTURE: extend it by ADDING files (models, controllers/routes, services, components) rather than collapsing everything into the entry file. Do not delete the template's files unless you replace them with equivalents. For backend frameworks (Django, Rails, Spring, ASP.NET, etc.) keep models, controllers/views, and routing in their conventional separate files.
 - When the app is complete and would build and run, stop calling tools and give a one-paragraph summary of what you built.
 - Do NOT output code in markdown blocks — all code MUST go through the edit tools.`;
 

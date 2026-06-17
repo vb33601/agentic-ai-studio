@@ -249,10 +249,62 @@ section("8. Seeds are complete + detectable (all matrix seed stacks)");
 
 // helper: most seed keys map to their own stack; framework variants map to a base.
 function t2stack(key: string): string {
-  if (["fastapi", "flask", "python"].includes(key)) return "python";
-  if (["sinatra", "ruby"].includes(key)) return "ruby";
-  if (["scala", "java"].includes(key)) return "java";
+  if (["fastapi", "flask", "python", "django"].includes(key)) return "python";
+  if (["sinatra", "ruby", "rails"].includes(key)) return "ruby";
+  if (["scala", "java", "spring"].includes(key)) return "java";
+  if (["laravel"].includes(key)) return "php";
+  if (["dotnet"].includes(key)) return "dotnet";
+  if (["swift"].includes(key)) return "swift";
   return key;
+}
+
+// ---------------------------------------------------------------------------
+section("8b. EVERY matrix stack resolves to a complete, runnable, detectable start");
+{
+  // Stacks whose deploy-engine detection we can assert precisely from a seed/curated
+  // start (others — exotic langs with single-file seeds — only assert completeness).
+  const EXPECT_STACK: Record<string, string> = {
+    static: "static", "node": "node", python: "python", dotnet: "dotnet", java: "java",
+    ruby: "ruby", php: "php", go: "go", rust: "rust", deno: "deno", bun: "bun",
+    swift: "swift", dart: "dart", cpp: "cpp",
+  };
+  // One representative request per matrix entry, exercising the FULL resolver
+  // (curated/seed/scaffold-fallback) WITHOUT a sandbox — the worst case.
+  const seenStacks = new Set<string>();
+  for (const e of STACK_MATRIX) {
+    seenStacks.add(e.stack);
+    const req = `Build a ${e.label} application`;
+    const r = await resolveStartTemplate(req, { factory: null });
+    const files = Object.entries(r.template.files).map(([path, content]) => ({ path, content }));
+    ok(files.length > 0, `${e.stack}/${e.framework}: resolves to >=1 file (${r.strategy})`, `${files.length} files`);
+    ok(findIncompleteFiles(files).length === 0, `${e.stack}/${e.framework}: not truncated`);
+    ok(findBrokenLocalRefs(files).length === 0, `${e.stack}/${e.framework}: no broken refs`, findBrokenLocalRefs(files).slice(0, 1).join(""));
+    // Where we have a precise detector, the resolved start must detect as the right stack.
+    if (EXPECT_STACK[e.stack]) {
+      const detected = detectStackPlan(files).stack;
+      // node fallbacks (react-vite) legitimately detect as "node"; that's the expectation.
+      ok(detected === EXPECT_STACK[e.stack], `${e.stack}/${e.framework}: detects as ${EXPECT_STACK[e.stack]}`, `got ${detected} (${r.strategy})`);
+    }
+  }
+  // Coverage assertion: every KNOWN deploy stack appears in the matrix.
+  ok(seenStacks.size >= 40, `matrix spans >=40 stacks`, `${seenStacks.size}`);
+}
+
+// ---------------------------------------------------------------------------
+section("8c. .NET routing (regression: ' .net' word-boundary + fullstack mis-route)");
+{
+  const cases: [string, string][] = [
+    ["Build an ASP.NET Core Web API for books", "dotnet"],
+    ["Build a .NET fullstack app with a Blazor frontend and a Web API backend", "dotnet"],
+    ["Create a dotnet web service", "dotnet"],
+    ["Build a C# REST API", "dotnet"],
+  ];
+  for (const [req, wantStack] of cases) {
+    const r = await resolveStartTemplate(req, { factory: null });
+    ok(r.template.stack === wantStack, `".NET route: ${req.slice(0, 34)}…" → ${wantStack}`, `got ${r.template.stack}/${r.template.framework}`);
+    const files = Object.entries(r.template.files).map(([path, content]) => ({ path, content }));
+    ok(detectStackPlan(files).stack === wantStack, `  …and the start detects as ${wantStack}`, detectStackPlan(files).stack);
+  }
 }
 
 // ---------------------------------------------------------------------------
