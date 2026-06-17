@@ -122,6 +122,12 @@ const FREE_TIER_MAX_TOKENS = Number(process.env.FREE_TIER_MAX_TOKENS) || 4000;
  * ANTHROPIC_API_KEY is the only change needed to flip the anchor.
  */
 export function anthropicDirectAvailable(): boolean {
+  // Kill-switch: when the Anthropic account is out of credits (402s) but the key
+  // is still present, set DISABLE_ANTHROPIC_DIRECT=1 to flip every Claude path
+  // (anchor, magic-prompt, plan, fallback chain) over to the funded Kilo route
+  // without having to remove the key.
+  const off = process.env.DISABLE_ANTHROPIC_DIRECT;
+  if (off && off.trim() !== "" && off.trim() !== "0" && off.trim().toLowerCase() !== "false") return false;
   const k = process.env.ANTHROPIC_API_KEY;
   return !!k && k.trim().length > 0;
 }
