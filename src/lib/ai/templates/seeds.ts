@@ -49,6 +49,22 @@ const SEEDS: Record<string, SeedDef> = {
     build: null, dev: "python main.py", install: "pip install -r requirements.txt",
     files: { "requirements.txt": "requests\n", "main.py": 'print("ok")\n' },
   },
+  django: {
+    label: "Django REST", stack: "python", framework: "django", port: 8000,
+    build: null, dev: "python manage.py runserver 0.0.0.0:8000", install: "pip install -r requirements.txt",
+    files: {
+      "requirements.txt": "Django>=4.2\ndjangorestframework\ngunicorn\n",
+      "manage.py": '#!/usr/bin/env python\nimport os\nimport sys\n\nif __name__ == "__main__":\n    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")\n    from django.core.management import execute_from_command_line\n    execute_from_command_line(sys.argv)\n',
+      "config/__init__.py": "",
+      "config/settings.py": 'import os\nfrom pathlib import Path\n\nBASE_DIR = Path(__file__).resolve().parent.parent\nSECRET_KEY = os.environ.get("SECRET_KEY", "dev-insecure-change-me")\nDEBUG = os.environ.get("DEBUG", "1") == "1"\nALLOWED_HOSTS = ["*"]\n\nINSTALLED_APPS = [\n    "django.contrib.contenttypes",\n    "django.contrib.auth",\n    "rest_framework",\n    "api",\n]\nMIDDLEWARE = ["django.middleware.common.CommonMiddleware"]\nROOT_URLCONF = "config.urls"\nWSGI_APPLICATION = "config.wsgi.application"\nDATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}\nDEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"\n',
+      "config/urls.py": 'from django.urls import path, include\n\nurlpatterns = [\n    path("api/", include("api.urls")),\n]\n',
+      "config/wsgi.py": 'import os\nfrom django.core.wsgi import get_wsgi_application\n\nos.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")\napplication = get_wsgi_application()\n',
+      "api/__init__.py": "",
+      "api/models.py": "from django.db import models\n",
+      "api/views.py": 'from rest_framework.decorators import api_view\nfrom rest_framework.response import Response\n\n\n@api_view(["GET"])\ndef health(request):\n    return Response({"status": "healthy"})\n',
+      "api/urls.py": 'from django.urls import path\nfrom . import views\n\nurlpatterns = [\n    path("health/", views.health),\n]\n',
+    },
+  },
   go: {
     label: "Go (net/http)", stack: "go", framework: "go", port: 8080,
     build: "go build ./...", dev: "go run .", install: "go mod download",
