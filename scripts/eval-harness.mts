@@ -149,6 +149,9 @@ async function generate(p: Prompt): Promise<GenResult> {
     enableTools: true,
     enhancePrompt: true,
     refineOutput: true,
+    // AGENT_LOOP=1 routes this request through the new agentic edit loop (the
+    // re-architecture path) so one dev server can serve both legacy and new runs.
+    ...(process.env.AGENT_LOOP === "1" ? { agentLoop: true } : {}),
   };
 
   const ac = new AbortController();
@@ -318,7 +321,8 @@ async function main() {
   const runs: Prompt[] = [];
   for (let r = 0; r < ROUNDS; r++) for (const p of selected) runs.push(p);
 
-  console.log(`\n▶ Eval harness — ${selected.length} prompts × ${ROUNDS} round(s) = ${runs.length} builds  (concurrency=${CONCURRENCY})`);
+  const pathMode = process.env.AGENT_LOOP === "1" ? "NEW agentic edit loop" : "LEGACY one-shot";
+  console.log(`\n▶ Eval harness [${pathMode}] — ${selected.length} prompts × ${ROUNDS} round(s) = ${runs.length} builds  (concurrency=${CONCURRENCY})`);
   console.log(`  BASE=${BASE}  timeout=${GEN_TIMEOUT_MS / 1000}s/build\n`);
 
   let done = 0;
